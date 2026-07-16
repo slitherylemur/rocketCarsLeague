@@ -131,6 +131,44 @@ function mobileSteerFunction() {
 
 const MOVEMENT_ACTIONS = ["Forward", "Backwards", "Left", "Right", "ControllerSteer"];
 
+// ---------------------------------------------------------------------------
+// Server authority: prediction management while seated
+// ---------------------------------------------------------------------------
+// Under Workspace.AuthorityMode = Server the local character is predicted by
+// default. Seating welds it into the car assembly, and the engine cannot
+// predict half an assembly: it emits "Instance ... is not predicted" for the
+// car's parts/constraints and the resulting render fight shows up as the car
+// hovering and bobbing.
+//
+// Until the shared simulation module exists (SERVER_AUTHORITY_PLAN.md Phases
+// 2-4), the stable configuration is NO prediction around the car: while
+// seated, both the car and the character are forced to PredictionMode.Off so
+// the client renders pure authoritative server state. Both revert to
+// Automatic on exit. The same modes are also set server-side in spawnVehicle
+// (the docs don't say which side owns the flag); every call is pcall-guarded
+// so this is a no-op without server authority.
+
+let managedVehicle: Instance | undefined = undefined;
+let managedCharacter: Instance | undefined = undefined;
+
+function setPredictionDeep(root: Instance, mode: Enum.PredictionMode) {
+	const [ok, err] = pcall(() => {
+		RunService.SetPredictionMode(root, mode);
+		for (const descendant of root.GetDescendants()) {
+			RunService.SetPredictionMode(descendant, mode);
+		}
+	});
+	if (!ok) {
+		warn(`[VehicleKeyHandler] SetPredictionMode(${mode}) failed: ${err}`);
+	}
+}
+
+function logPredictionStatus(label: string, instance: Instance) {
+	pcall(() => {
+		print(`[VehicleKeyHandler] prediction status of ${label}: ${RunService.GetPredictionStatus(instance)}`);
+	});
+}
+
 function connectMovementControls(seat: BasePart) {
 	resetMovementState();
 
@@ -140,6 +178,27 @@ function connectMovementControls(seat: BasePart) {
 		warn(`[VehicleKeyHandler] no inputChangedEvent on ${vehicleModel.GetFullName()}`);
 		return;
 	}
+
+	managedVehicle = vehicleModel;
+	managedCharacter = Player.Character;
+	setPredictionDeep(vehicleModel, Enum.PredictionMode.Off);
+	if (managedCharacter) {
+		setPredictionDeep(managedCharacter, Enum.PredictionMode.Off);
+	}
+	task.delay(1, () => {
+		// Diagnostic: confirm the engine honored the modes (expect no
+		// "Instance ... is not predicted" spam and no bobbing when it did).
+		if (managedVehicle === vehicleModel) {
+			const base = vehicleModel.FindFirstChild("Base");
+			if (base) {
+				logPredictionStatus("vehicle Base", base);
+			}
+			const root = managedCharacter ? managedCharacter.FindFirstChild("HumanoidRootPart") : undefined;
+			if (root) {
+				logPredictionStatus("HumanoidRootPart", root);
+			}
+		}
+	});
 
 	ContextActionService.BindAction("Forward", forward as never, false, Enum.KeyCode.W, Enum.KeyCode.ButtonR2);
 	ContextActionService.BindAction("Backwards", backwards as never, false, Enum.KeyCode.S, Enum.KeyCode.ButtonL2);
@@ -154,6 +213,15 @@ function connectMovementControls(seat: BasePart) {
 }
 
 function disconnectMovementControls() {
+	if (managedVehicle) {
+		setPredictionDeep(managedVehicle, Enum.PredictionMode.Automatic);
+		managedVehicle = undefined;
+	}
+	if (managedCharacter) {
+		setPredictionDeep(managedCharacter, Enum.PredictionMode.Automatic);
+		managedCharacter = undefined;
+	}
+
 	for (const action of MOVEMENT_ACTIONS) {
 		ContextActionService.UnbindAction(action);
 	}

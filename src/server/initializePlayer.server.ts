@@ -161,12 +161,9 @@ FunctionsAndEvents.SetKeyBinding.OnServerInvoke = (player, action, key) => {
 	return DataUtilities.SetKeyBinding(player, action as string, key as EnumItem);
 };
 
-FunctionsAndEvents.Throttle.OnServerEvent.Connect((player, throttle) => {
-	const vehicleClass = Globals.vehiclesTable[player.UserId];
-	if (vehicleClass) {
-		vehicleClass.connectionThrottle = throttle as number;
-	}
-});
+// (Removed the legacy FunctionsAndEvents.Throttle handler: nothing on the
+// client fires it — movement floats travel via the per-vehicle
+// inputChangedEvent into the shared sim.)
 
 function GetModelByPlayerAndParent(player: Player, parent: Instance): Instance | undefined {
 	for (const model of parent.GetChildren()) {

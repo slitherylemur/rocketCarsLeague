@@ -1,0 +1,1051 @@
+// Shared vehicle simulation core (SERVER_AUTHORITY_PLAN.md Phase 2).
+//
+// Owns everything that determines the car's MOTION: the drive tick, drift,
+// jump, aerial controls, flip, Ackermann steering and the ground raycasts —
+// ported verbatim from the server VehicleClass drive loop (a5318d46 lineage).
+// The math must not change here without a /feel harness parity check.
+//
+// Phase 2: initialized on the SERVER only (initVehicleSim.server.ts), ticked
+// on Heartbeat — the same cadence as the old per-vehicle while-loops.
+// Phase 4: this same module additionally gets initialized on the client under
+// RunService:BindToSimulation() so the local car can be predicted.
+//
+// Rules for code in this module:
+//   - no server-only imports (DataStore, economy, ServerStorage, ...)
+//   - no sounds, no GUI, no particles — rendering happens in
+//     client/vehicleRenderer.client.ts from the attributes written here
+//   - no task.wait/task.delay — every timer is sim-time state
+//
+// State split: anything gameplay/rendering reads lives in ATTRIBUTES on the
+// Base (see VehicleAttr). Per-tick micro-state (lastThrottle, stabilize
+// timers, flip target, ...) lives on the registry entry for now and moves to
+// attributes in Phase 4, when rollback needs to snapshot it.
+
+const RunService = game.GetService("RunService");
+const Players = game.GetService("Players");
+
+// ---- feel tuning knobs (a5318d46 baseline: 1.0 / 3 / 3 / 1.6 / uncapped / 0.01) ----
+const DRIVE_FORCE_MULT = 1.25; // overall engine force, forward and reverse
+const BOOST_FORCE_MULT = 3; // boost punch on the ground (baseline 3)
+const BOOST_AIR_FORCE_MULT = 4.5; // boost authority in the air — nose-up boosting sustains airtime
+const BOOST_TARGET_MULT = 1.6; // boost top speed as a fraction of targetVelocity
+// Drift = powerslide (Rocket League style): wheels lose lateral grip so momentum
+// keeps traveling while the body rotates, a yaw mover turns the nose into the
+// corner faster than grip steering could, and a small side thrust keeps the
+// slide cornering instead of washing wide. Releasing Space restores grip and
+// the forward drive bites along the new facing.
+const DRIFT_MAX_SIDE_SPEED = 0.45; // cap on sideways drift speed (× targetVelocity); uncapped it outran boost
+const DRIFT_MIN_PROP_VEL = 0.15; // below this fraction of top speed drift disengages (no stationary launches)
+const DRIFT_SIDE_FORCE_FWD = 20; // centripetal assist per unit mass while drifting forward
+const DRIFT_SIDE_FORCE_REV = 15; // centripetal assist per unit mass while drifting in reverse
+const DRIFT_YAW_RATE = 3; // rad/s of commanded yaw at full steer and full speed (grip turning peaks ~2.5)
+const DRIFT_YAW_TORQUE = 60; // yaw authority per unit total mass — how hard the slide rotation is enforced
+const DRIVE_WHEEL_FRICTION = 0.75; // normal wheel grip (applied at registration)
+const DRIFT_WHEEL_FRICTION = 0.15; // wheel friction while sliding; normal grip is restored on release
+const JUMP_FORCE_TIME = 0.18; // seconds the jump force stays on
+const JUMP_FORCE_GRAVITY_MULT = 4; // jump force as a multiple of gravity; net upward accel = (mult - 1) × g
+const JUMP_DEBOUNCE_TIME = 2; // seconds after the force window before the next jump is allowed
+const JUMP_UPRIGHT_MAX_TIME = 2; // seconds the post-jump upright hold may last
+const JUMP_UPRIGHT_LAND_GRACE = 0.3; // grounded frames within this window after takeoff don't clear the hold
+const FLIP_HOLD_TIME = 1; // seconds the flip lift + righting hold stays on
+const FLIP_DEBOUNCE_TIME = 3; // seconds from flip start until the next flip is allowed (old wait(1)+wait(2))
+const BOOST_TICK_INTERVAL = 0.2; // boost meter cadence
+const BOOST_REGEN_DELAY = 3; // seconds after boost release (or depletion) before regen resumes
+const AERIAL_TORQUE_PER_MASS = 378; // aerial control authority per unit total mass
+
+// ---- modern-constraint servo tuning (replaces BodyGyro/BodyPosition P/D gains) ----
+const UPRIGHT_RESPONSIVENESS = 20; // slope hug + post-jump upright hold
+const FLIP_RESPONSIVENESS = 15; // flip righting rotation
+const FLIP_LIFT_RESPONSIVENESS = 15; // flip vertical lift (old BodyPosition P/D)
+
+// ---- gears (percentage of max speed) ----
+const GEAR_LIMITS = [0.4, 0.7, 1];
+const GEAR_TORQUES = [0.8, 0.55, 0.3];
+
+// Engine sound curve — consumed by the client renderer, kept next to the gear
+// data it mirrors.
+export const ENGINE_SOUND = {
+	gearLimits: GEAR_LIMITS,
+	playbackSpeeds: [1.3, 1.7, 2.3],
+	gearSpeedDrop: 0.6,
+};
+
+// ---- Instance shape types (structural; the models live in the place file) ----
+
+export interface VehicleWheel extends Model {
+	WheelMount: BasePart & { SpringConstraint: SpringConstraint };
+	turn: BasePart & {
+		trail: Attachment;
+		trail2: Attachment;
+		HingeConstraint: HingeConstraint;
+	};
+	Wheel: BasePart;
+	DisplayWheel: BasePart;
+}
+
+export interface VehicleBase extends BasePart {
+	IdleSound: Sound;
+	hornSound: Sound;
+	driftSound: Sound;
+	jumpSound: Sound;
+	LinearVelocity: LinearVelocity;
+	slopeCounterVelocity: LinearVelocity;
+	DriftThrust: VectorForce;
+	HealthBar: BillboardGui & { Green: Frame; PlayerTag: TextLabel };
+}
+
+export interface VehicleModel extends Model {
+	Base: VehicleBase;
+	Model: Model;
+	Wheels: Folder & Record<"FL" | "FR" | "BL" | "BR", VehicleWheel>;
+	Seats: Folder & { VehicleSeat: VehicleSeat };
+	Hitboxes: Folder & { damageBlock: BasePart };
+	BoostEffectPart: BasePart & {
+		Attachment: Attachment;
+		Attachment2: Attachment;
+		ParticleEmitter: ParticleEmitter;
+		Trail: Trail;
+		boostSound: Sound;
+	};
+}
+
+export interface VehicleTuning {
+	mass: number;
+	acceleration: number;
+	targetVelocity: number;
+	minTurnRadius: number;
+	maxTurnRadius: number;
+	maxAngularSpeed: number;
+	minAngularSpeed: number;
+	boostAmount: number;
+	driftingMult: number;
+}
+
+// ---- synchronized state: attributes on the vehicle Base ----
+
+export const VehicleAttr = {
+	Throttle: "Throttle",
+	Steer: "Steer",
+	Driving: "Driving",
+	DriftHeld: "DriftHeld",
+	DriftEngaged: "DriftEngaged",
+	BoostHeld: "BoostHeld",
+	BoostAmount: "BoostAmount",
+	BoostBlockedUntil: "BoostBlockedUntil",
+	JumpForceUntil: "JumpForceUntil",
+	JumpReadyAt: "JumpReadyAt",
+	TargetVelocity: "TargetVelocity",
+} as const;
+
+// Attributes on the vehicle MODEL (game state, written by the server
+// VehicleClass; the renderer reads them).
+export const VehicleModelAttr = {
+	Health: "Health",
+	MaxHealth: "MaxHealth",
+	OwnerUserId: "OwnerUserId",
+} as const;
+
+// ---- registry ----
+
+interface SimEntry {
+	model: VehicleModel;
+	base: VehicleBase;
+	seat?: VehicleSeat;
+	tuning: VehicleTuning;
+	owner?: Player;
+	wheels: VehicleWheel[];
+	flHinge: HingeConstraint;
+	frHinge: HingeConstraint;
+	aerial: AngularVelocity;
+	driftYaw: AngularVelocity;
+	upright: AlignOrientation;
+	flipAlign: AlignOrientation;
+	flipLift: AlignPosition;
+	jumpThrust: VectorForce;
+	// Ackermann geometry
+	t: number;
+	l: number;
+	// mass cache: recomputed on occupant change instead of every tick
+	baseMass: number;
+	totalMass: number;
+	// per-tick micro-state (Phase 4: rollback-relevant parts move to attributes)
+	driving: boolean;
+	lastThrottle: number;
+	releasedThrottle: boolean;
+	jumpStabilizing: boolean;
+	jumpStabilizeStart: number;
+	boostLastInc: number;
+	driftEngaged: boolean;
+	flipActive: boolean;
+	flipUntil: number;
+	flipReadyAt: number;
+	flipAlignTarget?: CFrame;
+	flipLiftPosition?: Vector3;
+	velocity: number;
+	propVelocity: number;
+	errorLogged: boolean;
+}
+
+const registry = new Map<Model, SimEntry>();
+
+// ---- small helpers ----
+
+const groundRaycastParams = new RaycastParams();
+groundRaycastParams.FilterType = Enum.RaycastFilterType.Blacklist;
+groundRaycastParams.IgnoreWater = true;
+
+function getMassOfModel(model: Instance): number {
+	let totalMass = 0;
+	for (const part of model.GetDescendants()) {
+		if (part.IsA("BasePart")) {
+			totalMass += part.GetMass();
+		}
+	}
+	return totalMass;
+}
+
+// Occupant mass via the seats — the second half of the old GetTotalMass().
+function occupantsMass(model: Model): number {
+	let mass = 0;
+	const seats = model.FindFirstChild("Seats");
+	if (seats) {
+		for (const seat of seats.GetChildren()) {
+			const occupant = (seat as VehicleSeat).Occupant;
+			if (occupant && occupant.Parent) {
+				mass += getMassOfModel(occupant.Parent);
+			}
+		}
+	}
+	return mass;
+}
+
+// The old code read Base.Velocity — the velocity at the part, not at the
+// assembly's center of mass. GetVelocityAtPosition reproduces that exactly
+// (they differ while the car rotates, which feeds propVelocity and the
+// drift math).
+function baseVelocity(entry: SimEntry): Vector3 {
+	return entry.base.GetVelocityAtPosition(entry.base.Position);
+}
+
+function attrNumber(instance: Instance, name: string, fallback: number): number {
+	const value = instance.GetAttribute(name);
+	return typeIs(value, "number") ? value : fallback;
+}
+
+function attrBool(instance: Instance, name: string): boolean {
+	return instance.GetAttribute(name) === true;
+}
+
+function Vector3ComponentSetter(vector: Vector3, axis: string, value: number): Vector3 | undefined {
+	if (axis === "X") {
+		return new Vector3(value, vector.Y, vector.Z);
+	} else if (axis === "Y") {
+		return new Vector3(vector.X, value, vector.Z);
+	} else if (axis === "Z") {
+		return new Vector3(vector.X, vector.Y, value);
+	}
+	return undefined;
+}
+
+function Vector3ComponentChecker(vector: Vector3, axis: string, value: number): boolean {
+	if (axis === "X" && vector === new Vector3(value, vector.Y, vector.Z)) {
+		return true;
+	} else if (axis === "Y" && vector === new Vector3(vector.X, value, vector.Z)) {
+		return true;
+	} else if (axis === "Z" && vector === new Vector3(vector.X, vector.Y, value)) {
+		return true;
+	}
+	return false;
+}
+
+// Builds a rotation whose X axis points along `x`. AlignOrientation in
+// PrimaryAxisOnly mode aligns Attachment0's X axis to the CFrame property's
+// X axis — with UpAxisAttachment's X lying along the car's up, this expresses
+// "make the car's up axis point along n, yaw free".
+function cframeFromXAxis(x: Vector3): CFrame {
+	const xUnit = x.Unit;
+	const helper = math.abs(xUnit.Y) < 0.99 ? new Vector3(0, 1, 0) : new Vector3(1, 0, 0);
+	const zUnit = xUnit.Cross(helper).Unit;
+	const yUnit = zUnit.Cross(xUnit).Unit;
+	return CFrame.fromMatrix(new Vector3(0, 0, 0), xUnit, yUnit, zUnit);
+}
+
+// ---- movers (modern constraint replacements for the legacy BodyMovers) ----
+
+function createMovers(base: VehicleBase) {
+	// Clear legacy movers and any hand-added replacement constraints — all
+	// configuration lives here so nothing in the model can fight the sim.
+	for (const child of base.GetChildren()) {
+		if (
+			child.IsA("BodyAngularVelocity") ||
+			child.IsA("BodyGyro") ||
+			child.IsA("BodyPosition") ||
+			child.IsA("AngularVelocity") ||
+			child.IsA("AlignOrientation") ||
+			child.IsA("AlignPosition")
+		) {
+			child.Destroy();
+		}
+	}
+	const existingJump = base.FindFirstChild("JumpThrust");
+	if (existingJump) {
+		existingJump.Destroy();
+	}
+
+	const centerAttachment = new Instance("Attachment");
+	centerAttachment.Name = "MoverAttachment";
+	centerAttachment.Parent = base;
+
+	// X axis rotated onto the car's up axis — see cframeFromXAxis.
+	const upAxisAttachment = new Instance("Attachment");
+	upAxisAttachment.Name = "UpAxisAttachment";
+	upAxisAttachment.CFrame = CFrame.Angles(0, 0, math.rad(90));
+	upAxisAttachment.Parent = base;
+
+	// Aerial controls (roll/pitch/yaw while airborne), world-relative like the
+	// old BodyAngularVelocity. The commanded vector on the instance IS the
+	// aerial control state.
+	const aerial = new Instance("AngularVelocity");
+	aerial.Name = "Aerial";
+	aerial.Attachment0 = centerAttachment;
+	aerial.RelativeTo = Enum.ActuatorRelativeTo.World;
+	aerial.ReactionTorqueEnabled = false;
+	aerial.MaxTorque = 0;
+	aerial.AngularVelocity = new Vector3(0, 0, 0);
+	aerial.Parent = base;
+
+	// Drift yaw mover: commands the slide rotation while wheel grip is reduced.
+	const driftYaw = new Instance("AngularVelocity");
+	driftYaw.Name = "DriftYaw";
+	driftYaw.Attachment0 = centerAttachment;
+	driftYaw.RelativeTo = Enum.ActuatorRelativeTo.World;
+	driftYaw.ReactionTorqueEnabled = false;
+	driftYaw.MaxTorque = 0;
+	driftYaw.AngularVelocity = new Vector3(0, 0, 0);
+	driftYaw.Parent = base;
+
+	// Roll/pitch servo (yaw free): slope hug + post-jump upright hold.
+	const upright = new Instance("AlignOrientation");
+	upright.Name = "UprightAlign";
+	upright.Mode = Enum.OrientationAlignmentMode.OneAttachment;
+	upright.Attachment0 = upAxisAttachment;
+	upright.PrimaryAxisOnly = true;
+	upright.RigidityEnabled = false;
+	upright.MaxTorque = 0;
+	upright.MaxAngularVelocity = math.huge;
+	upright.Responsiveness = UPRIGHT_RESPONSIVENESS;
+	upright.Parent = base;
+
+	// Full-orientation servo for the flip righting hold.
+	const flipAlign = new Instance("AlignOrientation");
+	flipAlign.Name = "FlipAlign";
+	flipAlign.Mode = Enum.OrientationAlignmentMode.OneAttachment;
+	flipAlign.Attachment0 = centerAttachment;
+	flipAlign.RigidityEnabled = false;
+	flipAlign.MaxTorque = 0;
+	flipAlign.MaxAngularVelocity = math.huge;
+	flipAlign.Responsiveness = FLIP_RESPONSIVENESS;
+	flipAlign.Parent = base;
+
+	// Vertical-only lift for the flip (old FlipMover BodyPosition (0,huge,0)).
+	const flipLift = new Instance("AlignPosition");
+	flipLift.Name = "FlipLift";
+	flipLift.Mode = Enum.PositionAlignmentMode.OneAttachment;
+	flipLift.Attachment0 = centerAttachment;
+	flipLift.ApplyAtCenterOfMass = true;
+	flipLift.ForceLimitMode = Enum.ForceLimitMode.PerAxis;
+	flipLift.MaxAxesForce = new Vector3(0, 0, 0);
+	flipLift.MaxVelocity = math.huge;
+	flipLift.Responsiveness = FLIP_LIFT_RESPONSIVENESS;
+	flipLift.Parent = base;
+
+	// Torque-free jump force: applied at the center of mass so an off-center
+	// vertical push can't flip the car.
+	const jumpAttachment = new Instance("Attachment");
+	jumpAttachment.Name = "JumpAttachment";
+	jumpAttachment.Parent = base;
+	const jumpThrust = new Instance("VectorForce");
+	jumpThrust.Name = "JumpThrust";
+	jumpThrust.Attachment0 = jumpAttachment;
+	jumpThrust.ApplyAtCenterOfMass = true;
+	jumpThrust.RelativeTo = Enum.ActuatorRelativeTo.World;
+	jumpThrust.Force = new Vector3(0, 0, 0);
+	jumpThrust.Parent = base;
+
+	return { aerial, driftYaw, upright, flipAlign, flipLift, jumpThrust };
+}
+
+// ---- registration ----
+
+export function register(model: VehicleModel, tuning: VehicleTuning, owner?: Player) {
+	const base = model.Base;
+	const movers = createMovers(base);
+
+	const wheels = model.Wheels.GetChildren() as VehicleWheel[];
+	const fl = model.Wheels.FL.WheelMount;
+	const fr = model.Wheels.FR.WheelMount;
+	const bl = model.Wheels.BL.WheelMount;
+
+	const entry: SimEntry = {
+		model,
+		base,
+		seat: model.Seats.FindFirstChild("VehicleSeat") as VehicleSeat | undefined,
+		tuning,
+		owner,
+		wheels,
+		flHinge: model.Wheels.FL.turn.HingeConstraint,
+		frHinge: model.Wheels.FR.turn.HingeConstraint,
+		aerial: movers.aerial,
+		driftYaw: movers.driftYaw,
+		upright: movers.upright,
+		flipAlign: movers.flipAlign,
+		flipLift: movers.flipLift,
+		jumpThrust: movers.jumpThrust,
+		t: fl.Position.sub(fr.Position).Magnitude,
+		l: fl.Position.sub(bl.Position).Magnitude,
+		baseMass: getMassOfModel(model),
+		totalMass: 0,
+		driving: false,
+		lastThrottle: 0,
+		releasedThrottle: false,
+		jumpStabilizing: false,
+		jumpStabilizeStart: 0,
+		boostLastInc: 0,
+		driftEngaged: false,
+		flipActive: false,
+		flipUntil: 0,
+		flipReadyAt: 0,
+		velocity: 0,
+		propVelocity: 0,
+		errorLogged: false,
+	};
+	entry.totalMass = entry.baseMass;
+
+	base.SetAttribute(VehicleAttr.Throttle, 0);
+	base.SetAttribute(VehicleAttr.Steer, 0);
+	base.SetAttribute(VehicleAttr.Driving, false);
+	base.SetAttribute(VehicleAttr.DriftHeld, false);
+	base.SetAttribute(VehicleAttr.DriftEngaged, false);
+	base.SetAttribute(VehicleAttr.BoostHeld, false);
+	base.SetAttribute(VehicleAttr.BoostAmount, tuning.boostAmount);
+	base.SetAttribute(VehicleAttr.BoostBlockedUntil, 0);
+	base.SetAttribute(VehicleAttr.JumpForceUntil, 0);
+	base.SetAttribute(VehicleAttr.JumpReadyAt, 0);
+	base.SetAttribute(VehicleAttr.TargetVelocity, tuning.targetVelocity);
+	model.SetAttribute(VehicleModelAttr.OwnerUserId, owner ? owner.UserId : 0);
+
+	setWheelFriction(entry, false);
+
+	registry.set(model, entry);
+}
+
+export function unregister(model: Model) {
+	const entry = registry.get(model);
+	if (entry) {
+		registry.delete(model);
+		pcall(() => {
+			entry.base.SetAttribute(VehicleAttr.Driving, false);
+		});
+	}
+}
+
+// ---- input & ability entry points (called by the server VehicleClass; in
+// Phase 4 the client sim reads the same attributes) ----
+
+export function setThrottleSteer(model: Model, throttle: number, steer: number) {
+	const entry = registry.get(model);
+	if (!entry) {
+		return;
+	}
+	// NaN guard (NaN ~= NaN) — a NaN float would poison every force computation.
+	if (throttle !== throttle || steer !== steer) {
+		return;
+	}
+	entry.base.SetAttribute(VehicleAttr.Throttle, math.clamp(throttle, -1, 1));
+	entry.base.SetAttribute(VehicleAttr.Steer, math.clamp(steer, -1, 1));
+}
+
+export function setDriftHeld(model: Model, held: boolean) {
+	const entry = registry.get(model);
+	if (entry) {
+		entry.base.SetAttribute(VehicleAttr.DriftHeld, held);
+	}
+}
+
+export function setBoostHeld(model: Model, held: boolean) {
+	const entry = registry.get(model);
+	if (!entry) {
+		return;
+	}
+	entry.base.SetAttribute(VehicleAttr.BoostHeld, held);
+	if (!held) {
+		// Releasing (or depleting) boost blocks regen for a spell — the old
+		// boostDelay + task.delay(3).
+		entry.base.SetAttribute(VehicleAttr.BoostBlockedUntil, time() + BOOST_REGEN_DELAY);
+	}
+}
+
+export function requestJump(model: Model) {
+	const entry = registry.get(model);
+	if (!entry || !entry.driving) {
+		return;
+	}
+	const now = time();
+	if (now >= attrNumber(entry.base, VehicleAttr.JumpReadyAt, 0)) {
+		entry.base.SetAttribute(VehicleAttr.JumpForceUntil, now + JUMP_FORCE_TIME);
+		entry.base.SetAttribute(VehicleAttr.JumpReadyAt, now + JUMP_FORCE_TIME + JUMP_DEBOUNCE_TIME);
+		// Arm the post-jump upright hold.
+		entry.jumpStabilizing = true;
+		entry.jumpStabilizeStart = now;
+	}
+}
+
+export function requestFlip(model: Model) {
+	const entry = registry.get(model);
+	if (!entry) {
+		return;
+	}
+	const now = time();
+	if (entry.flipActive || now < entry.flipReadyAt) {
+		return;
+	}
+	if (math.abs(entry.velocity) >= 5) {
+		return;
+	}
+	const [closeGroundBool] = closeGroundQuery(entry);
+	if (!closeGroundBool) {
+		return;
+	}
+	const primary = entry.model.PrimaryPart;
+	if (!primary) {
+		return;
+	}
+	if (
+		primary.Orientation.X > 60 ||
+		primary.Orientation.X < -60 ||
+		primary.Orientation.Z > 60 ||
+		primary.Orientation.Z < -60
+	) {
+		const vehicleLV = primary.CFrame.LookVector;
+		const upVector = new Vector3(0, 1, 0);
+		const newRV = vehicleLV.Cross(upVector).Unit;
+		const newUV = newRV.Cross(vehicleLV).Unit;
+		entry.flipAlignTarget = CFrame.fromMatrix(
+			primary.Position.add(new Vector3(0, 10, 0)),
+			newRV,
+			newUV,
+			vehicleLV.mul(-1),
+		);
+		entry.flipLiftPosition = primary.Position.add(new Vector3(0, 10, 0));
+		entry.flipActive = true;
+		entry.flipUntil = now + FLIP_HOLD_TIME;
+		entry.flipReadyAt = now + FLIP_DEBOUNCE_TIME;
+	}
+}
+
+// Aerial roll input (event-driven, exactly like the old RollLeft/RollRight:
+// Begin engages only when airborne; anything else resets that component).
+export function setRoll(model: Model, direction: -1 | 1, begin: boolean) {
+	const entry = registry.get(model);
+	if (!entry) {
+		return;
+	}
+	const value = direction * 6;
+	if (begin && !closeGroundQuery(entry)[0]) {
+		entry.jumpStabilizing = false; // deliberate roll takes over from the upright hold
+		aerialControls(entry, "X", value);
+	} else if (!begin) {
+		aerialControlsReset(entry, "X", value);
+	}
+}
+
+// ---- queries ----
+
+export function isOnGround(model: Model): boolean {
+	const entry = registry.get(model);
+	return entry !== undefined && onGroundQuery(entry);
+}
+
+export function isRegistered(model: Model): boolean {
+	return registry.has(model);
+}
+
+// ---- physics internals (verbatim ports) ----
+
+function onGroundQuery(entry: SimEntry): boolean {
+	if (entry.model.Parent !== undefined && entry.model.FindFirstChild("Wheels") !== undefined) {
+		// Filter the whole car + driver.
+		const filter: Instance[] = [entry.model];
+		if (entry.owner && entry.owner.Character) {
+			filter.push(entry.owner.Character);
+		}
+		groundRaycastParams.FilterDescendantsInstances = filter;
+
+		for (const wheel of entry.wheels) {
+			const raycaster = wheel.turn;
+			const up = raycaster.CFrame.UpVector;
+			// Start 1 stud above the hub: a ray that starts inside a surface
+			// never hits it (hard landings can bury the hub).
+			const raycastResult = game.Workspace.Raycast(
+				raycaster.Position.add(up),
+				up.mul(-(1 + wheel.Wheel.Size.Y / 2 + 0.5)),
+				groundRaycastParams,
+			);
+			if (raycastResult) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+function closeGroundQuery(entry: SimEntry): LuaTuple<[boolean, CFrame?]> {
+	const filter: Instance[] = [entry.model];
+	if (entry.owner && entry.owner.Character) {
+		filter.push(entry.owner.Character);
+	}
+	groundRaycastParams.FilterDescendantsInstances = filter;
+	const [Cframe, size] = entry.model.GetBoundingBox();
+	const raycastResult = game.Workspace.Raycast(Cframe.Position, new Vector3(0, -size.X / 2, 0), groundRaycastParams);
+	if (raycastResult) {
+		const vehicleLV = entry.base.CFrame.LookVector;
+		const upVector = raycastResult.Normal;
+		const newRV = vehicleLV.Cross(upVector).Unit;
+		const newUV = newRV.Cross(vehicleLV).Unit;
+		const GyroCFrame = CFrame.fromMatrix(entry.base.Position, newRV, newUV, vehicleLV.mul(-1));
+		return $tuple(true, GyroCFrame);
+	} else {
+		return $tuple(false, undefined);
+	}
+}
+
+// Swap the wheels between normal grip and sliding grip. frictionWeight 100
+// makes the wheel's friction dominate whatever ground material it touches.
+function setWheelFriction(entry: SimEntry, sliding: boolean) {
+	const friction = sliding ? DRIFT_WHEEL_FRICTION : DRIVE_WHEEL_FRICTION;
+	for (const wheel of entry.wheels) {
+		const part = wheel.FindFirstChild("Wheel") as BasePart | undefined;
+		if (!part) {
+			continue;
+		}
+		const cur = part.CurrentPhysicalProperties;
+		part.CustomPhysicalProperties = new PhysicalProperties(
+			cur.Density,
+			friction,
+			cur.Elasticity,
+			100,
+			cur.ElasticityWeight,
+		);
+	}
+}
+
+function aerialControls(entry: SimEntry, axis: string, value: number) {
+	const aerial = entry.aerial;
+	aerial.MaxTorque = entry.totalMass * AERIAL_TORQUE_PER_MASS;
+	aerial.AngularVelocity = Vector3ComponentSetter(aerial.AngularVelocity, axis, value)!;
+}
+
+function aerialControlsReset(entry: SimEntry, axis: string, compValue: number) {
+	if (entry.model.Parent !== undefined && entry.model.FindFirstChild("Base") !== undefined) {
+		const aerial = entry.aerial;
+		if (Vector3ComponentChecker(aerial.AngularVelocity, axis, compValue)) {
+			aerial.AngularVelocity = Vector3ComponentSetter(aerial.AngularVelocity, axis, 0)!;
+			if (aerial.AngularVelocity === new Vector3(0, 0, 0)) {
+				aerial.MaxTorque = 0;
+			}
+		}
+	}
+}
+
+function yaw(entry: SimEntry, steerFloat: number) {
+	aerialControls(entry, "Y", -steerFloat * 6);
+	if (entry.aerial.AngularVelocity === new Vector3(0, 0, 0)) {
+		entry.aerial.MaxTorque = 0;
+	}
+}
+
+function pitch(entry: SimEntry, throttle: number) {
+	aerialControls(entry, "Z", -throttle * 3);
+	if (entry.aerial.AngularVelocity === new Vector3(0, 0, 0)) {
+		entry.aerial.MaxTorque = 0;
+	}
+}
+
+function drift(entry: SimEntry, steerFloat: number) {
+	// Too slow to slide — behave as normal grip.
+	if (entry.propVelocity < DRIFT_MIN_PROP_VEL) {
+		undrift(entry);
+		return;
+	}
+
+	if (!entry.driftEngaged) {
+		entry.driftEngaged = true;
+		setWheelFriction(entry, true);
+		entry.base.SetAttribute(VehicleAttr.DriftEngaged, true);
+	}
+
+	const dir = entry.velocity >= 0 ? 1 : -1;
+
+	// Commanded slide rotation, Y-only. (Scalar torque budget — see Phase 1
+	// notes: may also damp roll/pitch spin, but drift only runs on the ground
+	// where the suspension dominates those axes.)
+	entry.driftYaw.MaxTorque = entry.totalMass * DRIFT_YAW_TORQUE;
+	entry.driftYaw.AngularVelocity = new Vector3(
+		0,
+		-steerFloat * DRIFT_YAW_RATE * dir * math.min(entry.propVelocity * 2, 1),
+		0,
+	);
+
+	// Centripetal assist, capped so lateral speed can never run away.
+	let sideForce = 0;
+	if (entry.velocity >= 0) {
+		sideForce = steerFloat * entry.tuning.mass * DRIFT_SIDE_FORCE_FWD * entry.tuning.driftingMult;
+	} else {
+		sideForce = -steerFloat * entry.tuning.mass * DRIFT_SIDE_FORCE_REV * entry.tuning.driftingMult;
+	}
+	const sideVelocity = entry.base.CFrame.VectorToObjectSpace(baseVelocity(entry)).X;
+	const maxSideSpeed = DRIFT_MAX_SIDE_SPEED * entry.tuning.targetVelocity;
+	if ((sideForce > 0 && sideVelocity > maxSideSpeed) || (sideForce < 0 && sideVelocity < -maxSideSpeed)) {
+		sideForce = 0;
+	}
+	entry.base.DriftThrust.Force = new Vector3(sideForce, 0, 0);
+}
+
+function undrift(entry: SimEntry) {
+	if (entry.driftEngaged) {
+		entry.driftEngaged = false;
+		setWheelFriction(entry, false);
+		entry.base.SetAttribute(VehicleAttr.DriftEngaged, false);
+	}
+
+	entry.driftYaw.MaxTorque = 0;
+	entry.driftYaw.AngularVelocity = new Vector3(0, 0, 0);
+	entry.base.DriftThrust.Force = new Vector3(0, 0, 0);
+}
+
+function turnWheels(entry: SimEntry, throttle: number, steerFloat: number, onGround: boolean) {
+	//https://datagenetics.com/blog/december12016/index.html
+	if (attrBool(entry.base, VehicleAttr.DriftHeld) && onGround) {
+		drift(entry, steerFloat);
+	} else {
+		undrift(entry);
+	}
+
+	const fl = entry.flHinge;
+	const fr = entry.frHinge;
+
+	let turnRadius = entry.tuning.minTurnRadius;
+	fl.AngularSpeed = entry.tuning.maxAngularSpeed;
+	fr.AngularSpeed = entry.tuning.maxAngularSpeed;
+
+	if (entry.propVelocity > 0.5) {
+		turnRadius += math.clamp(
+			entry.propVelocity * (entry.tuning.maxTurnRadius - turnRadius),
+			0,
+			2 * (entry.tuning.maxTurnRadius - turnRadius),
+		);
+
+		fl.AngularSpeed -= math.clamp(
+			entry.propVelocity * (fl.AngularSpeed - entry.tuning.minAngularSpeed),
+			0,
+			fl.AngularSpeed - entry.tuning.minAngularSpeed,
+		);
+		fr.AngularSpeed -= math.clamp(
+			entry.propVelocity * (fr.AngularSpeed - entry.tuning.minAngularSpeed),
+			0,
+			fr.AngularSpeed - entry.tuning.minAngularSpeed,
+		);
+	}
+
+	//ANTI ACKERMAN
+	const gammaE = math.deg(math.atan(entry.l / (turnRadius - entry.t / 2))); //internal wheel
+	const gammaI = math.deg(math.atan(entry.l / (turnRadius + entry.t / 2))); //external wheel
+
+	if (steerFloat > 0) {
+		fl.TargetAngle = steerFloat * gammaI;
+		fr.TargetAngle = steerFloat * gammaE;
+	} else if (steerFloat < 0) {
+		fl.TargetAngle = steerFloat * gammaE;
+		fr.TargetAngle = steerFloat * gammaI;
+	} else {
+		fl.TargetAngle = 0;
+		fr.TargetAngle = 0;
+	}
+}
+
+// Boost meter cadence — the old boostIncrement, on sim time.
+function boostTick(entry: SimEntry, increase: boolean, now: number) {
+	if (now - entry.boostLastInc >= BOOST_TICK_INTERVAL) {
+		const amount = attrNumber(entry.base, VehicleAttr.BoostAmount, 0);
+		if (increase) {
+			entry.base.SetAttribute(VehicleAttr.BoostAmount, math.clamp(amount + 1, 0, 100));
+		} else {
+			if (amount === 0) {
+				// Depleted: force the boost off and block regen — the old
+				// internal Boost(End) call.
+				entry.base.SetAttribute(VehicleAttr.BoostHeld, false);
+				entry.base.SetAttribute(VehicleAttr.BoostBlockedUntil, now + BOOST_REGEN_DELAY);
+			} else {
+				entry.base.SetAttribute(VehicleAttr.BoostAmount, math.clamp(amount - 4, 0, 100));
+			}
+		}
+		entry.boostLastInc = now;
+	}
+}
+
+// ---- the tick ----
+
+function stepVehicle(entry: SimEntry, now: number) {
+	const model = entry.model;
+	const base = entry.base;
+
+	// Occupancy gate — the old drive() while-condition, evaluated per tick.
+	const seat = entry.seat;
+	const occupant = seat ? seat.Occupant : undefined;
+	const ownerCharacter = entry.owner ? entry.owner.Character : undefined;
+	const ownerHumanoid = ownerCharacter ? ownerCharacter.FindFirstChildOfClass("Humanoid") : undefined;
+	const drivingNow =
+		occupant !== undefined && ownerHumanoid !== undefined && occupant === ownerHumanoid && model.Parent !== undefined;
+
+	if (drivingNow && !entry.driving) {
+		// Fresh sit: never inherit input or ability state from a previous drive.
+		entry.driving = true;
+		base.SetAttribute(VehicleAttr.Throttle, 0);
+		base.SetAttribute(VehicleAttr.Steer, 0);
+		base.SetAttribute(VehicleAttr.DriftHeld, false);
+		base.SetAttribute(VehicleAttr.BoostHeld, false); // no regen-block: matches the old fresh-sit reset
+		base.SetAttribute(VehicleAttr.Driving, true);
+		entry.lastThrottle = 0;
+		entry.releasedThrottle = false;
+		entry.boostLastInc = now;
+		entry.errorLogged = false;
+		// Diagnostic: live mass vs the register-time snapshot. A large gap
+		// means post-spawn changes (paint→Metal, skins) moved the mass — the
+		// reason the sim must measure per tick, never cache.
+		warn(
+			`[VehicleSim] ${model.Name}: drive start; totalMass=${string.format(
+				"%.0f",
+				getMassOfModel(model) + occupantsMass(model),
+			)} (register-time=${string.format("%.0f", entry.baseMass)})`,
+		);
+	} else if (!drivingNow && entry.driving) {
+		// Drive ended: parking brake, exactly like the old loop exit.
+		entry.driving = false;
+		base.SetAttribute(VehicleAttr.Driving, false);
+		base.LinearVelocity.MaxForce = 100000;
+		base.LinearVelocity.LineVelocity = 0;
+		entry.velocity = 0;
+		entry.propVelocity = 0;
+		turnWheels(entry, 0, 0, false);
+	}
+
+	if (!entry.driving) {
+		return;
+	}
+
+	// Mass is measured EVERY tick — exactly the old GetTotalMass(). It must
+	// track post-spawn changes (PaintVehicle swaps body pieces to Metal at
+	// ~11× plastic density, skins, occupant changes): every force in the
+	// tuned math scales with this number, so a stale register-time snapshot
+	// rescales the whole car's physics.
+	entry.totalMass = getMassOfModel(model) + occupantsMass(model);
+
+	// ---- timers (sim-time state machines replacing task.wait/task.delay) ----
+
+	// Jump force window.
+	if (now < attrNumber(base, VehicleAttr.JumpForceUntil, 0)) {
+		entry.jumpThrust.Force = new Vector3(
+			0,
+			entry.totalMass * game.Workspace.Gravity * JUMP_FORCE_GRAVITY_MULT,
+			0,
+		);
+	} else {
+		entry.jumpThrust.Force = new Vector3(0, 0, 0);
+	}
+
+	// Flip hold window.
+	if (entry.flipActive) {
+		if (now >= entry.flipUntil) {
+			entry.flipActive = false;
+			entry.flipLift.MaxAxesForce = new Vector3(0, 0, 0);
+			entry.flipAlign.MaxTorque = 0;
+		} else {
+			entry.flipLift.Position = entry.flipLiftPosition!;
+			entry.flipLift.MaxAxesForce = new Vector3(0, math.huge, 0);
+			entry.flipAlign.CFrame = entry.flipAlignTarget!;
+			entry.flipAlign.MaxTorque = math.huge;
+		}
+	}
+
+	// ---- the drive tick (verbatim port of the old loop body) ----
+
+	const steerFloat = attrNumber(base, VehicleAttr.Steer, 0);
+	const throttle = attrNumber(base, VehicleAttr.Throttle, 0);
+
+	let targetVelocity = throttle * entry.tuning.targetVelocity;
+	const totalMass = entry.totalMass;
+	const onGround = onGroundQuery(entry);
+	const [closeGroundBool, gyroCFrame] = closeGroundQuery(entry);
+	// Propulsion fallback: if the wheel rays miss but the chassis is hugging
+	// the ground, the engine keeps power instead of dropping to zero force.
+	const grounded = onGround || closeGroundBool;
+
+	const forceAtt = entry.tuning.acceleration * totalMass * DRIVE_FORCE_MULT;
+	let force = forceAtt;
+	entry.velocity = -base.CFrame.VectorToObjectSpace(baseVelocity(entry)).Z;
+	entry.propVelocity = math.abs(entry.velocity) / entry.tuning.targetVelocity;
+
+	//Aerial Correction and controls
+	if (onGround) {
+		// Landed (the grace period skips the still-grounded takeoff frames).
+		if (entry.jumpStabilizing && now - entry.jumpStabilizeStart > JUMP_UPRIGHT_LAND_GRACE) {
+			entry.jumpStabilizing = false;
+		}
+		entry.aerial.MaxTorque = 0;
+		entry.upright.MaxTorque = 0;
+		if (entry.releasedThrottle) {
+			pitch(entry, 0);
+		}
+		entry.releasedThrottle = false;
+	} else if (!closeGroundBool) {
+		if (entry.jumpStabilizing && now - entry.jumpStabilizeStart > JUMP_UPRIGHT_MAX_TIME) {
+			entry.jumpStabilizing = false;
+		}
+		if (entry.jumpStabilizing) {
+			// Post-jump upright hold: level roll+pitch, yaw free.
+			entry.upright.CFrame = cframeFromXAxis(new Vector3(0, 1, 0));
+			entry.upright.MaxTorque = math.huge;
+		} else {
+			entry.upright.MaxTorque = 0;
+		}
+		yaw(entry, steerFloat);
+
+		if (entry.releasedThrottle) {
+			// A deliberate pitch input takes over from the upright hold.
+			if (throttle !== 0) {
+				entry.jumpStabilizing = false;
+			}
+			pitch(entry, throttle);
+		}
+
+		if (entry.lastThrottle === 0 && throttle !== 0) {
+			entry.releasedThrottle = true;
+		}
+	} else {
+		//closeGround
+		entry.aerial.MaxTorque = 0;
+		// Slope hug: align the car's up axis to the surface normal, yaw free.
+		entry.upright.CFrame = cframeFromXAxis(gyroCFrame!.YVector);
+		entry.upright.MaxTorque = math.huge;
+		if (entry.lastThrottle === 0 && throttle !== 0) {
+			entry.releasedThrottle = true;
+		}
+	}
+	entry.lastThrottle = throttle;
+
+	turnWheels(entry, throttle, steerFloat, grounded);
+
+	const lookVector = base.CFrame.LookVector;
+	const rightVector = base.CFrame.RightVector;
+
+	let slopeCounterForce = 0;
+	if (math.abs(rightVector.Y) > 0.1 && math.abs(rightVector.Y) < math.sin(math.rad(50))) {
+		slopeCounterForce = totalMass * game.Workspace.Gravity * math.abs(rightVector.Y);
+	}
+
+	if (throttle > 0 && grounded) {
+		//holding W
+		if (entry.velocity >= 0) {
+			//moving forwards (gears)
+			for (const [i, gear] of ipairs(GEAR_LIMITS)) {
+				if (entry.propVelocity <= gear) {
+					force *= GEAR_TORQUES[i - 1] + gear - entry.propVelocity;
+					break;
+				}
+			}
+		} else {
+			//moving backwards
+			force *= 2.6;
+		}
+
+		if (lookVector.Y > 0.1 && lookVector.Y < math.sin(math.rad(50))) {
+			//ensures forwards driving on upwards slope
+			force += totalMass * game.Workspace.Gravity * lookVector.Y;
+		}
+	} else if (throttle < 0 && grounded) {
+		//holding S
+		if (entry.velocity <= 0) {
+			//moving backwards
+			targetVelocity *= 0.3;
+			force *= 0.6;
+		} else {
+			//moving forwards
+			targetVelocity *= 0.1;
+			force *= 2.6;
+		}
+
+		if (lookVector.Y < -0.1 && lookVector.Y > -math.sin(math.rad(50))) {
+			//ensures backwards driving on downward slope
+			force -= totalMass * game.Workspace.Gravity * lookVector.Y;
+		}
+	} else if (!grounded) {
+		force = 0;
+	}
+
+	const boostHeld = attrBool(base, VehicleAttr.BoostHeld);
+	if (boostHeld && attrNumber(base, VehicleAttr.BoostAmount, 0) >= 0) {
+		//if boosting go back to gear 1 accel
+		boostTick(entry, false, now); //decrease boostAmount
+		// Re-read AFTER the decrement, matching the old boostIncrement ordering.
+		if (attrNumber(base, VehicleAttr.BoostAmount, 0) > 0) {
+			// Aerial boost gets extra force so nose-up boosting can fight
+			// gravity and extend airtime.
+			force = forceAtt * (grounded ? BOOST_FORCE_MULT : BOOST_AIR_FORCE_MULT); //resets force
+			force += totalMass * game.Workspace.Gravity * lookVector.Y;
+			targetVelocity = BOOST_TARGET_MULT * entry.tuning.targetVelocity;
+		}
+	} else if (now >= attrNumber(base, VehicleAttr.BoostBlockedUntil, 0)) {
+		boostTick(entry, true, now); //increase boostAmount
+	}
+
+	if (entry.propVelocity > 1 && !boostHeld) {
+		//if faster than max velocity, slow down
+		force = forceAtt;
+	}
+
+	base.LinearVelocity.MaxForce = force;
+	base.LinearVelocity.LineVelocity = targetVelocity;
+	base.slopeCounterVelocity.MaxForce = slopeCounterForce;
+}
+
+function tick() {
+	const now = time();
+	for (const [model, entry] of registry) {
+		if (entry.model.Parent === undefined || entry.base.Parent === undefined) {
+			registry.delete(model);
+			continue;
+		}
+		const [ok, err] = pcall(() => stepVehicle(entry, now));
+		if (!ok && !entry.errorLogged) {
+			// One log per drive session — the old loop swallowed these silently,
+			// which hid real breakage.
+			entry.errorLogged = true;
+			warn(`[VehicleSim] ${model.Name}: ${err}`);
+		}
+	}
+}
+
+// ---- lifecycle ----
+
+let initialized = false;
+
+export function initialize() {
+	if (initialized) {
+		return;
+	}
+	initialized = true;
+	// Phase 2: plain Heartbeat, server only — identical cadence to the old
+	// loops. Phase 4 rebinds this through RunService:BindToSimulation() on
+	// both server and client.
+	RunService.Heartbeat.Connect(() => tick());
+}

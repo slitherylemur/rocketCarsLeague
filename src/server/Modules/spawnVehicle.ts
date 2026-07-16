@@ -3,6 +3,7 @@
 import { Globals } from "../Globals";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import requireModule from "shared/requireModule";
+import * as VehicleSim from "shared/vehicleSim/VehicleSim";
 import type { VehicleClass, VehicleModel } from "../Classes/VehicleClass";
 import type { VehicleSubClassModule } from "../Classes/VehicleSubClass/subClassTypes";
 
@@ -12,6 +13,36 @@ const physicsService = game.GetService("PhysicsService");
 const RunService = game.GetService("RunService");
 
 Globals.vehiclesTable = {};
+
+// Under Workspace.AuthorityMode = Server there is no network ownership: the
+// server simulates every assembly and SetNetworkOwner throws. pcall-read the
+// property so this also runs on engines/types that predate the beta.
+function isServerAuthority(): boolean {
+	let result = false;
+	pcall(() => {
+		const mode = tostring((game.Workspace as unknown as Record<string, unknown>).AuthorityMode);
+		result = mode === "Enum.AuthorityMode.Server" || mode === "Server";
+	});
+	return result;
+}
+
+// Prediction is disabled around the car until the shared simulation exists
+// (SERVER_AUTHORITY_PLAN.md Phases 2-4): a predicted character welded into an
+// unpredicted car makes the engine fight itself (hover/bob + "Instance ... is
+// not predicted" spam). Set on the server AND the client (VehicleKeyHandler)
+// since the docs don't say which side owns the flag; pcall makes it a no-op
+// on classic netcode.
+function setPredictionDeep(root: Instance, mode: Enum.PredictionMode) {
+	const [ok, err] = pcall(() => {
+		RunService.SetPredictionMode(root, mode);
+		for (const descendant of root.GetDescendants()) {
+			RunService.SetPredictionMode(descendant, mode);
+		}
+	});
+	if (!ok) {
+		warn(`[spawnVehicle] SetPredictionMode(${mode}) failed: ${err}`);
+	}
+}
 
 function GetSpawnCFrame(humanoidRootPart: BasePart, vehicleModel: Model): CFrame {
 	const spawnCFrame = (game.Workspace as unknown as { spawnPartTemp: BasePart }).spawnPartTemp.CFrame;
@@ -69,45 +100,9 @@ function SeatPlayer(player: Player, newModel: Model) {
 	warn(`[SeatPlayer] EXIT vehiclePos=${newModel.GetPrimaryPartCFrame().Position} seated=${humanoid.Sit}`);
 }
 
-const HumanoidSeatedConnection = new Map<Player, RBXScriptConnection>();
-
-function InitialiseControl(player: Player, newModel: VehicleModel) {
-	if (HumanoidSeatedConnection.get(player) !== undefined) {
-		HumanoidSeatedConnection.get(player)!.Disconnect();
-		HumanoidSeatedConnection.delete(player);
-	}
-
-	HumanoidSeatedConnection.set(
-		player,
-		(player.Character as unknown as { Humanoid: Humanoid }).Humanoid.Seated.Connect(() => {
-			// print("seated")
-
-			// if not player.Character then
-			// 	print("character DNE")
-			// end
-
-			// if not newModel.Seats:FindFirstChild("VehicleSeat") then
-			// 	print("vehicle seat DNE")
-			// end
-
-			// if not player.Character.Humanoid == newModel.Seats.VehicleSeat.Occupant then
-			// 	print("character is not seated in the vehicle")
-			// end
-
-			if (
-				player.Character &&
-				newModel.Seats.FindFirstChild("VehicleSeat") &&
-				(player.Character as unknown as { Humanoid: Humanoid }).Humanoid ===
-					(newModel.Seats.FindFirstChild("VehicleSeat") as VehicleSeat).Occupant
-			) {
-				// print(_G.vehiclesTable[player.UserId])
-				// print(_G.vehiclesTable[player.UserId].model)
-				// print(_G.vehiclesTable[player.UserId].model.Base)
-				Globals.vehiclesTable[player.UserId]!.drive();
-			}
-		}),
-	);
-}
+// (InitialiseControl and its Humanoid.Seated → drive() trigger were removed
+// in Phase 2: the shared sim's tick gates on VehicleSeat.Occupant directly,
+// so there is no per-vehicle drive loop to start anymore.)
 
 function makeWheelsUncollidable(vehicleModel: VehicleModel) {
 	for (const part of vehicleModel.GetDescendants()) {
@@ -196,16 +191,21 @@ const spawnVehicleModule = {
 
 		const modelSize = newModel.GetExtentsSize();
 
-		// Hold the car server-side through the whole seating sequence. Sitting in
-		// a VehicleSeat auto-transfers network ownership of the car assembly to
-		// the seated client — whose replica of the character is often still at
-		// the lobby spawn (below the map). That client then "solves" the seat
-		// weld from its stale state and drags the car body under the map, wheels
-		// (separate constraint assemblies) lagging above it. An anchored assembly
-		// is server-owned and immovable, so the race cannot happen; it is
-		// unanchored right before SetNetworkOwner below, once the client has had
-		// the correct spawn state replicated.
-		if (drivable) {
+		// Classic netcode only: hold the car server-side through the whole
+		// seating sequence. Sitting in a VehicleSeat auto-transfers network
+		// ownership of the car assembly to the seated client — whose replica of
+		// the character is often still at the lobby spawn (below the map). That
+		// client then "solves" the seat weld from its stale state and drags the
+		// car body under the map. An anchored assembly is server-owned and
+		// immovable, so the race cannot happen; it is unanchored right before
+		// SetNetworkOwner below, once the client has had the correct spawn state
+		// replicated.
+		//
+		// Under server authority no ownership transfer exists — the server
+		// simulates the car for its whole life — and anchoring a soon-predicted
+		// assembly through the seat sequence confuses the rollback system, so
+		// the whole dance is skipped.
+		if (drivable && !isServerAuthority()) {
 			newModel.Base.Anchored = true;
 		}
 
@@ -226,7 +226,12 @@ const spawnVehicleModule = {
 			(game.Workspace as unknown as { Vehicles: Folder }).Vehicles.WaitForChild(newModel.Name);
 			warn(`[SpawnVehicle] InitialiseControl; Character=${player.Character?.GetFullName() ?? "nil"}`);
 
-			InitialiseControl(player, newModel);
+			if (isServerAuthority()) {
+				setPredictionDeep(newModel, Enum.PredictionMode.Off);
+				if (player.Character) {
+					setPredictionDeep(player.Character, Enum.PredictionMode.Off);
+				}
+			}
 
 			SeatPlayer(player, newModel);
 
@@ -261,11 +266,15 @@ const spawnVehicleModule = {
 				RunService.Stepped.Wait();
 			}
 
-			const [ok, err] = pcall(() => {
-				newModel.Base.SetNetworkOwner(player);
-			});
-			if (!ok) {
-				warn(`[SpawnVehicle] SetNetworkOwner failed: ${err}`);
+			// Classic (AuthorityMode = Client) only — kept so the old netcode
+			// still behaves identically for baseline/parity comparisons.
+			if (!isServerAuthority()) {
+				const [ok, err] = pcall(() => {
+					newModel.Base.SetNetworkOwner(player);
+				});
+				if (!ok) {
+					warn(`[SpawnVehicle] SetNetworkOwner failed: ${err}`);
+				}
 			}
 		}
 
@@ -283,6 +292,8 @@ const spawnVehicleModule = {
 			if (!doubleO) {
 				Globals.vehiclesTable[player.UserId]!.wasKilled = true;
 			}
+
+			VehicleSim.unregister(existing.model);
 
 			for (const instance of Globals.vehiclesTable[player.UserId]!.model.GetDescendants()) {
 				if (
@@ -319,9 +330,9 @@ const spawnVehicleModule = {
 			//playerGarage:FindFirstChild("VehicleFolder"):ClearAllChildren()
 		}
 
-		if (HumanoidSeatedConnection.get(player) !== undefined) {
-			HumanoidSeatedConnection.get(player)!.Disconnect();
-			HumanoidSeatedConnection.delete(player);
+		// Give the character its default prediction back once it's out of the car.
+		if (isServerAuthority() && player.Character) {
+			setPredictionDeep(player.Character, Enum.PredictionMode.Automatic);
 		}
 	},
 };

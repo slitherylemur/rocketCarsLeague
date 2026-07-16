@@ -125,7 +125,9 @@ FunctionsAndEvents.UiTimer.OnClientEvent.Connect((...args: unknown[]) => {
 });
 
 FunctionsAndEvents.EndScreen.OnClientEvent.Connect(() => {
-	const cameraPart = (game.Workspace as unknown as { VictoryStage: { Camera: BasePart } }).VictoryStage.Camera;
+	// WaitForChild: under StreamingEnabled the VictoryStage may not have
+	// streamed in when the end screen fires.
+	const cameraPart = game.Workspace.WaitForChild("VictoryStage").WaitForChild("Camera") as BasePart;
 
 	const camera = game.Workspace.CurrentCamera!;
 	camera.CameraType = Enum.CameraType.Scriptable;

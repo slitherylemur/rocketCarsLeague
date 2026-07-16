@@ -13,9 +13,10 @@ const player = Players.LocalPlayer;
 //local character = player.CharacterAdded:Wait()
 //local torso = character:WaitForChild("HumanoidRootPart")
 //local playerPosition = torso.Position
-const default_Rotation = (
-	game.Workspace as unknown as { PlayerGarages: { garageModel: { spawnPlate: BasePart } } }
-).PlayerGarages.garageModel.spawnPlate.Orientation;
+// (Removed dead `default_Rotation` read: it dot-accessed
+// PlayerGarages.garageModel.spawnPlate at startup, which errors under
+// StreamingEnabled when the garage hasn't streamed in yet — killing this
+// whole script before any event handlers connected. The value was never used.)
 
 //local default_CameraPosition = workspace.PlayerGarages.garageModel.Cameras.Body.Position --torso.Position
 const default_CameraRotation = new Vector2(-1.17809725, 0); //Vector2.new(math.rad(workspace.PlayerGarages.garageModel.spawnPlate.Orientation.Y),0)
