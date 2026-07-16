@@ -13,7 +13,7 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
 | ServerScriptService/SoftShutdown | Script | 5 | src/server/SoftShutdown.server.ts | Complete | |
 | ServerScriptService/tutorial | Script | 70 | src/server/tutorial.server.ts | Complete | |
 | ServerScriptService/GeneralUtils/ConnectClientFunction | Script | 9 | src/server/GeneralUtils/ConnectClientFunction.server.ts | Complete | |
-| ServerScriptService/GeneralUtils | ModuleScript | 160 | src/server/GeneralUtils/init.ts | Complete | |
+| ServerScriptService/GeneralUtils | ModuleScript | 160 | src/server/GeneralUtils/index.ts | Complete | |
 | ServerScriptService/loggerScript | Script | 25 | src/server/loggerScript.server.ts | Complete | |
 | ServerScriptService/killNotowned | Script | 10 | src/server/killNotowned.server.ts | Complete | |
 | ServerScriptService/physFixPlease | Script | 7 | src/server/physFixPlease.server.ts | Complete | |
@@ -55,7 +55,7 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
 | ServerStorage/Classes/VehicleSubClass/Bugati | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Bugati.ts | Complete | |
 | ServerStorage/Classes/VehicleSubClass/BmvV8 | ModuleScript | 61 | src/server/Classes/VehicleSubClass/BmvV8.ts | Complete | |
 | ServerStorage/Classes/VehicleSubClass/Horse911 | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Horse911.ts | Complete | |
-| ServerStorage/VehicleModels/TestVehicle/Seats/VehicleSeat/Script | Script | 6 | src/server/EmbeddedScripts/VehicleModels_TestVehicle_Seats_VehicleSeat_Script.ts | Complete | |
+| ServerStorage/VehicleModels/TestVehicle/Seats/VehicleSeat/Script | Script | 6 | src/server/EmbeddedScripts/attach.server.ts | Complete | |
 | ServerStorage/Modules/DataStoreDefaults | ModuleScript | 83 | src/server/Modules/DataStoreDefaults.ts | Complete | |
 | ServerStorage/Modules/spawnVehicle | ModuleScript | 245 | src/server/Modules/spawnVehicle.ts | Complete | |
 | ServerStorage/Modules/UiModules/setTab | ModuleScript | 291 | src/server/Modules/UiModules/setTab.ts | Complete | |
@@ -74,11 +74,11 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
 | ServerStorage/Modules/DataStore2/Promise | ModuleScript | 1391 | src/server/Modules/DataStore2/Promise.ts | Complete | |
 | ServerStorage/Modules/DataStore2/SavingMethods/OrderedBackups | ModuleScript | 74 | src/server/Modules/DataStore2/SavingMethods/OrderedBackups.ts | Complete | |
 | ServerStorage/Modules/DataStore2/SavingMethods/Standard | ModuleScript | 34 | src/server/Modules/DataStore2/SavingMethods/Standard.ts | Complete | |
-| ServerStorage/Modules/DataStore2/SavingMethods | ModuleScript | 5 | src/server/Modules/DataStore2/SavingMethods.ts | Complete | |
+| ServerStorage/Modules/DataStore2/SavingMethods | ModuleScript | 5 | src/server/Modules/DataStore2/SavingMethods/index.ts | Complete | |
 | ServerStorage/Modules/DataStore2/Settings | ModuleScript | 8 | src/server/Modules/DataStore2/Settings.ts | Complete | |
 | ServerStorage/Modules/DataStore2/TableUtil | ModuleScript | 18 | src/server/Modules/DataStore2/TableUtil.ts | Complete | |
 | ServerStorage/Modules/DataStore2/Verifier | ModuleScript | 81 | src/server/Modules/DataStore2/Verifier.ts | Complete | |
-| ServerStorage/Modules/DataStore2 | ModuleScript | 614 | src/server/Modules/DataStore2.ts | Complete | |
+| ServerStorage/Modules/DataStore2 | ModuleScript | 614 | src/server/Modules/DataStore2/index.ts | Complete | |
 | ServerStorage/Maps/ShipIsland/water/sea/ocean/Second Level of Water./Script | Script | 6 | src/server/EmbeddedScripts/attach.server.ts (Maps_ShipIsland_water_sea_ocean_Second Level of Water._Script.ts | Complete | |
 | ServerStorage/Maps/ShipIsland/water/sea/ocean/hits/Hit/Script | Script | 12 | src/server/EmbeddedScripts/attach.server.ts (Maps_ShipIsland_water_sea_ocean_hits_Hit_Script.ts | Complete | |
 | ServerStorage/Maps/ShipIsland/water/sea/ocean/hits/Hit/Script | Script | 12 | src/server/EmbeddedScripts/attach.server.ts (Maps_ShipIsland_water_sea_ocean_hits_Hit_Script.ts | Complete | |
@@ -90,7 +90,7 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
 | ServerStorage/MapLightings/StadiumMap | ModuleScript | 1 | src/server/MapLightings/StadiumMap.ts | Complete | |
 | ServerStorage/MapLightings/ApocalypticCity | ModuleScript | 1 | src/server/MapLightings/ApocalypticCity.ts | Complete | |
 | ServerStorage/MapLightings/ShipIsland | ModuleScript | 1 | src/server/MapLightings/ShipIsland.ts | Complete | |
-| ServerStorage/Nuke/Light/Script | Script | 5 | src/server/EmbeddedScripts/Nuke_Light_Script.ts | Complete | |
+| ServerStorage/Nuke/Light/Script | Script | 5 | src/server/EmbeddedScripts/attach.server.ts | Complete | |
 
 ## ReplicatedStorage
 
@@ -123,7 +123,7 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
 | StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/BaseCharacterController | ModuleScript | 47 | src/playerModule/ControlModule/BaseCharacterController.ts | Not Started | |
 | StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/Keyboard | ModuleScript | 177 | src/playerModule/ControlModule/Keyboard.ts | Not Started | |
 | StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/VRNavigation | ModuleScript | 458 | src/playerModule/ControlModule/VRNavigation.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule | ModuleScript | 680 | src/playerModule/ControlModule.ts | Not Started | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule | ModuleScript | 680 | src/playerModule/ControlModule/index.ts | Not Started | |
 | StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/BaseCamera | ModuleScript | 1031 | src/playerModule/CameraModule/BaseCamera.ts | Not Started | |
 | StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraUtils | ModuleScript | 331 | src/playerModule/CameraModule/CameraUtils.ts | Not Started | |
 | StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraToggleStateController | ModuleScript | 153 | src/playerModule/CameraModule/CameraToggleStateController.ts | Not Started | |
@@ -135,9 +135,9 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
 | StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/LegacyCamera | ModuleScript | 114 | src/playerModule/CameraModule/LegacyCamera.ts | Not Started | |
 | StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VehicleCamera/VehicleCameraConfig | ModuleScript | 61 | src/playerModule/CameraModule/VehicleCamera/VehicleCameraConfig.ts | Not Started | |
 | StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VehicleCamera/VehicleCameraCore | ModuleScript | 182 | src/playerModule/CameraModule/VehicleCamera/VehicleCameraCore.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VehicleCamera | ModuleScript | 221 | src/playerModule/CameraModule/VehicleCamera.ts | Not Started | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VehicleCamera | ModuleScript | 221 | src/playerModule/CameraModule/VehicleCamera/index.ts | Not Started | |
 | StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/ZoomController/Popper | ModuleScript | 342 | src/playerModule/CameraModule/ZoomController/Popper.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/ZoomController | ModuleScript | 138 | src/playerModule/CameraModule/ZoomController.ts | Not Started | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/ZoomController | ModuleScript | 138 | src/playerModule/CameraModule/ZoomController/index.ts | Not Started | |
 | StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/Invisicam | ModuleScript | 553 | src/playerModule/CameraModule/Invisicam.ts | Not Started | |
 | StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/Poppercam | ModuleScript | 112 | src/playerModule/CameraModule/Poppercam.ts | Not Started | |
 | StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraUI | ModuleScript | 198 | src/playerModule/CameraModule/CameraUI.ts | Not Started | |
@@ -145,8 +145,8 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
 | StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VRBaseCamera | ModuleScript | 363 | src/playerModule/CameraModule/VRBaseCamera.ts | Not Started | |
 | StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraInput | ModuleScript | 562 | src/playerModule/CameraModule/CameraInput.ts | Not Started | |
 | StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VRVehicleCamera | ModuleScript | 213 | src/playerModule/CameraModule/VRVehicleCamera.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule | ModuleScript | 641 | src/playerModule/CameraModule.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule | ModuleScript | 33 | src/playerModule/init.ts | Complete | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule | ModuleScript | 641 | src/playerModule/CameraModule/index.ts | Not Started | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule | ModuleScript | 33 | src/playerModule/index.ts | Complete | |
 | StarterPlayer/StarterPlayerScripts/vehicle | LocalScript | 621 | src/client/vehicle.client.ts | Complete | |
 
 ## StarterGui
