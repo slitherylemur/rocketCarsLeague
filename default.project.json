@@ -33,9 +33,6 @@
 				"$className": "StarterPlayerScripts",
 				"TS": {
 					"$path": "out/client"
-				},
-				"PlayerModule": {
-					"$path": "out/playerModule"
 				}
 			}
 		},

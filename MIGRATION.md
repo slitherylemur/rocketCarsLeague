@@ -112,41 +112,7 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
 | StarterPlayer/StarterPlayerScripts/HideVehicles | LocalScript | 57 | src/client/HideVehicles.client.ts | Verified | |
 | StarterPlayer/StarterPlayerScripts/VehicleKeyHandler | LocalScript | 186 | src/client/VehicleKeyHandler.client.ts | Verified | |
 | StarterPlayer/StarterPlayerScripts/music | LocalScript | 53 | src/client/music.client.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/VehicleController | ModuleScript | 189 | src/playerModule/ControlModule/VehicleController.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/TouchThumbstick | ModuleScript | 188 | src/playerModule/ControlModule/TouchThumbstick.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/ClickToMoveController | ModuleScript | 1153 | src/playerModule/ControlModule/ClickToMoveController.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/PathDisplay | ModuleScript | 132 | src/playerModule/ControlModule/PathDisplay.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/ClickToMoveDisplay | ModuleScript | 484 | src/playerModule/ControlModule/ClickToMoveDisplay.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/DynamicThumbstick | ModuleScript | 542 | src/playerModule/ControlModule/DynamicThumbstick.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/Gamepad | ModuleScript | 214 | src/playerModule/ControlModule/Gamepad.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/TouchJump | ModuleScript | 204 | src/playerModule/ControlModule/TouchJump.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/BaseCharacterController | ModuleScript | 47 | src/playerModule/ControlModule/BaseCharacterController.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/Keyboard | ModuleScript | 177 | src/playerModule/ControlModule/Keyboard.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/VRNavigation | ModuleScript | 458 | src/playerModule/ControlModule/VRNavigation.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule | ModuleScript | 680 | src/playerModule/ControlModule/index.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/BaseCamera | ModuleScript | 1031 | src/playerModule/CameraModule/BaseCamera.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraUtils | ModuleScript | 331 | src/playerModule/CameraModule/CameraUtils.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraToggleStateController | ModuleScript | 153 | src/playerModule/CameraModule/CameraToggleStateController.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/MouseLockController | ModuleScript | 240 | src/playerModule/CameraModule/MouseLockController.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/BaseOcclusion | ModuleScript | 48 | src/playerModule/CameraModule/BaseOcclusion.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/TransparencyController | ModuleScript | 238 | src/playerModule/CameraModule/TransparencyController.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/OrbitalCamera | ModuleScript | 305 | src/playerModule/CameraModule/OrbitalCamera.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/ClassicCamera | ModuleScript | 254 | src/playerModule/CameraModule/ClassicCamera.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/LegacyCamera | ModuleScript | 114 | src/playerModule/CameraModule/LegacyCamera.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VehicleCamera/VehicleCameraConfig | ModuleScript | 61 | src/playerModule/CameraModule/VehicleCamera/VehicleCameraConfig.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VehicleCamera/VehicleCameraCore | ModuleScript | 182 | src/playerModule/CameraModule/VehicleCamera/VehicleCameraCore.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VehicleCamera | ModuleScript | 221 | src/playerModule/CameraModule/VehicleCamera/index.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/ZoomController/Popper | ModuleScript | 342 | src/playerModule/CameraModule/ZoomController/Popper.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/ZoomController | ModuleScript | 138 | src/playerModule/CameraModule/ZoomController/index.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/Invisicam | ModuleScript | 553 | src/playerModule/CameraModule/Invisicam.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/Poppercam | ModuleScript | 112 | src/playerModule/CameraModule/Poppercam.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraUI | ModuleScript | 198 | src/playerModule/CameraModule/CameraUI.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VRCamera | ModuleScript | 214 | src/playerModule/CameraModule/VRCamera.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VRBaseCamera | ModuleScript | 363 | src/playerModule/CameraModule/VRBaseCamera.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraInput | ModuleScript | 562 | src/playerModule/CameraModule/CameraInput.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VRVehicleCamera | ModuleScript | 213 | src/playerModule/CameraModule/VRVehicleCamera.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule | ModuleScript | 641 | src/playerModule/CameraModule/index.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule | ModuleScript | 33 | src/playerModule/index.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/** | ModuleScript tree | — | *(not shipped — engine default)* | Dropped | Old fork only set `onlyTriggersForThrottle`; gamepad R2/L2 throttle is in vehicle.client.ts |
 | StarterPlayer/StarterPlayerScripts/vehicle | LocalScript | 621 | src/client/vehicle.client.ts | Verified | |
 
 ## StarterGui
@@ -235,11 +201,12 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
    - ServerScriptService/TS (server scripts + former ServerStorage modules)
    - ReplicatedStorage/TS + ReplicatedStorage/rbxts_include (shared modules + runtime)
    - StarterPlayer/StarterPlayerScripts/TS (client scripts)
-   - StarterPlayer/StarterPlayerScripts/PlayerModule (the translated fork — MUST keep
-     this exact name so Roblox's PlayerScriptsLoader picks it up instead of injecting
-     the default)
+   - Do NOT place a custom PlayerModule under StarterPlayerScripts — leave that
+     absent so Roblox injects the engine default. (The old place fork only changed
+     `onlyTriggersForThrottle`; gamepad throttle is already handled in
+     `src/client/vehicle.client.ts` via R2/L2.)
 3. Delete the original Luau implementations (every Script/LocalScript/ModuleScript
-   listed in this ledger) and the original StarterGui ScreenGuis (Game,
+   listed in this ledger, including the place-file PlayerModule tree) and the original StarterGui ScreenGuis (Game,
    MobileInterface, Garage, CrateMenu, Multipliers, TimerGui, PlayerMoneyGainedPopups,
    DataLoss) plus the StarterGui "Steer" NumberValue — all are recreated by the
    server-rendered React UI. Do NOT delete:

@@ -15,7 +15,7 @@ translating or reviewing any module.
 | ServerStorage/MapLightings/`X` | `src/server/MapLightings/X.ts` | ServerScriptService/TS/MapLightings/X |
 | scripts embedded in ServerStorage models | `src/server/EmbeddedScripts/*.ts` | see EmbeddedScripts/README note in MIGRATION.md |
 | StarterPlayerScripts/`X` (LocalScript) | `src/client/X.client.ts` | StarterPlayerScripts/TS/X |
-| StarterPlayerScripts/PlayerModule/** | `src/playerModule/**` | StarterPlayerScripts/PlayerModule (dedicated rojo node so Roblox's loader finds it by name) |
+| StarterPlayerScripts/PlayerModule/** | *(not shipped)* | Engine injects the default PlayerModule at runtime |
 | ReplicatedStorage/`X` (ModuleScript) | `src/shared/X.ts` | ReplicatedStorage/TS/X |
 | StarterGui UI + its embedded LocalScripts | `src/server/ui/**` React components + `src/client/uiClientBehaviors.client.ts` | rendered per-player into PlayerGui |
 
