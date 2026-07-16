@@ -22,7 +22,7 @@ function getTotalTransparency(part: BasePart): number {
 	return 1 - (1 - part.Transparency) * (1 - part.LocalTransparencyModifier);
 }
 
-function eraseFromEnd<T>(t: Array<T>, toSize: number): void {
+function eraseFromEnd<T extends defined>(t: Array<T>, toSize: number): void {
 	for (let i = t.size(); i > toSize; i--) {
 		t.remove(i - 1);
 	}
@@ -163,7 +163,7 @@ function getCollisionPoint(origin: Vector3, dir: Vector3): LuaTuple<[Vector3, bo
 	let hitPart: BasePart | undefined;
 	do {
 		let hitPoint: Vector3;
-		[hitPart, hitPoint] = workspace.FindPartOnRayWithIgnoreList(new Ray(origin, dir), blacklist, false, true);
+		[hitPart, hitPoint] = game.Workspace.FindPartOnRayWithIgnoreList(new Ray(origin, dir), blacklist, false, true);
 
 		if (hitPart) {
 			if (hitPart.CanCollide) {
@@ -202,7 +202,7 @@ function queryPoint(
 	let entryPart: BasePart | undefined;
 	do {
 		let entryPos: Vector3;
-		[entryPart, entryPos] = workspace.FindPartOnRayWithIgnoreList(
+		[entryPart, entryPos] = game.Workspace.FindPartOnRayWithIgnoreList(
 			new Ray(movingOrigin, target.sub(movingOrigin)),
 			blacklist,
 			false,
@@ -216,7 +216,7 @@ function queryPoint(
 
 			if (canOcclude(entryPart) || earlyAbort) {
 				const wl: Instance[] = [entryPart];
-				const exitPart = workspace.FindPartOnRayWithWhitelist(
+				const exitPart = game.Workspace.FindPartOnRayWithWhitelist(
 					new Ray(target, entryPos.sub(target)),
 					wl,
 					true,
@@ -228,9 +228,9 @@ function queryPoint(
 					let promote = false;
 					if (lastPos) {
 						promote =
-							workspace.FindPartOnRayWithWhitelist(new Ray(lastPos, target.sub(lastPos)), wl, true)[0] !==
+							game.Workspace.FindPartOnRayWithWhitelist(new Ray(lastPos, target.sub(lastPos)), wl, true)[0] !==
 								undefined ||
-							workspace.FindPartOnRayWithWhitelist(new Ray(target, lastPos.sub(target)), wl, true)[0] !==
+							game.Workspace.FindPartOnRayWithWhitelist(new Ray(target, lastPos.sub(target)), wl, true)[0] !==
 								undefined;
 					}
 

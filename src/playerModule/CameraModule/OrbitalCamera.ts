@@ -66,6 +66,11 @@ class OrbitalCamera extends BaseCamera {
 
 	externalProperties: Record<string, number | boolean>;
 
+	// BaseCamera.ts declares a differently-cased `LastCameraFocus?: Vector3` field that isn't
+	// what the original Lua's `self.lastCameraFocus` (a CFrame) maps to - declared as our own
+	// field here since TypeScript's property names are case-sensitive and the two don't collide.
+	lastCameraFocus: CFrame | undefined;
+
 	constructor() {
 		super();
 

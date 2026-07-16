@@ -36,10 +36,16 @@ class LegacyCamera extends BaseCamera {
 		return super.SetCameraToSubjectDistance(desiredSubjectDistance);
 	}
 
-	Update(): LuaTuple<[CFrame, CFrame]> | undefined {
+	// BaseCamera declares `Update(dt: number): LuaTuple<[CFrame, CFrame]>` (always returns a
+	// tuple). The original Lua can fall through the "cameraType not yet set" guard below with a
+	// bare `return` (no values) - from a caller's perspective in Lua, returning zero values and
+	// returning a single nil are indistinguishable (unlisted destructured locals both become
+	// nil), so we preserve that exact runtime behavior via a cast rather than fabricating a
+	// placeholder CFrame pair that was never in the original.
+	Update(dt: number): LuaTuple<[CFrame, CFrame]> {
 		// Cannot update until cameraType has been set
 		if (!this.cameraType) {
-			return undefined;
+			return undefined as unknown as LuaTuple<[CFrame, CFrame]>;
 		}
 
 		const now = tick();

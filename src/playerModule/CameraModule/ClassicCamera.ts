@@ -53,6 +53,11 @@ class ClassicCamera extends BaseCamera {
 	// written to.
 	isClimbing?: boolean;
 
+	// BaseCamera.ts declares a differently-cased `LastCameraFocus?: Vector3` field that isn't
+	// what the original Lua's `self.lastCameraFocus` (a CFrame) maps to - declared as our own
+	// field here since TypeScript's property names are case-sensitive and the two don't collide.
+	lastCameraFocus: CFrame | undefined;
+
 	constructor() {
 		super();
 
@@ -93,7 +98,7 @@ class ClassicCamera extends BaseCamera {
 
 	Update(): LuaTuple<[CFrame, CFrame]> {
 		const now = tick();
-		const timeDelta = now - this.lastUpdate;
+		const timeDelta = now - (this.lastUpdate as number);
 
 		const camera = game.Workspace.CurrentCamera as Camera;
 		let newCameraCFrame = camera.CFrame;
