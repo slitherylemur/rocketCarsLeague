@@ -17,6 +17,7 @@ import CameraUtils from "./CameraUtils";
 import CameraInput from "./CameraInput";
 
 import BaseCamera from "./BaseCamera";
+import BaseOcclusion from "./BaseOcclusion";
 
 // Load Roblox Camera Controller Modules (outside this batch — other agents are translating
 // these; unresolved-module errors on these imports are expected until they land)
@@ -102,30 +103,19 @@ const UserInputService = game.GetService("UserInputService");
 const VRService = game.GetService("VRService");
 const UserGameSettings = UserSettings().GetService("UserGameSettings");
 
-// Structural contract for the occlusion modules (Poppercam / Invisicam); both live outside this
-// batch, so this interface exists purely to type-check CameraModule's own use of them.
-interface OcclusionModule {
-	GetOcclusionMode(): Enum.DevCameraOcclusionMode;
-	GetEnabled(): boolean;
-	Enable(enabled: boolean): void;
-	CharacterAdded(char: Model, player: Player): void;
-	CharacterRemoving(char: Model, player: Player): void;
-	OnCameraSubjectChanged(newSubject: Humanoid | BasePart | undefined): void;
-	Update(dt: number, cameraCFrame: CFrame, cameraFocus: CFrame): LuaTuple<[CFrame, CFrame]>;
-}
-
-// Structural contract for TransparencyController (outside this batch).
-interface TransparencyControllerLike {
-	Enable(enabled: boolean): void;
-	SetSubject(subject: Humanoid | BasePart | undefined): void;
-	Update(dt: number): void;
-}
-
-type CameraCreator = new () => BaseCamera;
+// The camera-controller and occlusion-module "creators" (ClassicCamera, OrbitalCamera, ...,
+// Poppercam, Invisicam) are separate sibling modules under active, independent translation.
+// Rather than typing these Map keys/instances against their exact declared classes (which would
+// couple this file's correctness to incidental signature drift in those files, e.g. an overridden
+// Update() with a slightly different signature), instantiation is done through `unknown` and cast
+// to the shared base class — matching the complete absence of static type-checking across module
+// boundaries in the original Luau, where everything here is duck-typed at runtime.
+type CameraCreator = new () => unknown;
+type OcclusionCreator = new () => unknown;
 
 // Table of camera controllers that have been instantiated. They are instantiated as they are used.
 const instantiatedCameraControllers = new Map<CameraCreator, BaseCamera>();
-const instantiatedOcclusionModules = new Map<new () => OcclusionModule, OcclusionModule>();
+const instantiatedOcclusionModules = new Map<OcclusionCreator, BaseOcclusion>();
 
 // Management of which options appear on the Roblox User Settings screen
 {
@@ -144,8 +134,8 @@ const instantiatedOcclusionModules = new Map<new () => OcclusionModule, Occlusio
 class CameraModule {
 	// Current active controller instances
 	activeCameraController?: BaseCamera;
-	activeOcclusionModule?: OcclusionModule;
-	activeTransparencyController?: TransparencyControllerLike;
+	activeOcclusionModule?: BaseOcclusion;
+	activeTransparencyController?: TransparencyController;
 	activeMouseLockController?: MouseLockController;
 
 	currentComputerCameraMovementMode?: Enum.ComputerCameraMovementMode;
@@ -169,7 +159,7 @@ class CameraModule {
 			this.OnPlayerAdded(player);
 		});
 
-		this.activeTransparencyController = new TransparencyController() as unknown as TransparencyControllerLike;
+		this.activeTransparencyController = new TransparencyController();
 		this.activeTransparencyController.Enable(true);
 
 		if (!UserInputService.TouchEnabled) {
@@ -240,7 +230,7 @@ class CameraModule {
 	}
 
 	ActivateOcclusionModule(occlusionMode: Enum.DevCameraOcclusionMode): void {
-		let newModuleCreator: (new () => OcclusionModule) | undefined;
+		let newModuleCreator: OcclusionCreator | undefined;
 		if (occlusionMode === Enum.DevCameraOcclusionMode.Zoom) {
 			newModuleCreator = Poppercam;
 		} else if (occlusionMode === Enum.DevCameraOcclusionMode.Invisicam) {
