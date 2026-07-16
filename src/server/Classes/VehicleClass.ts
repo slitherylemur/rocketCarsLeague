@@ -23,14 +23,26 @@ const DRIVE_FORCE_MULT = 1.25; // overall engine force, forward and reverse
 const BOOST_FORCE_MULT = 3; // boost punch on the ground (baseline 3)
 const BOOST_AIR_FORCE_MULT = 4.5; // boost authority in the air — nose-up boosting sustains airtime
 const BOOST_TARGET_MULT = 1.6; // boost top speed as a fraction of targetVelocity
+// Drift = powerslide (Rocket League style): wheels lose lateral grip so momentum
+// keeps traveling while the body rotates, a yaw mover turns the nose into the
+// corner faster than grip steering could, and a small side thrust keeps the
+// slide cornering instead of washing wide. Releasing Space restores grip and
+// the forward drive bites along the new facing.
 const DRIFT_MAX_SIDE_SPEED = 0.45; // cap on sideways drift speed (× targetVelocity); uncapped it outran boost
-const DRIFT_MIN_PROP_VEL = 0.15; // no drift thrust below this fraction of top speed (stationary Space+A launched the car)
-const DRIFT_SIDE_FORCE_FWD = 45; // side thrust per unit mass while drifting forward (a5318d46 used 200 — far too strong)
-const DRIFT_SIDE_FORCE_REV = 30; // side thrust per unit mass while drifting in reverse (a5318d46 used 130)
-const JUMP_FORCE_TIME = 0.15; // seconds the jump force stays on — 0.01s got swallowed by replication
+const DRIFT_MIN_PROP_VEL = 0.15; // below this fraction of top speed drift disengages (no stationary launches)
+const DRIFT_SIDE_FORCE_FWD = 20; // centripetal assist per unit mass while drifting forward
+const DRIFT_SIDE_FORCE_REV = 15; // centripetal assist per unit mass while drifting in reverse
+const DRIFT_YAW_RATE = 3; // rad/s of commanded yaw at full steer and full speed (grip turning peaks ~2.5)
+const DRIFT_YAW_TORQUE = 60; // yaw authority per unit total mass — how hard the slide rotation is enforced
+const DRIVE_WHEEL_FRICTION = 0.75; // normal wheel grip (applied at spawn; overrides the model's material default)
+const DRIFT_WHEEL_FRICTION = 0.15; // wheel friction while sliding; normal grip is restored on release
+const JUMP_FORCE_TIME = 0.18; // seconds the jump force stays on — 0.01s got swallowed by replication
 // batching before the network-owning client ever applied the force (jump sound, no jump)
-const JUMP_FORCE_GRAVITY_MULT = 3.5; // jump force as a multiple of gravity; net upward accel = (mult - 1) × g,
-// so takeoff speed ≈ (mult - 1) × g × JUMP_FORCE_TIME (≈ 74 studs/s → ~14 studs of height)
+const JUMP_FORCE_GRAVITY_MULT = 4; // jump force as a multiple of gravity; net upward accel = (mult - 1) × g,
+// so takeoff speed ≈ (mult - 1) × g × JUMP_FORCE_TIME (≈ 106 studs/s → ~28 studs of theoretical height;
+// real height is less because the suspension absorbs part of the takeoff)
+const JUMP_UPRIGHT_MAX_TIME = 2; // seconds the post-jump upright hold may last (cleared sooner on landing
+// or when the player uses an aerial roll/pitch input)
 
 // ---- Instance shape types (structural; the models live in the place file) ----
 
@@ -156,6 +168,9 @@ export class VehicleClass {
 	wasKilled: boolean;
 	lastMeterAmount?: number;
 	driving: boolean;
+	jumpStabilizing: boolean;
+	jumpStabilizeStart: number;
+	driftEngaged: boolean;
 
 	//ACKERMAN STUFF
 	t: number;
@@ -228,6 +243,17 @@ export class VehicleClass {
 		jumpThrust.Force = new Vector3(0, 0, 0);
 		jumpThrust.Parent = base;
 
+		// Drift yaw mover: commands the slide rotation while wheel grip is
+		// reduced (see drift()/undrift()). Y-only so it never tips the car.
+		const driftYaw = new Instance("BodyAngularVelocity");
+		driftYaw.Name = "DriftYaw";
+		driftYaw.MaxTorque = new Vector3(0, 0, 0);
+		driftYaw.AngularVelocity = new Vector3(0, 0, 0);
+		driftYaw.Parent = base;
+
+		// Cars spawn with the code-defined grip level, not the model's material default.
+		this.setWheelFriction(false);
+
 		const InputEvent = createInputEvent(this.model);
 		InputEvent.OnServerEvent.Connect((player, throttle, steer) => {
 			// Server-authoritative input: accept only sane floats from the owner.
@@ -287,6 +313,9 @@ export class VehicleClass {
 		this.connectionThrottle = undefined;
 		this.wasKilled = false;
 		this.driving = false;
+		this.jumpStabilizing = false;
+		this.jumpStabilizeStart = 0;
+		this.driftEngaged = false;
 
 		//ACKERMAN STUFF
 		const wheels = this.model.Wheels;
@@ -729,6 +758,10 @@ export class VehicleClass {
 
 				//Aerial Correction and controls
 				if (onGround) {
+					// Landed (the 0.3s grace skips the still-grounded takeoff frames).
+					if (this.jumpStabilizing && time() - this.jumpStabilizeStart > 0.3) {
+						this.jumpStabilizing = false;
+					}
 					this.model.Base.Aerial.MaxTorque = 0 as unknown as Vector3;
 					this.model.Base.BodyGyro.MaxTorque = new Vector3(0, 0, 0);
 					if (releasedThrottle) {
@@ -736,10 +769,33 @@ export class VehicleClass {
 					}
 					releasedThrottle = false;
 				} else if (!closeGroundBool) {
-					this.model.Base.BodyGyro.MaxTorque = new Vector3(0, 0, 0);
+					if (this.jumpStabilizing && time() - this.jumpStabilizeStart > JUMP_UPRIGHT_MAX_TIME) {
+						this.jumpStabilizing = false;
+					}
+					if (this.jumpStabilizing) {
+						// Post-jump upright hold: the wheels (separate spring
+						// assemblies) and any takeoff spin tip the chassis, so hold
+						// roll and pitch level. Y torque stays 0 — steering yaw and
+						// the Aerial mover keep working.
+						const look = this.model.Base.CFrame.LookVector;
+						const flatLook = new Vector3(look.X, 0, look.Z);
+						if (flatLook.Magnitude > 0.05) {
+							this.model.Base.BodyGyro.CFrame = CFrame.lookAt(
+								this.model.Base.Position,
+								this.model.Base.Position.add(flatLook.Unit),
+							);
+						}
+						this.model.Base.BodyGyro.MaxTorque = new Vector3(math.huge, 0, math.huge);
+					} else {
+						this.model.Base.BodyGyro.MaxTorque = new Vector3(0, 0, 0);
+					}
 					this.Yaw(steerFloat);
 
 					if (releasedThrottle) {
+						// A deliberate pitch input takes over from the upright hold.
+						if (throttle !== 0) {
+							this.jumpStabilizing = false;
+						}
 						this.Pitch(throttle);
 					}
 
@@ -904,26 +960,70 @@ export class VehicleClass {
 		}
 	}
 
-	drift(steerFloat: number) {
-		let sideForce = 0;
-		// Drift is a cornering tool: no side thrust when (near) stationary —
-		// Space + A/D from a standstill used to launch the car sideways.
-		if (this.propVelocity >= DRIFT_MIN_PROP_VEL) {
-			if (this.velocity >= 0) {
-				sideForce = steerFloat * this.mass * DRIFT_SIDE_FORCE_FWD * this.driftingMult;
-			} else {
-				sideForce = -steerFloat * this.mass * DRIFT_SIDE_FORCE_REV * this.driftingMult;
+	// Swap the wheels between normal grip and sliding grip. frictionWeight 100
+	// makes the wheel's friction dominate whatever ground material it touches.
+	setWheelFriction(sliding: boolean) {
+		if (!this.model.FindFirstChild("Wheels")) {
+			return;
+		}
+		const friction = sliding ? DRIFT_WHEEL_FRICTION : DRIVE_WHEEL_FRICTION;
+		for (const wheel of this.model.Wheels.GetChildren() as VehicleWheel[]) {
+			const part = wheel.FindFirstChild("Wheel") as BasePart | undefined;
+			if (!part) {
+				continue;
 			}
+			const cur = part.CurrentPhysicalProperties;
+			part.CustomPhysicalProperties = new PhysicalProperties(
+				cur.Density,
+				friction,
+				cur.Elasticity,
+				100,
+				cur.ElasticityWeight,
+			);
+		}
+	}
 
-			// The LinearVelocity constraint only governs the forward axis, so
-			// nothing opposes this thrust sideways — uncapped, lateral speed grew
-			// without bound (drifting outran boost). Stop pushing once the slide
-			// reaches its designed maximum.
-			const sideVelocity = this.model.Base.CFrame.VectorToObjectSpace(this.model.Base.Velocity).X;
-			const maxSideSpeed = DRIFT_MAX_SIDE_SPEED * this.targetVelocity;
-			if ((sideForce > 0 && sideVelocity > maxSideSpeed) || (sideForce < 0 && sideVelocity < -maxSideSpeed)) {
-				sideForce = 0;
-			}
+	drift(steerFloat: number) {
+		// Too slow to slide — a drift from a standstill is meaningless (and used
+		// to launch the car sideways). Behave as normal grip.
+		if (this.propVelocity < DRIFT_MIN_PROP_VEL) {
+			this.undrift();
+			return;
+		}
+
+		if (!this.driftEngaged) {
+			this.driftEngaged = true;
+			this.setWheelFriction(true);
+		}
+
+		const dir = this.velocity >= 0 ? 1 : -1;
+
+		// Commanded slide rotation: turn the nose into the corner faster than
+		// grip steering could, scaling up with speed. Y-only, so it can't tip
+		// the car; the torque cap keeps it from snapping.
+		const driftYaw = this.model.Base.FindFirstChild("DriftYaw") as BodyAngularVelocity | undefined;
+		if (driftYaw) {
+			driftYaw.MaxTorque = new Vector3(0, this.GetTotalMass() * DRIFT_YAW_TORQUE, 0);
+			driftYaw.AngularVelocity = new Vector3(
+				0,
+				-steerFloat * DRIFT_YAW_RATE * dir * math.min(this.propVelocity * 2, 1),
+				0,
+			);
+		}
+
+		// Centripetal assist: with grip reduced the slide wants to wash wide;
+		// a modest inward thrust keeps drifting a cornering tool. Capped so
+		// lateral speed can never run away (it used to outrun boost).
+		let sideForce = 0;
+		if (this.velocity >= 0) {
+			sideForce = steerFloat * this.mass * DRIFT_SIDE_FORCE_FWD * this.driftingMult;
+		} else {
+			sideForce = -steerFloat * this.mass * DRIFT_SIDE_FORCE_REV * this.driftingMult;
+		}
+		const sideVelocity = this.model.Base.CFrame.VectorToObjectSpace(this.model.Base.Velocity).X;
+		const maxSideSpeed = DRIFT_MAX_SIDE_SPEED * this.targetVelocity;
+		if ((sideForce > 0 && sideVelocity > maxSideSpeed) || (sideForce < 0 && sideVelocity < -maxSideSpeed)) {
+			sideForce = 0;
 		}
 		this.model.Base.DriftThrust.Force = new Vector3(sideForce, 0, 0);
 
@@ -941,6 +1041,17 @@ export class VehicleClass {
 	}
 
 	undrift() {
+		if (this.driftEngaged) {
+			this.driftEngaged = false;
+			this.setWheelFriction(false);
+		}
+
+		const driftYaw = this.model.Base.FindFirstChild("DriftYaw") as BodyAngularVelocity | undefined;
+		if (driftYaw) {
+			driftYaw.MaxTorque = new Vector3(0, 0, 0);
+			driftYaw.AngularVelocity = new Vector3(0, 0, 0);
+		}
+
 		this.model.Base.DriftThrust.Force = new Vector3(0, 0, 0);
 		this.model.Base.driftSound.Stop();
 		for (const wheel of this.model.Wheels.GetChildren() as VehicleWheel[]) {
@@ -1029,6 +1140,10 @@ export class VehicleClass {
 			this.model.Base.jumpSound.Play();
 			const jumpThrust = this.model.Base.FindFirstChild("JumpThrust") as VectorForce | undefined;
 			if (jumpThrust) {
+				// Arm the upright hold — the drive loop keeps roll/pitch level
+				// while airborne until landing, timeout, or an aerial input.
+				this.jumpStabilizing = true;
+				this.jumpStabilizeStart = time();
 				jumpThrust.Force = new Vector3(
 					0,
 					this.GetTotalMass() * game.Workspace.Gravity * JUMP_FORCE_GRAVITY_MULT,
@@ -1097,6 +1212,7 @@ export class VehicleClass {
 		const axis = "X";
 		const value = -6;
 		if (inputState === Enum.UserInputState.Begin && !this.closeGround()[0]) {
+			this.jumpStabilizing = false; // deliberate roll takes over from the upright hold
 			this.aerialControls(axis, value);
 		} else {
 			this.aerialControlsReset(axis, value);
@@ -1107,6 +1223,7 @@ export class VehicleClass {
 		const axis = "X";
 		const value = 6;
 		if (inputState === Enum.UserInputState.Begin && !this.closeGround()[0]) {
+			this.jumpStabilizing = false; // deliberate roll takes over from the upright hold
 			this.aerialControls(axis, value);
 		} else {
 			this.aerialControlsReset(axis, value);
