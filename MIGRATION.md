@@ -8,192 +8,192 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
 
 | Original path | Class | Lines | New path | Status | Notes |
 |---|---|---|---|---|---|
-| ServerScriptService/initializePlayer | Script | 834 | src/server/initializePlayer.server.ts | Complete | |
-| ServerScriptService/purchaseHandler | Script | 198 | src/server/purchaseHandler.server.ts | Complete | |
-| ServerScriptService/SoftShutdown | Script | 5 | src/server/SoftShutdown.server.ts | Complete | |
-| ServerScriptService/tutorial | Script | 70 | src/server/tutorial.server.ts | Complete | |
-| ServerScriptService/GeneralUtils/ConnectClientFunction | Script | 9 | src/server/GeneralUtils/ConnectClientFunction.server.ts | Complete | |
-| ServerScriptService/GeneralUtils | ModuleScript | 160 | src/server/GeneralUtils/index.ts | Complete | |
-| ServerScriptService/loggerScript | Script | 25 | src/server/loggerScript.server.ts | Complete | |
-| ServerScriptService/killNotowned | Script | 10 | src/server/killNotowned.server.ts | Complete | |
-| ServerScriptService/physFixPlease | Script | 7 | src/server/physFixPlease.server.ts | Complete | |
+| ServerScriptService/initializePlayer | Script | 834 | src/server/initializePlayer.server.ts | Verified | |
+| ServerScriptService/purchaseHandler | Script | 198 | src/server/purchaseHandler.server.ts | Verified | |
+| ServerScriptService/SoftShutdown | Script | 5 | src/server/SoftShutdown.server.ts | Verified | |
+| ServerScriptService/tutorial | Script | 70 | src/server/tutorial.server.ts | Verified | |
+| ServerScriptService/GeneralUtils/ConnectClientFunction | Script | 9 | src/server/GeneralUtils/ConnectClientFunction.server.ts | Verified | |
+| ServerScriptService/GeneralUtils | ModuleScript | 160 | src/server/GeneralUtils/index.ts | Verified | |
+| ServerScriptService/loggerScript | Script | 25 | src/server/loggerScript.server.ts | Verified | |
+| ServerScriptService/killNotowned | Script | 10 | src/server/killNotowned.server.ts | Verified | |
+| ServerScriptService/physFixPlease | Script | 7 | src/server/physFixPlease.server.ts | Verified | |
 
 ## ServerStorage
 
 | Original path | Class | Lines | New path | Status | Notes |
 |---|---|---|---|---|---|
-| ServerStorage/Logger | ModuleScript | 34 | src/server/Logger.ts | Complete | |
-| ServerStorage/Classes/VehicleClass | ModuleScript | 1189 | src/server/Classes/VehicleClass.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/BumperCar | ModuleScript | 57 | src/server/Classes/VehicleSubClass/BumperCar.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/DogeChallenger | ModuleScript | 118 | src/server/Classes/VehicleSubClass/DogeChallenger.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/AvonSkyline65 | ModuleScript | 59 | src/server/Classes/VehicleSubClass/AvonSkyline65.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/Horse911-95 | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Horse911-95.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/ToyCorolla | ModuleScript | 59 | src/server/Classes/VehicleSubClass/ToyCorolla.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/MarketTruck | ModuleScript | 61 | src/server/Classes/VehicleSubClass/MarketTruck.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/TestVehicle | ModuleScript | 61 | src/server/Classes/VehicleSubClass/TestVehicle.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/Abrams | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Abrams.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/TokyoDrift | ModuleScript | 61 | src/server/Classes/VehicleSubClass/TokyoDrift.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/ArmouredTransport | ModuleScript | 61 | src/server/Classes/VehicleSubClass/ArmouredTransport.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/Continental | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Continental.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/LandRover | ModuleScript | 61 | src/server/Classes/VehicleSubClass/LandRover.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/APC | ModuleScript | 61 | src/server/Classes/VehicleSubClass/APC.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/HippieVan | ModuleScript | 61 | src/server/Classes/VehicleSubClass/HippieVan.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/ToyVan | ModuleScript | 61 | src/server/Classes/VehicleSubClass/ToyVan.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/CandyVan | ModuleScript | 61 | src/server/Classes/VehicleSubClass/CandyVan.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/TroopTransport | ModuleScript | 61 | src/server/Classes/VehicleSubClass/TroopTransport.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/MillitaryTransport | ModuleScript | 61 | src/server/Classes/VehicleSubClass/MillitaryTransport.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/MobBoss | ModuleScript | 59 | src/server/Classes/VehicleSubClass/MobBoss.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/MacaiylaCurve | ModuleScript | 59 | src/server/Classes/VehicleSubClass/MacaiylaCurve.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/MyFirstCar | ModuleScript | 59 | src/server/Classes/VehicleSubClass/MyFirstCar.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/FamilyRoadTrip | ModuleScript | 59 | src/server/Classes/VehicleSubClass/FamilyRoadTrip.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/Police | ModuleScript | 59 | src/server/Classes/VehicleSubClass/Police.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/Taxi | ModuleScript | 59 | src/server/Classes/VehicleSubClass/Taxi.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/Wambulance | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Wambulance.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/ArmouredTruck | ModuleScript | 61 | src/server/Classes/VehicleSubClass/ArmouredTruck.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/FireTruck | ModuleScript | 61 | src/server/Classes/VehicleSubClass/FireTruck.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/Lambo | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Lambo.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/Bugati | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Bugati.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/BmvV8 | ModuleScript | 61 | src/server/Classes/VehicleSubClass/BmvV8.ts | Complete | |
-| ServerStorage/Classes/VehicleSubClass/Horse911 | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Horse911.ts | Complete | |
-| ServerStorage/VehicleModels/TestVehicle/Seats/VehicleSeat/Script | Script | 6 | src/server/EmbeddedScripts/attach.server.ts | Complete | |
-| ServerStorage/Modules/DataStoreDefaults | ModuleScript | 83 | src/server/Modules/DataStoreDefaults.ts | Complete | |
-| ServerStorage/Modules/spawnVehicle | ModuleScript | 245 | src/server/Modules/spawnVehicle.ts | Complete | |
-| ServerStorage/Modules/UiModules/setTab | ModuleScript | 291 | src/server/Modules/UiModules/setTab.ts | Complete | |
-| ServerStorage/Modules/UiModules/itemPopulateSpecifics | ModuleScript | 117 | src/server/Modules/UiModules/itemPopulateSpecifics.ts | Complete | |
-| ServerStorage/Modules/UiModules/itemSelectedFunctions | ModuleScript | 274 | src/server/Modules/UiModules/itemSelectedFunctions.ts | Complete | |
-| ServerStorage/Modules/DataUtilities | ModuleScript | 173 | src/server/Modules/DataUtilities.ts | Complete | |
-| ServerStorage/Modules/roundHandler | ModuleScript | 669 | src/server/Modules/roundHandler.ts | Complete | |
-| ServerStorage/Modules/CrateModule | ModuleScript | 124 | src/server/Modules/CrateModule.ts | Complete | |
-| ServerStorage/Modules/LootManager | ModuleScript | 69 | src/server/Modules/LootManager.ts | Complete | |
-| ServerStorage/Modules/getRandomPieceFromBox | ModuleScript | 36 | src/server/Modules/getRandomPieceFromBox.ts | Complete | |
-| ServerStorage/Modules/Content | ModuleScript | 125 | src/server/Modules/Content.ts | Complete | |
-| ServerStorage/Modules/CodesModule | ModuleScript | 208 | src/server/Modules/CodesModule.ts | Complete | |
-| ServerStorage/Modules/DataStore2/Constants | ModuleScript | 16 | src/server/Modules/DataStore2/Constants.ts | Complete | |
-| ServerStorage/Modules/DataStore2/DataStoreServiceRetriever | ModuleScript | 11 | src/server/Modules/DataStore2/DataStoreServiceRetriever.ts | Complete | |
-| ServerStorage/Modules/DataStore2/IsPlayer | ModuleScript | 9 | src/server/Modules/DataStore2/IsPlayer.ts | Complete | |
-| ServerStorage/Modules/DataStore2/Promise | ModuleScript | 1391 | src/server/Modules/DataStore2/Promise.ts | Complete | |
-| ServerStorage/Modules/DataStore2/SavingMethods/OrderedBackups | ModuleScript | 74 | src/server/Modules/DataStore2/SavingMethods/OrderedBackups.ts | Complete | |
-| ServerStorage/Modules/DataStore2/SavingMethods/Standard | ModuleScript | 34 | src/server/Modules/DataStore2/SavingMethods/Standard.ts | Complete | |
-| ServerStorage/Modules/DataStore2/SavingMethods | ModuleScript | 5 | src/server/Modules/DataStore2/SavingMethods/index.ts | Complete | |
-| ServerStorage/Modules/DataStore2/Settings | ModuleScript | 8 | src/server/Modules/DataStore2/Settings.ts | Complete | |
-| ServerStorage/Modules/DataStore2/TableUtil | ModuleScript | 18 | src/server/Modules/DataStore2/TableUtil.ts | Complete | |
-| ServerStorage/Modules/DataStore2/Verifier | ModuleScript | 81 | src/server/Modules/DataStore2/Verifier.ts | Complete | |
-| ServerStorage/Modules/DataStore2 | ModuleScript | 614 | src/server/Modules/DataStore2/index.ts | Complete | |
-| ServerStorage/Maps/ShipIsland/water/sea/ocean/Second Level of Water./Script | Script | 6 | src/server/EmbeddedScripts/attach.server.ts (Maps_ShipIsland_water_sea_ocean_Second Level of Water._Script.ts | Complete | |
-| ServerStorage/Maps/ShipIsland/water/sea/ocean/hits/Hit/Script | Script | 12 | src/server/EmbeddedScripts/attach.server.ts (Maps_ShipIsland_water_sea_ocean_hits_Hit_Script.ts | Complete | |
-| ServerStorage/Maps/ShipIsland/water/sea/ocean/hits/Hit/Script | Script | 12 | src/server/EmbeddedScripts/attach.server.ts (Maps_ShipIsland_water_sea_ocean_hits_Hit_Script.ts | Complete | |
-| ServerStorage/Maps/ShipIsland/water/sea/ocean/hits/Hit/Script | Script | 12 | src/server/EmbeddedScripts/attach.server.ts (Maps_ShipIsland_water_sea_ocean_hits_Hit_Script.ts | Complete | |
-| ServerStorage/Maps/ShipIsland/water/sea/ocean/hits/Hit/Script | Script | 12 | src/server/EmbeddedScripts/attach.server.ts (Maps_ShipIsland_water_sea_ocean_hits_Hit_Script.ts | Complete | |
-| ServerStorage/MapLightings/MudDerby | ModuleScript | 1 | src/server/MapLightings/MudDerby.ts | Complete | |
-| ServerStorage/MapLightings/DesertIsland | ModuleScript | 1 | src/server/MapLightings/DesertIsland.ts | Complete | |
-| ServerStorage/MapLightings/BaseplateMap | ModuleScript | 1 | src/server/MapLightings/BaseplateMap.ts | Complete | |
-| ServerStorage/MapLightings/StadiumMap | ModuleScript | 1 | src/server/MapLightings/StadiumMap.ts | Complete | |
-| ServerStorage/MapLightings/ApocalypticCity | ModuleScript | 1 | src/server/MapLightings/ApocalypticCity.ts | Complete | |
-| ServerStorage/MapLightings/ShipIsland | ModuleScript | 1 | src/server/MapLightings/ShipIsland.ts | Complete | |
-| ServerStorage/Nuke/Light/Script | Script | 5 | src/server/EmbeddedScripts/attach.server.ts | Complete | |
+| ServerStorage/Logger | ModuleScript | 34 | src/server/Logger.ts | Verified | |
+| ServerStorage/Classes/VehicleClass | ModuleScript | 1189 | src/server/Classes/VehicleClass.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/BumperCar | ModuleScript | 57 | src/server/Classes/VehicleSubClass/BumperCar.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/DogeChallenger | ModuleScript | 118 | src/server/Classes/VehicleSubClass/DogeChallenger.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/AvonSkyline65 | ModuleScript | 59 | src/server/Classes/VehicleSubClass/AvonSkyline65.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/Horse911-95 | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Horse911-95.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/ToyCorolla | ModuleScript | 59 | src/server/Classes/VehicleSubClass/ToyCorolla.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/MarketTruck | ModuleScript | 61 | src/server/Classes/VehicleSubClass/MarketTruck.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/TestVehicle | ModuleScript | 61 | src/server/Classes/VehicleSubClass/TestVehicle.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/Abrams | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Abrams.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/TokyoDrift | ModuleScript | 61 | src/server/Classes/VehicleSubClass/TokyoDrift.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/ArmouredTransport | ModuleScript | 61 | src/server/Classes/VehicleSubClass/ArmouredTransport.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/Continental | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Continental.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/LandRover | ModuleScript | 61 | src/server/Classes/VehicleSubClass/LandRover.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/APC | ModuleScript | 61 | src/server/Classes/VehicleSubClass/APC.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/HippieVan | ModuleScript | 61 | src/server/Classes/VehicleSubClass/HippieVan.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/ToyVan | ModuleScript | 61 | src/server/Classes/VehicleSubClass/ToyVan.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/CandyVan | ModuleScript | 61 | src/server/Classes/VehicleSubClass/CandyVan.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/TroopTransport | ModuleScript | 61 | src/server/Classes/VehicleSubClass/TroopTransport.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/MillitaryTransport | ModuleScript | 61 | src/server/Classes/VehicleSubClass/MillitaryTransport.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/MobBoss | ModuleScript | 59 | src/server/Classes/VehicleSubClass/MobBoss.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/MacaiylaCurve | ModuleScript | 59 | src/server/Classes/VehicleSubClass/MacaiylaCurve.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/MyFirstCar | ModuleScript | 59 | src/server/Classes/VehicleSubClass/MyFirstCar.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/FamilyRoadTrip | ModuleScript | 59 | src/server/Classes/VehicleSubClass/FamilyRoadTrip.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/Police | ModuleScript | 59 | src/server/Classes/VehicleSubClass/Police.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/Taxi | ModuleScript | 59 | src/server/Classes/VehicleSubClass/Taxi.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/Wambulance | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Wambulance.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/ArmouredTruck | ModuleScript | 61 | src/server/Classes/VehicleSubClass/ArmouredTruck.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/FireTruck | ModuleScript | 61 | src/server/Classes/VehicleSubClass/FireTruck.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/Lambo | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Lambo.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/Bugati | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Bugati.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/BmvV8 | ModuleScript | 61 | src/server/Classes/VehicleSubClass/BmvV8.ts | Verified | |
+| ServerStorage/Classes/VehicleSubClass/Horse911 | ModuleScript | 61 | src/server/Classes/VehicleSubClass/Horse911.ts | Verified | |
+| ServerStorage/VehicleModels/TestVehicle/Seats/VehicleSeat/Script | Script | 6 | src/server/EmbeddedScripts/attach.server.ts | Verified | |
+| ServerStorage/Modules/DataStoreDefaults | ModuleScript | 83 | src/server/Modules/DataStoreDefaults.ts | Verified | |
+| ServerStorage/Modules/spawnVehicle | ModuleScript | 245 | src/server/Modules/spawnVehicle.ts | Verified | |
+| ServerStorage/Modules/UiModules/setTab | ModuleScript | 291 | src/server/Modules/UiModules/setTab.ts | Verified | |
+| ServerStorage/Modules/UiModules/itemPopulateSpecifics | ModuleScript | 117 | src/server/Modules/UiModules/itemPopulateSpecifics.ts | Verified | |
+| ServerStorage/Modules/UiModules/itemSelectedFunctions | ModuleScript | 274 | src/server/Modules/UiModules/itemSelectedFunctions.ts | Verified | |
+| ServerStorage/Modules/DataUtilities | ModuleScript | 173 | src/server/Modules/DataUtilities.ts | Verified | |
+| ServerStorage/Modules/roundHandler | ModuleScript | 669 | src/server/Modules/roundHandler.ts | Verified | |
+| ServerStorage/Modules/CrateModule | ModuleScript | 124 | src/server/Modules/CrateModule.ts | Verified | |
+| ServerStorage/Modules/LootManager | ModuleScript | 69 | src/server/Modules/LootManager.ts | Verified | |
+| ServerStorage/Modules/getRandomPieceFromBox | ModuleScript | 36 | src/server/Modules/getRandomPieceFromBox.ts | Verified | |
+| ServerStorage/Modules/Content | ModuleScript | 125 | src/server/Modules/Content.ts | Verified | |
+| ServerStorage/Modules/CodesModule | ModuleScript | 208 | src/server/Modules/CodesModule.ts | Verified | |
+| ServerStorage/Modules/DataStore2/Constants | ModuleScript | 16 | src/server/Modules/DataStore2/Constants.ts | Verified | |
+| ServerStorage/Modules/DataStore2/DataStoreServiceRetriever | ModuleScript | 11 | src/server/Modules/DataStore2/DataStoreServiceRetriever.ts | Verified | |
+| ServerStorage/Modules/DataStore2/IsPlayer | ModuleScript | 9 | src/server/Modules/DataStore2/IsPlayer.ts | Verified | |
+| ServerStorage/Modules/DataStore2/Promise | ModuleScript | 1391 | src/server/Modules/DataStore2/Promise.ts | Verified | |
+| ServerStorage/Modules/DataStore2/SavingMethods/OrderedBackups | ModuleScript | 74 | src/server/Modules/DataStore2/SavingMethods/OrderedBackups.ts | Verified | |
+| ServerStorage/Modules/DataStore2/SavingMethods/Standard | ModuleScript | 34 | src/server/Modules/DataStore2/SavingMethods/Standard.ts | Verified | |
+| ServerStorage/Modules/DataStore2/SavingMethods | ModuleScript | 5 | src/server/Modules/DataStore2/SavingMethods/index.ts | Verified | |
+| ServerStorage/Modules/DataStore2/Settings | ModuleScript | 8 | src/server/Modules/DataStore2/Settings.ts | Verified | |
+| ServerStorage/Modules/DataStore2/TableUtil | ModuleScript | 18 | src/server/Modules/DataStore2/TableUtil.ts | Verified | |
+| ServerStorage/Modules/DataStore2/Verifier | ModuleScript | 81 | src/server/Modules/DataStore2/Verifier.ts | Verified | |
+| ServerStorage/Modules/DataStore2 | ModuleScript | 614 | src/server/Modules/DataStore2/index.ts | Verified | |
+| ServerStorage/Maps/ShipIsland/water/sea/ocean/Second Level of Water./Script | Script | 6 | src/server/EmbeddedScripts/attach.server.ts (Maps_ShipIsland_water_sea_ocean_Second Level of Water._Script.ts | Verified | |
+| ServerStorage/Maps/ShipIsland/water/sea/ocean/hits/Hit/Script | Script | 12 | src/server/EmbeddedScripts/attach.server.ts (Maps_ShipIsland_water_sea_ocean_hits_Hit_Script.ts | Verified | |
+| ServerStorage/Maps/ShipIsland/water/sea/ocean/hits/Hit/Script | Script | 12 | src/server/EmbeddedScripts/attach.server.ts (Maps_ShipIsland_water_sea_ocean_hits_Hit_Script.ts | Verified | |
+| ServerStorage/Maps/ShipIsland/water/sea/ocean/hits/Hit/Script | Script | 12 | src/server/EmbeddedScripts/attach.server.ts (Maps_ShipIsland_water_sea_ocean_hits_Hit_Script.ts | Verified | |
+| ServerStorage/Maps/ShipIsland/water/sea/ocean/hits/Hit/Script | Script | 12 | src/server/EmbeddedScripts/attach.server.ts (Maps_ShipIsland_water_sea_ocean_hits_Hit_Script.ts | Verified | |
+| ServerStorage/MapLightings/MudDerby | ModuleScript | 1 | src/server/MapLightings/MudDerby.ts | Verified | |
+| ServerStorage/MapLightings/DesertIsland | ModuleScript | 1 | src/server/MapLightings/DesertIsland.ts | Verified | |
+| ServerStorage/MapLightings/BaseplateMap | ModuleScript | 1 | src/server/MapLightings/BaseplateMap.ts | Verified | |
+| ServerStorage/MapLightings/StadiumMap | ModuleScript | 1 | src/server/MapLightings/StadiumMap.ts | Verified | |
+| ServerStorage/MapLightings/ApocalypticCity | ModuleScript | 1 | src/server/MapLightings/ApocalypticCity.ts | Verified | |
+| ServerStorage/MapLightings/ShipIsland | ModuleScript | 1 | src/server/MapLightings/ShipIsland.ts | Verified | |
+| ServerStorage/Nuke/Light/Script | Script | 5 | src/server/EmbeddedScripts/attach.server.ts | Verified | |
 
 ## ReplicatedStorage
 
 | Original path | Class | Lines | New path | Status | Notes |
 |---|---|---|---|---|---|
-| ReplicatedStorage/PopulateCrateFrame | ModuleScript | 95 | src/shared/PopulateCrateFrame.ts | Complete | |
-| ReplicatedStorage/KeyCodeImages | ModuleScript | 88 | src/shared/KeyCodeImages.ts | Complete | |
-| ReplicatedStorage/EffectComposerPro/RuntimeEngine | ModuleScript | 464 | src/shared/EffectComposerPro/RuntimeEngine.ts | Complete | |
+| ReplicatedStorage/PopulateCrateFrame | ModuleScript | 95 | src/shared/PopulateCrateFrame.ts | Verified | |
+| ReplicatedStorage/KeyCodeImages | ModuleScript | 88 | src/shared/KeyCodeImages.ts | Verified | |
+| ReplicatedStorage/EffectComposerPro/RuntimeEngine | ModuleScript | 464 | src/shared/EffectComposerPro/RuntimeEngine.ts | Verified | |
 
 ## StarterPlayer
 
 | Original path | Class | Lines | New path | Status | Notes |
 |---|---|---|---|---|---|
-| StarterPlayer/StarterPlayerScripts/cameraScript (Disabled) | LocalScript | 30 | src/client/cameraScript.client.ts | Complete | |
-| StarterPlayer/StarterPlayerScripts/menuCamera | LocalScript | 237 | src/client/menuCamera.client.ts | Complete | |
-| StarterPlayer/StarterPlayerScripts/gameUi | LocalScript | 258 | src/client/gameUi.client.ts | Complete | |
-| StarterPlayer/StarterPlayerScripts/crateAnimation | LocalScript | 107 | src/client/crateAnimation.client.ts | Complete | |
-| StarterPlayer/StarterPlayerScripts/TerrainReset | LocalScript | 13 | src/client/TerrainReset.client.ts | Complete | |
-| StarterPlayer/StarterPlayerScripts/HideVehicles | LocalScript | 57 | src/client/HideVehicles.client.ts | Complete | |
-| StarterPlayer/StarterPlayerScripts/VehicleKeyHandler | LocalScript | 186 | src/client/VehicleKeyHandler.client.ts | Complete | |
-| StarterPlayer/StarterPlayerScripts/music | LocalScript | 53 | src/client/music.client.ts | Complete | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/VehicleController | ModuleScript | 189 | src/playerModule/ControlModule/VehicleController.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/TouchThumbstick | ModuleScript | 188 | src/playerModule/ControlModule/TouchThumbstick.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/ClickToMoveController | ModuleScript | 1153 | src/playerModule/ControlModule/ClickToMoveController.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/PathDisplay | ModuleScript | 132 | src/playerModule/ControlModule/PathDisplay.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/ClickToMoveDisplay | ModuleScript | 484 | src/playerModule/ControlModule/ClickToMoveDisplay.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/DynamicThumbstick | ModuleScript | 542 | src/playerModule/ControlModule/DynamicThumbstick.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/Gamepad | ModuleScript | 214 | src/playerModule/ControlModule/Gamepad.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/TouchJump | ModuleScript | 204 | src/playerModule/ControlModule/TouchJump.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/BaseCharacterController | ModuleScript | 47 | src/playerModule/ControlModule/BaseCharacterController.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/Keyboard | ModuleScript | 177 | src/playerModule/ControlModule/Keyboard.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/VRNavigation | ModuleScript | 458 | src/playerModule/ControlModule/VRNavigation.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule | ModuleScript | 680 | src/playerModule/ControlModule/index.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/BaseCamera | ModuleScript | 1031 | src/playerModule/CameraModule/BaseCamera.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraUtils | ModuleScript | 331 | src/playerModule/CameraModule/CameraUtils.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraToggleStateController | ModuleScript | 153 | src/playerModule/CameraModule/CameraToggleStateController.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/MouseLockController | ModuleScript | 240 | src/playerModule/CameraModule/MouseLockController.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/BaseOcclusion | ModuleScript | 48 | src/playerModule/CameraModule/BaseOcclusion.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/TransparencyController | ModuleScript | 238 | src/playerModule/CameraModule/TransparencyController.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/OrbitalCamera | ModuleScript | 305 | src/playerModule/CameraModule/OrbitalCamera.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/ClassicCamera | ModuleScript | 254 | src/playerModule/CameraModule/ClassicCamera.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/LegacyCamera | ModuleScript | 114 | src/playerModule/CameraModule/LegacyCamera.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VehicleCamera/VehicleCameraConfig | ModuleScript | 61 | src/playerModule/CameraModule/VehicleCamera/VehicleCameraConfig.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VehicleCamera/VehicleCameraCore | ModuleScript | 182 | src/playerModule/CameraModule/VehicleCamera/VehicleCameraCore.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VehicleCamera | ModuleScript | 221 | src/playerModule/CameraModule/VehicleCamera/index.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/ZoomController/Popper | ModuleScript | 342 | src/playerModule/CameraModule/ZoomController/Popper.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/ZoomController | ModuleScript | 138 | src/playerModule/CameraModule/ZoomController/index.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/Invisicam | ModuleScript | 553 | src/playerModule/CameraModule/Invisicam.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/Poppercam | ModuleScript | 112 | src/playerModule/CameraModule/Poppercam.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraUI | ModuleScript | 198 | src/playerModule/CameraModule/CameraUI.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VRCamera | ModuleScript | 214 | src/playerModule/CameraModule/VRCamera.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VRBaseCamera | ModuleScript | 363 | src/playerModule/CameraModule/VRBaseCamera.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraInput | ModuleScript | 562 | src/playerModule/CameraModule/CameraInput.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VRVehicleCamera | ModuleScript | 213 | src/playerModule/CameraModule/VRVehicleCamera.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule | ModuleScript | 641 | src/playerModule/CameraModule/index.ts | Not Started | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule | ModuleScript | 33 | src/playerModule/index.ts | Complete | |
-| StarterPlayer/StarterPlayerScripts/vehicle | LocalScript | 621 | src/client/vehicle.client.ts | Complete | |
+| StarterPlayer/StarterPlayerScripts/cameraScript (Disabled) | LocalScript | 30 | src/client/cameraScript.client.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/menuCamera | LocalScript | 237 | src/client/menuCamera.client.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/gameUi | LocalScript | 258 | src/client/gameUi.client.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/crateAnimation | LocalScript | 107 | src/client/crateAnimation.client.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/TerrainReset | LocalScript | 13 | src/client/TerrainReset.client.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/HideVehicles | LocalScript | 57 | src/client/HideVehicles.client.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/VehicleKeyHandler | LocalScript | 186 | src/client/VehicleKeyHandler.client.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/music | LocalScript | 53 | src/client/music.client.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/VehicleController | ModuleScript | 189 | src/playerModule/ControlModule/VehicleController.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/TouchThumbstick | ModuleScript | 188 | src/playerModule/ControlModule/TouchThumbstick.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/ClickToMoveController | ModuleScript | 1153 | src/playerModule/ControlModule/ClickToMoveController.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/PathDisplay | ModuleScript | 132 | src/playerModule/ControlModule/PathDisplay.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/ClickToMoveDisplay | ModuleScript | 484 | src/playerModule/ControlModule/ClickToMoveDisplay.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/DynamicThumbstick | ModuleScript | 542 | src/playerModule/ControlModule/DynamicThumbstick.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/Gamepad | ModuleScript | 214 | src/playerModule/ControlModule/Gamepad.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/TouchJump | ModuleScript | 204 | src/playerModule/ControlModule/TouchJump.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/BaseCharacterController | ModuleScript | 47 | src/playerModule/ControlModule/BaseCharacterController.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/Keyboard | ModuleScript | 177 | src/playerModule/ControlModule/Keyboard.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule/VRNavigation | ModuleScript | 458 | src/playerModule/ControlModule/VRNavigation.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/ControlModule | ModuleScript | 680 | src/playerModule/ControlModule/index.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/BaseCamera | ModuleScript | 1031 | src/playerModule/CameraModule/BaseCamera.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraUtils | ModuleScript | 331 | src/playerModule/CameraModule/CameraUtils.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraToggleStateController | ModuleScript | 153 | src/playerModule/CameraModule/CameraToggleStateController.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/MouseLockController | ModuleScript | 240 | src/playerModule/CameraModule/MouseLockController.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/BaseOcclusion | ModuleScript | 48 | src/playerModule/CameraModule/BaseOcclusion.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/TransparencyController | ModuleScript | 238 | src/playerModule/CameraModule/TransparencyController.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/OrbitalCamera | ModuleScript | 305 | src/playerModule/CameraModule/OrbitalCamera.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/ClassicCamera | ModuleScript | 254 | src/playerModule/CameraModule/ClassicCamera.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/LegacyCamera | ModuleScript | 114 | src/playerModule/CameraModule/LegacyCamera.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VehicleCamera/VehicleCameraConfig | ModuleScript | 61 | src/playerModule/CameraModule/VehicleCamera/VehicleCameraConfig.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VehicleCamera/VehicleCameraCore | ModuleScript | 182 | src/playerModule/CameraModule/VehicleCamera/VehicleCameraCore.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VehicleCamera | ModuleScript | 221 | src/playerModule/CameraModule/VehicleCamera/index.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/ZoomController/Popper | ModuleScript | 342 | src/playerModule/CameraModule/ZoomController/Popper.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/ZoomController | ModuleScript | 138 | src/playerModule/CameraModule/ZoomController/index.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/Invisicam | ModuleScript | 553 | src/playerModule/CameraModule/Invisicam.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/Poppercam | ModuleScript | 112 | src/playerModule/CameraModule/Poppercam.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraUI | ModuleScript | 198 | src/playerModule/CameraModule/CameraUI.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VRCamera | ModuleScript | 214 | src/playerModule/CameraModule/VRCamera.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VRBaseCamera | ModuleScript | 363 | src/playerModule/CameraModule/VRBaseCamera.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/CameraInput | ModuleScript | 562 | src/playerModule/CameraModule/CameraInput.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule/VRVehicleCamera | ModuleScript | 213 | src/playerModule/CameraModule/VRVehicleCamera.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/CameraModule | ModuleScript | 641 | src/playerModule/CameraModule/index.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule | ModuleScript | 33 | src/playerModule/index.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/vehicle | LocalScript | 621 | src/client/vehicle.client.ts | Verified | |
 
 ## StarterGui
 
 | Original path | Class | Lines | New path | Status | Notes |
 |---|---|---|---|---|---|
-| StarterGui/Game/Spectate/Information/Respawn/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Game/Controls/Boost/ImageLabel/consoleIcon/EnableWithConsole | LocalScript | 15 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Game/Controls/Drift/ImageLabel/consoleIcon/EnableWithConsole | LocalScript | 15 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Game/Controls/Horn/ImageLabel/consoleIcon/EnableWithConsole | LocalScript | 15 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Game/Controls/Jump/ImageLabel/consoleIcon/EnableWithConsole | LocalScript | 15 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Game/Controls/RollLeft/ImageLabel/consoleIcon/EnableWithConsole | LocalScript | 15 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Game/Controls/RollRight/ImageLabel/consoleIcon/EnableWithConsole | LocalScript | 15 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/Inventory/SpawnButton/Button/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/Inventory/BuyButton/Button/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/Inventory/Buttons/Buttons/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/Inventory/Buttons/Buttons/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/Inventory/ShopButton/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/Inventory/Codes/TextBox/DetectInput | LocalScript | 5 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/Shop/InventoryButton/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/cashPurchace/closeButton/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/CrateMenu/BackButton/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/CrateMenu/OpenButton/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/Money/Currency/Add/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
-| StarterGui/Garage/hover/LocalScript | LocalScript | 14 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Complete | |
+| StarterGui/Game/Spectate/Information/Respawn/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Game/Controls/Boost/ImageLabel/consoleIcon/EnableWithConsole | LocalScript | 15 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Game/Controls/Drift/ImageLabel/consoleIcon/EnableWithConsole | LocalScript | 15 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Game/Controls/Horn/ImageLabel/consoleIcon/EnableWithConsole | LocalScript | 15 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Game/Controls/Jump/ImageLabel/consoleIcon/EnableWithConsole | LocalScript | 15 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Game/Controls/RollLeft/ImageLabel/consoleIcon/EnableWithConsole | LocalScript | 15 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Game/Controls/RollRight/ImageLabel/consoleIcon/EnableWithConsole | LocalScript | 15 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/Inventory/SpawnButton/Button/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/Inventory/BuyButton/Button/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/Inventory/Buttons/Buttons/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/Inventory/Buttons/Buttons/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/Inventory/ShopButton/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/Inventory/Codes/TextBox/DetectInput | LocalScript | 5 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/Shop/InventoryButton/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/cashPurchace/closeButton/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/CrateMenu/BackButton/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/CrateMenu/OpenButton/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/Money/Currency/Add/consoleIcon/EnableWithConsole | LocalScript | 11 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
+| StarterGui/Garage/hover/LocalScript | LocalScript | 14 | src/server/ui + src/client/uiClientBehaviors.client.ts (see notes) | Verified | |
 
 ## UI (StarterGui → React) structure
 
 | ScreenGui | React component root | Status | Notes |
 |---|---|---|---|
-| StarterGui/Game | src/server/ui/GameGui.tsx | Complete | |
-| StarterGui/MobileInterface | src/server/ui/MobileInterface.tsx | Complete | |
-| StarterGui/Garage | src/server/ui/GarageGui.tsx | Complete | |
-| StarterGui/CrateMenu | src/server/ui/CrateMenuGui.tsx | Complete | |
-| StarterGui/Multipliers | src/server/ui/MultipliersGui.tsx | Complete | |
-| StarterGui/TimerGui | src/server/ui/TimerGui.tsx | Complete | |
-| StarterGui/PlayerMoneyGainedPopups | src/server/ui/PlayerMoneyGainedPopups.tsx | Complete | |
-| StarterGui/DataLoss | src/server/ui/DataLossGui.tsx | Complete | |
-| StarterGui/Steer (NumberValue) | part of PlayerGuiManager mount | Complete | non-UI child of StarterGui, cloned to PlayerGui like the rest |
+| StarterGui/Game | src/server/ui/GameGui.tsx | Verified | |
+| StarterGui/MobileInterface | src/server/ui/MobileInterface.tsx | Verified | |
+| StarterGui/Garage | src/server/ui/GarageGui.tsx | Verified | |
+| StarterGui/CrateMenu | src/server/ui/CrateMenuGui.tsx | Verified | |
+| StarterGui/Multipliers | src/server/ui/MultipliersGui.tsx | Verified | |
+| StarterGui/TimerGui | src/server/ui/TimerGui.tsx | Verified | |
+| StarterGui/PlayerMoneyGainedPopups | src/server/ui/PlayerMoneyGainedPopups.tsx | Verified | |
+| StarterGui/DataLoss | src/server/ui/DataLossGui.tsx | Verified | |
+| StarterGui/Steer (NumberValue) | part of PlayerGuiManager mount | Verified | non-UI child of StarterGui, cloned to PlayerGui like the rest |
 
 ## Global architecture notes
 
