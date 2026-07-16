@@ -19,7 +19,7 @@ const MIN_ALLOWED_ELEVATION_DEG = -80;
 const MAX_ALLOWED_ELEVATION_DEG = 80;
 
 // Module-level defaults table from the original source - never referenced again after this
-// (each OrbitalCamera instance builds its own `self.externalProperties` copy in the
+// (each OrbitalCamera instance builds its own `cam.externalProperties` copy in the
 // constructor), but preserved here as in the original Lua.
 const externalProperties: Record<string, number | boolean> = {};
 externalProperties["InitialDistance"] = 25;
@@ -48,7 +48,7 @@ class OrbitalCamera extends BaseCamera {
 	refAzimuthRad: number | undefined;
 	// The remaining "cur/min/max" fields are nil-initialized in the constructor and always
 	// populated synchronously by `LoadNumberValueParameters()` before any other method can
-	// observe them (mirroring the Lua `self.x = nil` placeholders), so they're declared as
+	// observe them (mirroring the Lua `cam.x = nil` placeholders), so they're declared as
 	// definitely-assigned numbers/booleans rather than optional to keep every downstream
 	// consumer's math untouched.
 	curAzimuthRad!: number;
@@ -67,7 +67,7 @@ class OrbitalCamera extends BaseCamera {
 	externalProperties: Record<string, number | boolean>;
 
 	// BaseCamera.ts declares a differently-cased `LastCameraFocus?: Vector3` field that isn't
-	// what the original Lua's `self.lastCameraFocus` (a CFrame) maps to - declared as our own
+	// what the original Lua's `cam.lastCameraFocus` (a CFrame) maps to - declared as our own
 	// field here since TypeScript's property names are case-sensitive and the two don't collide.
 	lastCameraFocus: CFrame | undefined;
 
@@ -111,7 +111,7 @@ class OrbitalCamera extends BaseCamera {
 	LoadOrCreateNumberValueParameter(
 		name: string,
 		valueType: "NumberValue" | "BoolValue",
-		// Original Lua passes bare method references (`self.SetAndBoundsCheckAzimuthValues`) and
+		// Original Lua passes bare method references (`cam.SetAndBoundsCheckAzimuthValues`) and
 		// invokes them as `updateFunction(self)`; the closest faithful TS shape is a plain
 		// function taking the instance explicitly, called the same way below.
 		updateFunction: ((self: OrbitalCamera) => void) | undefined,
@@ -191,31 +191,31 @@ class OrbitalCamera extends BaseCamera {
 
 		// Note: ReferenceAzimuth is also used as an initial value, but needs a change listener because it is used in the calculation of the limits
 		//
-		// The original Lua passes `self.SetAndBoundsCheckAzimuthValue` here (singular "Value"),
+		// The original Lua passes `cam.SetAndBoundsCheckAzimuthValue` here (singular "Value"),
 		// which does not match the actual method name `SetAndBoundsCheckAzimuthValues` (plural).
 		// That typo means the referenced field is nil in the original source, so no change
 		// listener actually gets attached for ReferenceAzimuth - preserved verbatim below.
 		this.LoadOrCreateNumberValueParameter("ReferenceAzimuth", "NumberValue", undefined);
-		this.LoadOrCreateNumberValueParameter("CWAzimuthTravel", "NumberValue", (self) =>
-			self.SetAndBoundsCheckAzimuthValues(),
+		this.LoadOrCreateNumberValueParameter("CWAzimuthTravel", "NumberValue", (cam) =>
+			cam.SetAndBoundsCheckAzimuthValues(),
 		);
-		this.LoadOrCreateNumberValueParameter("CCWAzimuthTravel", "NumberValue", (self) =>
-			self.SetAndBoundsCheckAzimuthValues(),
+		this.LoadOrCreateNumberValueParameter("CCWAzimuthTravel", "NumberValue", (cam) =>
+			cam.SetAndBoundsCheckAzimuthValues(),
 		);
-		this.LoadOrCreateNumberValueParameter("MinElevation", "NumberValue", (self) =>
-			self.SetAndBoundsCheckElevationValues(),
+		this.LoadOrCreateNumberValueParameter("MinElevation", "NumberValue", (cam) =>
+			cam.SetAndBoundsCheckElevationValues(),
 		);
-		this.LoadOrCreateNumberValueParameter("MaxElevation", "NumberValue", (self) =>
-			self.SetAndBoundsCheckElevationValues(),
+		this.LoadOrCreateNumberValueParameter("MaxElevation", "NumberValue", (cam) =>
+			cam.SetAndBoundsCheckElevationValues(),
 		);
-		this.LoadOrCreateNumberValueParameter("MinDistance", "NumberValue", (self) =>
-			self.SetAndBoundsCheckDistanceValues(),
+		this.LoadOrCreateNumberValueParameter("MinDistance", "NumberValue", (cam) =>
+			cam.SetAndBoundsCheckDistanceValues(),
 		);
-		this.LoadOrCreateNumberValueParameter("MaxDistance", "NumberValue", (self) =>
-			self.SetAndBoundsCheckDistanceValues(),
+		this.LoadOrCreateNumberValueParameter("MaxDistance", "NumberValue", (cam) =>
+			cam.SetAndBoundsCheckDistanceValues(),
 		);
-		this.LoadOrCreateNumberValueParameter("UseAzimuthLimits", "BoolValue", (self) =>
-			self.SetAndBoundsCheckAzimuthValues(),
+		this.LoadOrCreateNumberValueParameter("UseAzimuthLimits", "BoolValue", (cam) =>
+			cam.SetAndBoundsCheckAzimuthValues(),
 		);
 
 		// Internal values set (in radians, from degrees), plus sanitization
