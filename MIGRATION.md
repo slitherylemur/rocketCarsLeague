@@ -226,3 +226,40 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
   including its bundled Promise implementation (older evaera version — NOT
   interchangeable with roblox-ts's built-in Promise).
 
+
+## Applying the migration in Roblox Studio
+
+1. `npm install && npx rbxtsc` — compiles to `out/` (zero TypeScript errors expected).
+2. Sync/build with Rojo using `default.project.json` (e.g. `rojo serve` + the Rojo
+   plugin against the opened RocketCars place). This creates:
+   - ServerScriptService/TS (server scripts + former ServerStorage modules)
+   - ReplicatedStorage/TS + ReplicatedStorage/rbxts_include (shared modules + runtime)
+   - StarterPlayer/StarterPlayerScripts/TS (client scripts)
+   - StarterPlayer/StarterPlayerScripts/PlayerModule (the translated fork — MUST keep
+     this exact name so Roblox's PlayerScriptsLoader picks it up instead of injecting
+     the default)
+3. Delete the original Luau implementations (every Script/LocalScript/ModuleScript
+   listed in this ledger) and the original StarterGui ScreenGuis (Game,
+   MobileInterface, Garage, CrateMenu, Multipliers, TimerGui, PlayerMoneyGainedPopups,
+   DataLoss) plus the StarterGui "Steer" NumberValue — all are recreated by the
+   server-rendered React UI. Do NOT delete:
+   - non-script instances referenced by path (ServerStorage: VehicleModels, Colors,
+     BoostTrails, CarHorns, Skins, Maps, MapTerrains, Events, Sounds, Effects, Nuke,
+     HealthBar, TeamHighlight, CarCategory, CarTitle, SaveInStudio;
+     ReplicatedStorage: FunctionsAndEvents, Ui, Colors, BoostTrails,
+     EffectComposerPro (Effects/Defaults folders); Workspace: everything;
+     StarterPlayerScripts: the gameMusic Sound)
+   - ServerStorage/MapLightings ModuleScripts CAN be deleted (values + children are
+     reproduced in src/server/MapLightings), and the scripts embedded in
+     ServerStorage models (ShipIsland water, Nuke light, TestVehicle seat) are
+     replaced by src/server/EmbeddedScripts/attach.server.ts.
+
+## Known items requiring manual testing in Studio
+
+- Server-side React mounting (PlayerGuiManager, legacy synchronous root) — verify a
+  player joining sees all 8 ScreenGuis and the menu flow works end-to-end.
+- DataStore2 fork translation — verify data round-trips (money increment, rejoin).
+- Promise translation trailing-nil vararg caveat (see DataStore2/Promise row).
+- Vehicle physics parity (client drive loop) and boost/drift/jump timing.
+- Crate open animation timing and the money-gained popups.
+- Gamepad navigation (NextSelection wiring is applied post-mount by PlayerGuiManager).
