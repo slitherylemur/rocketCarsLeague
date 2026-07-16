@@ -131,20 +131,22 @@ interface CameraInputModule {
 	gamepadZoomPress: RBXScriptSignal<() => void>;
 	gamepadReset?: RBXScriptSignal<() => void>;
 
-	getRotationActivated(): boolean;
-	getRotation(disableKeyboardRotation?: boolean): Vector2;
-	getZoomDelta(): number;
+	// Arrow-typed properties (not methods) so the module's functions emit and
+	// are called dot-style, exactly like the original CameraInput.getX(...) API.
+	getRotationActivated: () => boolean;
+	getRotation: (disableKeyboardRotation?: boolean) => Vector2;
+	getZoomDelta: () => number;
 
-	setInputEnabled(inputEnabled: boolean): void;
-	getInputEnabled(): boolean;
-	resetInputForFrameEnd(): void;
+	setInputEnabled: (inputEnabled: boolean) => void;
+	getInputEnabled: () => boolean;
+	resetInputForFrameEnd: () => void;
 
-	getHoldPan(): boolean;
-	getTogglePan(): boolean;
-	getPanning(): boolean;
-	setTogglePan(value: boolean): void;
-	enableCameraToggleInput(): void;
-	disableCameraToggleInput(): void;
+	getHoldPan: () => boolean;
+	getTogglePan: () => boolean;
+	getPanning: () => boolean;
+	setTogglePan: (value: boolean) => void;
+	enableCameraToggleInput: () => void;
+	disableCameraToggleInput: () => void;
 }
 
 let connectionList: RBXScriptConnection[] = [];
