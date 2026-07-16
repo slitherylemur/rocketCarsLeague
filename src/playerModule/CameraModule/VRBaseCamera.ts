@@ -259,7 +259,7 @@ class VRBaseCamera extends BaseCamera {
 			}
 		}
 
-		let VRScreen = player.PlayerGui.FindFirstChild("VRBlurScreen") as SurfaceGui | ScreenGui | undefined;
+		let VRScreen = (player.WaitForChild("PlayerGui") as PlayerGui).FindFirstChild("VRBlurScreen") as SurfaceGui | ScreenGui | undefined;
 		let VRBlur: ImageLabel | undefined = undefined;
 		if (VRScreen) {
 			VRBlur = VRScreen.FindFirstChild("VRBlur") as ImageLabel | undefined;
@@ -271,7 +271,7 @@ class VRBaseCamera extends BaseCamera {
 			}
 
 			VRScreen.Name = "VRBlurScreen";
-			VRScreen.Parent = player.PlayerGui;
+			VRScreen.Parent = (player.WaitForChild("PlayerGui") as PlayerGui);
 
 			if (FFlagUserFlagEnableVRUpdate2) {
 				(VRScreen as SurfaceGui).Adornee = blurPart;
@@ -302,7 +302,7 @@ class VRBaseCamera extends BaseCamera {
 	}
 
 	UpdateEdgeBlur(player: Player, timeDelta: number): void {
-		const VRScreen = player.PlayerGui.FindFirstChild("VRBlurScreen");
+		const VRScreen = (player.WaitForChild("PlayerGui") as PlayerGui).FindFirstChild("VRBlurScreen");
 		let VRBlur: Instance | undefined = undefined;
 		if (VRScreen) {
 			VRBlur = VRScreen.FindFirstChild("VRBlur");
@@ -312,7 +312,7 @@ class VRBaseCamera extends BaseCamera {
 			if (this.VREdgeBlurTimer > 0) {
 				this.VREdgeBlurTimer = this.VREdgeBlurTimer - timeDelta;
 
-				const VRScreen = player.PlayerGui.FindFirstChild("VRBlurScreen");
+				const VRScreen = (player.WaitForChild("PlayerGui") as PlayerGui).FindFirstChild("VRBlurScreen");
 				if (VRScreen) {
 					const VRBlur = VRScreen.FindFirstChild("VRBlur") as ImageLabel | undefined;
 					if (VRBlur) {
@@ -382,7 +382,10 @@ class VRBaseCamera extends BaseCamera {
 			return undefined;
 		}
 
-		this.lastSubjectPosition = result;
+		// By this point `cameraSubject` was truthy above (the `else` branch already returned),
+		// so `result` is always a real Vector3 here, matching the original Lua's assumption -
+		// same reasoning as BaseCamera's own GetSubjectPosition.
+		this.lastSubjectPosition = result as Vector3;
 
 		return result;
 	}
