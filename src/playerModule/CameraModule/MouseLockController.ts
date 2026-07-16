@@ -38,18 +38,20 @@ class MouseLockController {
 	enabled?: boolean;
 
 	constructor() {
-		let boundKeysObj = script.FindFirstChild("BoundKeys") as StringValue | undefined;
-		if (!boundKeysObj || !boundKeysObj.IsA("StringValue")) {
+		let boundKeysObjInstance: Instance | undefined = script.FindFirstChild("BoundKeys");
+		if (!boundKeysObjInstance || !boundKeysObjInstance.IsA("StringValue")) {
 			// If object with correct name was found, but it's not a StringValue, destroy and replace
-			if (boundKeysObj) {
-				boundKeysObj.Destroy();
+			if (boundKeysObjInstance) {
+				boundKeysObjInstance.Destroy();
 			}
 
-			boundKeysObj = new Instance("StringValue");
-			boundKeysObj.Name = "BoundKeys";
-			boundKeysObj.Value = "LeftShift,RightShift";
-			boundKeysObj.Parent = script;
+			const newBoundKeysObj = new Instance("StringValue");
+			newBoundKeysObj.Name = "BoundKeys";
+			newBoundKeysObj.Value = "LeftShift,RightShift";
+			newBoundKeysObj.Parent = script;
+			boundKeysObjInstance = newBoundKeysObj;
 		}
+		const boundKeysObj = boundKeysObjInstance as StringValue | undefined;
 
 		if (boundKeysObj) {
 			boundKeysObj.Changed.Connect((value) => {
@@ -89,20 +91,22 @@ class MouseLockController {
 	}
 
 	GetMouseLockOffset(): Vector3 {
-		let offsetValueObj = script.FindFirstChild("CameraOffset") as Vector3Value | undefined;
-		if (offsetValueObj && offsetValueObj.IsA("Vector3Value")) {
-			return offsetValueObj.Value;
+		let offsetValueObjInstance: Instance | undefined = script.FindFirstChild("CameraOffset");
+		if (offsetValueObjInstance && offsetValueObjInstance.IsA("Vector3Value")) {
+			return offsetValueObjInstance.Value;
 		} else {
 			// If CameraOffset object was found but not correct type, destroy
-			if (offsetValueObj) {
-				offsetValueObj.Destroy();
+			if (offsetValueObjInstance) {
+				offsetValueObjInstance.Destroy();
 			}
-			offsetValueObj = new Instance("Vector3Value");
-			offsetValueObj.Name = "CameraOffset";
-			offsetValueObj.Value = new Vector3(1.75, 0, 0); // Legacy Default Value
-			offsetValueObj.Parent = script;
+			const newOffsetValueObj = new Instance("Vector3Value");
+			newOffsetValueObj.Name = "CameraOffset";
+			newOffsetValueObj.Value = new Vector3(1.75, 0, 0); // Legacy Default Value
+			newOffsetValueObj.Parent = script;
+			offsetValueObjInstance = newOffsetValueObj;
 		}
 
+		const offsetValueObj = offsetValueObjInstance as Vector3Value | undefined;
 		if (offsetValueObj && offsetValueObj.Value) {
 			return offsetValueObj.Value;
 		}
@@ -143,22 +147,26 @@ class MouseLockController {
 		this.isMouseLocked = !this.isMouseLocked;
 
 		if (this.isMouseLocked) {
-			let cursorImageValueObj = script.FindFirstChild("CursorImage") as StringValue | undefined;
-			if (cursorImageValueObj && cursorImageValueObj.IsA("StringValue") && cursorImageValueObj.Value) {
+			const cursorImageValueObjInstance: Instance | undefined = script.FindFirstChild("CursorImage");
+			if (
+				cursorImageValueObjInstance &&
+				cursorImageValueObjInstance.IsA("StringValue") &&
+				cursorImageValueObjInstance.Value
+			) {
 				if (FFlagUserCameraToggleDontSetMouseIconEveryFrame) {
-					CameraUtils.setMouseIconOverride(cursorImageValueObj.Value);
+					CameraUtils.setMouseIconOverride(cursorImageValueObjInstance.Value);
 				} else {
 					this.savedMouseCursor = Mouse!.Icon;
-					Mouse!.Icon = cursorImageValueObj.Value;
+					Mouse!.Icon = cursorImageValueObjInstance.Value;
 				}
 			} else {
-				if (cursorImageValueObj) {
-					cursorImageValueObj.Destroy();
+				if (cursorImageValueObjInstance) {
+					cursorImageValueObjInstance.Destroy();
 				}
-				cursorImageValueObj = new Instance("StringValue");
-				cursorImageValueObj.Name = "CursorImage";
-				cursorImageValueObj.Value = DEFAULT_MOUSE_LOCK_CURSOR;
-				cursorImageValueObj.Parent = script;
+				const newCursorImageValueObj = new Instance("StringValue");
+				newCursorImageValueObj.Name = "CursorImage";
+				newCursorImageValueObj.Value = DEFAULT_MOUSE_LOCK_CURSOR;
+				newCursorImageValueObj.Parent = script;
 				if (FFlagUserCameraToggleDontSetMouseIconEveryFrame) {
 					CameraUtils.setMouseIconOverride(DEFAULT_MOUSE_LOCK_CURSOR);
 				} else {

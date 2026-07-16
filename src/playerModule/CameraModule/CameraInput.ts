@@ -77,14 +77,14 @@ function thumbstickCurve(x: number): number {
 // Adjust the touch sensitivity so that sensitivity is reduced when swiping up
 // or down, but stays the same when swiping towards the middle of the screen
 function adjustTouchPitchSensitivity(delta: Vector2): Vector2 {
-	const camera = workspace.CurrentCamera;
+	const camera = game.Workspace.CurrentCamera;
 
 	if (!camera) {
 		return delta;
 	}
 
 	// get the camera pitch in world space
-	const pitch = camera.CFrame.ToEulerAnglesYXZ();
+	const [pitch] = camera.CFrame.ToEulerAnglesYXZ();
 
 	if (delta.Y * pitch >= 0) {
 		// do not reduce sensitivity when pitching towards the horizon

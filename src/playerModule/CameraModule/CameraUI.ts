@@ -14,7 +14,7 @@ function waitForChildOfClass(parent: Instance, className: string): Instance {
 		parent as unknown as { FindFirstChildOfClass(name: string): Instance | undefined }
 	).FindFirstChildOfClass(className);
 	while (!child || child.ClassName !== className) {
-		child = parent.ChildAdded.Wait();
+		[child] = parent.ChildAdded.Wait();
 	}
 	return child;
 }

@@ -280,7 +280,11 @@ class BaseCamera {
 	GetSubjectCFrame(): CFrame {
 		let result = this.lastSubjectCFrame!;
 		const camera = game.Workspace.CurrentCamera;
-		const cameraSubject = camera && camera.CameraSubject;
+		// Camera.CameraSubject is typed Humanoid | BasePart by @rbxts/types, but real Roblox also
+		// allows Model (and BasePart subtypes like VehicleSeat/SkateboardPlatform) here, which the
+		// original Lua handles via :IsA() branches below — widen the type so those branches narrow
+		// correctly instead of collapsing to `never`.
+		const cameraSubject = camera && (camera.CameraSubject as Humanoid | BasePart | Model | undefined);
 
 		if (!cameraSubject) {
 			return result;
@@ -347,7 +351,11 @@ class BaseCamera {
 
 	GetSubjectVelocity(): Vector3 {
 		const camera = game.Workspace.CurrentCamera;
-		const cameraSubject = camera && camera.CameraSubject;
+		// Camera.CameraSubject is typed Humanoid | BasePart by @rbxts/types, but real Roblox also
+		// allows Model (and BasePart subtypes like VehicleSeat/SkateboardPlatform) here, which the
+		// original Lua handles via :IsA() branches below — widen the type so those branches narrow
+		// correctly instead of collapsing to `never`.
+		const cameraSubject = camera && (camera.CameraSubject as Humanoid | BasePart | Model | undefined);
 
 		if (!cameraSubject) {
 			return ZERO_VECTOR3;
@@ -374,7 +382,11 @@ class BaseCamera {
 
 	GetSubjectRotVelocity(): Vector3 {
 		const camera = game.Workspace.CurrentCamera;
-		const cameraSubject = camera && camera.CameraSubject;
+		// Camera.CameraSubject is typed Humanoid | BasePart by @rbxts/types, but real Roblox also
+		// allows Model (and BasePart subtypes like VehicleSeat/SkateboardPlatform) here, which the
+		// original Lua handles via :IsA() branches below — widen the type so those branches narrow
+		// correctly instead of collapsing to `never`.
+		const cameraSubject = camera && (camera.CameraSubject as Humanoid | BasePart | Model | undefined);
 
 		if (!cameraSubject) {
 			return ZERO_VECTOR3;
@@ -427,7 +439,11 @@ class BaseCamera {
 	GetSubjectPosition(): Vector3 | undefined {
 		let result: Vector3 | undefined = this.lastSubjectPosition;
 		const camera = game.Workspace.CurrentCamera;
-		const cameraSubject = camera && camera.CameraSubject;
+		// Camera.CameraSubject is typed Humanoid | BasePart by @rbxts/types, but real Roblox also
+		// allows Model (and BasePart subtypes like VehicleSeat/SkateboardPlatform) here, which the
+		// original Lua handles via :IsA() branches below — widen the type so those branches narrow
+		// correctly instead of collapsing to `never`.
+		const cameraSubject = camera && (camera.CameraSubject as Humanoid | BasePart | Model | undefined);
 
 		if (cameraSubject) {
 			if (cameraSubject.IsA("Humanoid")) {

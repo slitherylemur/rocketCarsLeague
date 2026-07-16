@@ -491,7 +491,23 @@ class VRNavigation extends BaseCharacterController {
 			);
 			this.heartbeatConn = RunService.Heartbeat.Connect((dt) => this.OnHeartbeat(dt));
 
-			ContextActionService.BindAction(
+			// Faithful bug preservation: the original calls BindAction (not BindActionAtPriority) yet
+			// still passes CONTROL_ACTION_PRIORITY as if it were one of the trailing input-type
+			// varargs. BindAction has no priority parameter, so that argument is meaningless input
+			// to the real API (the same as in the original Luau) -- kept via a cast since the typed
+			// signature only accepts KeyCode/UserInputType/PlayerActions in that vararg position.
+			(
+				ContextActionService.BindAction as unknown as (
+					actionName: string,
+					functionToBind: (
+						actionName: string,
+						inputState: Enum.UserInputState,
+						inputObject: InputObject,
+					) => Enum.ContextActionResult | undefined,
+					createTouchButton: boolean,
+					...inputTypes: Array<unknown>
+				) => void
+			)(
 				"MoveThumbstick",
 				(actionName, inputState, inputObject) => this.ControlCharacterGamepad(actionName, inputState, inputObject),
 				false,
