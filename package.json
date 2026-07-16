@@ -25,6 +25,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@rbxts/react": "^17.3.7-ts.2"
+    "@rbxts/react": "^17.3.7-ts.2",
+    "@rbxts/react-roblox": "^17.3.7-ts.2"
   }
 }

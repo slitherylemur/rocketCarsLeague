@@ -1,0 +1,873 @@
+// Original: ServerStorage/Classes/VehicleClass (ModuleScript)
+//server side vehicle class
+
+import GeneralUtils from "../GeneralUtils";
+import DataUtils from "../Modules/DataUtilities";
+import DataStore2 from "../Modules/DataStore2";
+import DSDefaultValues from "../Modules/DataStoreDefaults";
+import spawnVehicle from "../Modules/spawnVehicle";
+import { Globals } from "../Globals";
+import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
+
+//services
+const RunService = game.GetService("RunService");
+const Players = game.GetService("Players");
+const TweenService = game.GetService("TweenService");
+const MarketplaceService = game.GetService("MarketplaceService");
+
+//Globals
+Globals.CarCategorys = ["City", "Off Road", "Sports", "Specials", "Military"];
+
+// ---- Instance shape types (structural; the models live in the place file) ----
+
+export interface VehicleWheel extends Model {
+	WheelMount: BasePart & { SpringConstraint: SpringConstraint };
+	turn: BasePart & {
+		trail: Attachment;
+		trail2: Attachment;
+		HingeConstraint: HingeConstraint;
+	};
+	Wheel: BasePart;
+	DisplayWheel: BasePart;
+}
+
+export interface VehicleBase extends BasePart {
+	IdleSound: Sound;
+	hornSound: Sound;
+	driftSound: Sound;
+	jumpSound: Sound;
+	LinearVelocity: LinearVelocity;
+	slopeCounterVelocity: LinearVelocity;
+	DriftThrust: VectorForce;
+	Aerial: BodyAngularVelocity;
+	BodyGyro: BodyGyro;
+	FlipMover: BodyPosition;
+	HealthBar: BillboardGui & { Green: Frame; PlayerTag: TextLabel };
+}
+
+export interface VehicleModel extends Model {
+	Base: VehicleBase;
+	Model: Model;
+	Wheels: Folder & Record<"FL" | "FR" | "BL" | "BR", VehicleWheel>;
+	Seats: Folder & { VehicleSeat: VehicleSeat };
+	Hitboxes: Folder & { damageBlock: BasePart };
+	BoostEffectPart: BasePart & {
+		Attachment: Attachment;
+		Attachment2: Attachment;
+		ParticleEmitter: ParticleEmitter;
+		Trail: Trail;
+		boostSound: Sound;
+	};
+}
+
+export interface VehicleParams {
+	cost: number;
+
+	//DAMAGE
+	health: number;
+	damageMultiplier: number;
+
+	//MOVEMENT
+	mass: number;
+	acceleration: number;
+	targetVelocity: number;
+
+	//TURNING
+	minTurnRadius: number;
+	maxTurnRadius: number;
+	maxAngularSpeed: number;
+	minAngularSpeed: number;
+
+	//SPECIALS
+	boostAmount: number;
+	driftingMult: number;
+
+	category: string;
+
+	idleSoundId?: number;
+
+	//SUSPENSION
+	damping: number;
+	stiffness: number;
+	freeLength: number;
+
+	model?: VehicleModel;
+	owner?: Player;
+}
+
+function createInputEvent(vehicle: Model): RemoteEvent {
+	// Original used Instance.new("RemoteEvent", vehicle) — parent set at creation.
+	const event = new Instance("RemoteEvent");
+	event.Parent = vehicle;
+	event.Name = "inputChangedEvent";
+	return event;
+}
+
+export class VehicleClass {
+	// copied params
+	cost!: number;
+	health!: number;
+	damageMultiplier!: number;
+	mass!: number;
+	acceleration!: number;
+	targetVelocity!: number;
+	minTurnRadius!: number;
+	maxTurnRadius!: number;
+	maxAngularSpeed!: number;
+	minAngularSpeed!: number;
+	boostAmount!: number;
+	driftingMult!: number;
+	category!: string;
+	idleSoundId?: number;
+	damping!: number;
+	stiffness!: number;
+	freeLength!: number;
+	model!: VehicleModel;
+	owner?: Player;
+
+	// state initialised in the constructor
+	velocity: number;
+	propVelocity: number;
+	drifting: boolean;
+	boost: boolean;
+	boostDelay: boolean;
+	jumpDebounce: boolean;
+	flipDebounce: boolean;
+	hornSoundId: string;
+	lastAttacker?: Player;
+	ConnectionSteerFloat: number;
+	ConnectionThrottleFloat: number;
+	baseHealth: number;
+	connectionThrottle?: number;
+	wasKilled: boolean;
+
+	//ACKERMAN STUFF
+	t: number;
+	l: number;
+
+	initialiseVehicleModel() {
+		const base = this.model.Base;
+
+		for (const wheel of this.model.Wheels.GetChildren() as VehicleWheel[]) {
+			wheel.WheelMount.SpringConstraint.Damping = this.damping;
+			wheel.WheelMount.SpringConstraint.Stiffness = this.stiffness;
+			wheel.WheelMount.SpringConstraint.FreeLength = this.freeLength;
+
+			wheel.turn.trail.Position = new Vector3(wheel.DisplayWheel.Size.X / 2, -wheel.Wheel.Size.Y / 2 + 0.15, 0);
+			wheel.turn.trail2.Position = new Vector3(-wheel.DisplayWheel.Size.X / 2, -wheel.Wheel.Size.Y / 2 + 0.15, 0);
+		}
+
+		const density = this.mass / (base.Size.X * base.Size.Y * base.Size.Z);
+
+		const physPropertiesBase = new PhysicalProperties(density, 0.4, 0.25, 1, 1);
+
+		base.CustomPhysicalProperties = physPropertiesBase;
+
+		const healthBar = (
+			game.GetService("ServerStorage") as unknown as {
+				HealthBar: BillboardGui & { PlayerTag: TextLabel };
+			}
+		).HealthBar.Clone();
+		const [Cframe, size] = this.model.GetBoundingBox();
+
+		healthBar.StudsOffsetWorldSpace = new Vector3(0, size.Y + 2, 0);
+		if (this.owner) {
+			healthBar.PlayerTag.Text = this.owner.Name;
+
+			let hasVip = false;
+
+			const [success, message] = pcall(() => {
+				hasVip = MarketplaceService.UserOwnsGamePassAsync(this.owner!.UserId as unknown as never, Globals.VIP_PASS_ID);
+			});
+
+			if (hasVip) {
+				// Original: Color3.new(212, 152, 0) — out-of-range Color3.new kept as-is.
+				healthBar.PlayerTag.TextColor3 = new Color3(212, 152, 0);
+			}
+
+			if (this.owner.Neutral === false) {
+				const teamHighlight = (
+					game.GetService("ServerStorage") as unknown as { TeamHighlight: Highlight }
+				).TeamHighlight.Clone();
+				teamHighlight.OutlineColor = this.owner.TeamColor.Color;
+				teamHighlight.Parent = this.model;
+				teamHighlight.Adornee = this.model;
+			}
+		} else {
+			healthBar.PlayerTag.Visible = false;
+		}
+
+		const InputEvent = createInputEvent(this.model);
+		InputEvent.OnServerEvent.Connect((player, throttle, steer) => {
+			if (player === this.owner) {
+				this.ConnectionThrottleFloat = throttle as number;
+				this.ConnectionSteerFloat = steer as number;
+			}
+		});
+
+		let wasInWorkspace: boolean | undefined = undefined;
+
+		this.model.AncestryChanged.Connect(() => {
+			if (this.model.Parent === (game.Workspace as unknown as { Vehicles: Folder }).Vehicles) {
+				wasInWorkspace = true;
+			} else if (wasInWorkspace && this.model.Parent === undefined) {
+				if (!this.wasKilled) {
+					if (this.lastAttacker && this.lastAttacker.Parent) {
+						this.KillVehicle(this.lastAttacker, 10);
+					} else {
+						this.KillVehicle();
+					}
+				}
+			}
+		});
+
+		healthBar.Parent = base;
+	}
+
+	constructor(params: VehicleParams) {
+		// Original copies every entry of the params table onto the new object.
+		for (const [i, param] of pairs(params as unknown as Record<string, unknown>)) {
+			(this as unknown as Record<string, unknown>)[i as string] = param;
+		}
+
+		this.velocity = 0;
+		this.propVelocity = 0;
+
+		this.drifting = false;
+
+		this.boost = false;
+		this.boostDelay = false;
+
+		this.jumpDebounce = true;
+		this.flipDebounce = true;
+		this.hornSoundId = "";
+		this.lastAttacker = undefined;
+
+		this.ConnectionSteerFloat = 0;
+		this.ConnectionThrottleFloat = 0;
+
+		this.baseHealth = this.health;
+
+		this.connectionThrottle = undefined;
+		this.wasKilled = false;
+
+		//ACKERMAN STUFF
+		const wheels = this.model.Wheels;
+		const fl = wheels.FL.WheelMount;
+		const fr = wheels.FR.WheelMount;
+		const bl = wheels.BL.WheelMount;
+		const br = wheels.BR.WheelMount;
+		this.t = fl.Position.sub(fr.Position).Magnitude;
+		this.l = fl.Position.sub(bl.Position).Magnitude;
+
+		this.initialiseVehicleModel();
+
+		if (this.owner) {
+			const paintJob = DataUtils.GetEquippedItemOnVehicle(this.owner, "color", this.model.Name) as string;
+
+			this.PaintVehicle(paintJob);
+
+			const boostTrail = DataUtils.GetEquippedItemOnVehicle(this.owner, "boostTrail", this.model.Name) as string;
+
+			this.ChangeBoostTrail(boostTrail);
+
+			const hornSound = DataUtils.GetEquippedItemOnVehicle(this.owner, "hornSound", this.model.Name) as string;
+
+			this.ChangeHornSound(hornSound);
+		}
+	}
+
+	PaintVehicle(PaintName: string) {
+		const model = this.model;
+		let colorValue: Color3Value | undefined = undefined;
+
+		if (PaintName === "None") {
+			for (const modelPiece of (
+				(game.GetService("ServerStorage") as unknown as { VehicleModels: Folder }).VehicleModels.FindFirstChild(
+					model.Name,
+				) as VehicleModel
+			).Model.GetChildren()) {
+				if (modelPiece.FindFirstChild("Colored")) {
+					const value = new Instance("Color3Value");
+					value.Value = (modelPiece as BasePart).Color;
+					colorValue = value;
+					break;
+				}
+			}
+		} else {
+			colorValue = (
+				game.GetService("ServerStorage") as unknown as { Colors: Folder }
+			).Colors.FindFirstChild(PaintName) as Color3Value;
+		}
+
+		for (const modelPiece of model.Model.GetChildren()) {
+			if (modelPiece.FindFirstChild("Colored")) {
+				(modelPiece as BasePart).Color = colorValue!.Value;
+				(modelPiece as BasePart).Material = Enum.Material.Metal;
+				GeneralUtils.RemoveChildrenOfType(modelPiece, "Texture");
+
+				for (const texture of colorValue!.GetChildren()) {
+					texture.Clone().Parent = modelPiece;
+				}
+			}
+		}
+	}
+
+	ChangeBoostTrail(EffectName: string) {
+		const trailEffect = (
+			game.GetService("ServerStorage") as unknown as { BoostTrails: Folder }
+		).BoostTrails.FindFirstChild(EffectName)!;
+		const baseTrail = this.model.BoostEffectPart.FindFirstChildWhichIsA("Trail")!;
+		const newTrail = trailEffect.FindFirstChildWhichIsA("Trail")!.Clone();
+		newTrail.Parent = this.model.BoostEffectPart;
+		newTrail.Attachment0 = baseTrail.Attachment0;
+		newTrail.Attachment1 = baseTrail.Attachment1;
+		baseTrail.Destroy();
+
+		this.model.BoostEffectPart.FindFirstChildWhichIsA("ParticleEmitter")!.Destroy();
+		const newParticles = trailEffect.FindFirstChildWhichIsA("ParticleEmitter")!.Clone();
+		newParticles.Parent = this.model.BoostEffectPart;
+	}
+
+	ChangeHornSound(hornSound: string) {
+		const sound = (
+			game.GetService("ServerStorage") as unknown as { CarHorns: Folder }
+		).CarHorns.FindFirstChild(hornSound) as Sound | undefined;
+		if (sound) {
+			this.hornSoundId = sound.SoundId;
+		}
+	}
+
+	IsOwner(player: Player): boolean {
+		return player === this.owner;
+	}
+
+	GetOwner(): Player | undefined {
+		return this.owner;
+	}
+
+	/* Original commented-out server-side implementations preserved for context:
+
+	function getMassOfModel(model) ... end
+	function Vehicle:GetTotalMass() ... end
+	local groundRaycastParams = RaycastParams.new() ...
+	function Vehicle:onGround() ... end
+	local function GetDecendantsOfType(instance, typeName) ... end
+	function Vehicle:closeGround() ... end
+	local function Vector3ComponentSetter(vector, axis, value) ... end
+	local function Vector3ComponentChecker(vector, axis, value) ... end
+	local function Vector3ComponentAdd (vector, axis, value) ... end
+	local function createDamageRaysArray(Cframe, size) ... end
+	local function GetTouchingPartsSpec(part) ... end
+	function Vehicle:touchingParts() ... end
+
+	(the live client-side versions of these are in src/client/vehicle.client.ts)
+	*/
+
+	DealDamage(target: VehicleModel, hitBox: BasePart, velocity: number) {
+		if (target.Seats.VehicleSeat.Occupant) {
+			const targetPlayer = Players.GetPlayerFromCharacter(target.Seats.VehicleSeat.Occupant!.Parent as Model)!;
+
+			//For TDM
+			if (this.owner!.Neutral === false && targetPlayer.Team === this.owner!.Team) {
+				return;
+			}
+
+			const targetVehicle = Globals.vehiclesTable[targetPlayer.UserId]!;
+
+			let damage = 0;
+			if (velocity < 0.5) {
+				damage = 15 * this.damageMultiplier;
+			} else if (velocity < 0.7) {
+				damage = 25 * this.damageMultiplier;
+			} else if (velocity < 1) {
+				damage = 35 * this.damageMultiplier;
+			} else if (velocity < 1.3) {
+				damage = 45 * this.damageMultiplier;
+			} else if (velocity > 1.3) {
+				damage = 60 * this.damageMultiplier;
+			}
+
+			targetVehicle.TakeDamage(damage, this.owner, hitBox, this.model.Hitboxes.damageBlock);
+		}
+	}
+
+	SmokeEngine() {
+		if (this.model.Base.FindFirstChild("EngineSmoke")) {
+			return;
+		}
+
+		const smoke = (
+			game.GetService("ServerStorage") as unknown as { Effects: { EngineSmoke: Instance } }
+		).Effects.EngineSmoke.Clone();
+		smoke.Parent = this.model.Base;
+	}
+
+	BurnEngine() {
+		if (this.model.Base.FindFirstChild("EngineBurn")) {
+			return;
+		}
+
+		const burn = (
+			game.GetService("ServerStorage") as unknown as { Effects: { EngineBurn: Instance } }
+		).Effects.EngineBurn.Clone();
+		burn.Parent = this.model.Base;
+	}
+
+	TakeDamage(damage: number, attacker?: Player, hitBox?: BasePart, damagePart?: BasePart) {
+		//print(attacker)
+		this.lastAttacker = attacker;
+
+		this.health -= damage;
+		this.model.Base.HealthBar.Green.Size = new UDim2(this.health / this.baseHealth, 0, 1, 0);
+
+		if (hitBox && damagePart) {
+			task.spawn(() => {
+				this.CollisionEffect(hitBox, damagePart, attacker!, damage, this.health <= 0);
+			});
+		}
+
+		if (this.health <= 0) {
+			task.spawn(() => {
+				this.DeathEffect();
+			});
+			this.KillVehicle(attacker, damage);
+		} else if (this.health <= this.baseHealth / 4.5) {
+			this.BurnEngine();
+		} else if (this.health <= this.baseHealth / 2) {
+			this.SmokeEngine();
+		}
+		(
+			game.GetService("ServerStorage") as unknown as { Events: { PlayerDamaged: BindableEvent } }
+		).Events.PlayerDamaged.Fire(this.owner, attacker, damage, false);
+	}
+
+	KillVehicle(attacker?: Player, damage?: number) {
+		this.wasKilled = true;
+		if (this.owner && this.owner.Character) {
+			(this.owner.Character as unknown as { Humanoid: Humanoid }).Humanoid.Health = 0;
+		}
+		spawnVehicle.KillVehicle(this.owner!);
+		(
+			game.GetService("ServerStorage") as unknown as { Events: { PlayerDamaged: BindableEvent } }
+		).Events.PlayerDamaged.Fire(this.owner, attacker, damage, true);
+	}
+
+	CollisionEffect(hitBoxPart: BasePart, damagePart: BasePart, attacker: Player, damage: number, wasKill: boolean) {
+		const collisionPoint = getCenterOfIntersectingPoints(hitBoxPart, damagePart);
+		showMoneyGainedOnAttackersScreen(attacker, damage, wasKill, collisionPoint);
+		const effect = (
+			game.GetService("ServerStorage") as unknown as {
+				Effects: { VehicleCollision: Attachment & { BillboardGui: BillboardGui } };
+			}
+		).Effects.VehicleCollision.Clone();
+		effect.Parent = (game.Workspace as unknown as { GameEffects: Folder }).GameEffects;
+		if (this.model.FindFirstChild("Base")) {
+			const sound = (
+				game.GetService("ServerStorage") as unknown as { Sounds: { crash: Sound } }
+			).Sounds.crash.Clone();
+			sound.Parent = this.model.Base;
+			sound.Play();
+		}
+		effect.WorldCFrame = damagePart.CFrame;
+		effect.WorldPosition = collisionPoint;
+		//loop over ParticleEmitters and turn them on
+		for (const emitter of effect.GetChildren()) {
+			if (emitter.IsA("ParticleEmitter")) {
+				emitter.Enabled = true;
+			}
+		}
+		task.wait(0.2);
+		effect.BillboardGui.Enabled = false;
+		for (const emitter of effect.GetChildren()) {
+			if (emitter.IsA("ParticleEmitter")) {
+				emitter.Enabled = false;
+			}
+		}
+		task.wait(3);
+		effect.Destroy();
+	}
+
+	DeathEffect() {
+		//print("death effect")
+		const effect = (
+			game.GetService("ServerStorage") as unknown as { Effects: { VehicleDeath: Attachment } }
+		).Effects.VehicleDeath.Clone();
+		effect.Parent = (game.Workspace as unknown as { GameEffects: Folder }).GameEffects;
+		const sound = (
+			game.GetService("ServerStorage") as unknown as { Sounds: { explosion: Sound } }
+		).Sounds.explosion.Clone();
+		sound.Parent = effect;
+		sound.Play();
+		effect.WorldCFrame = this.model.Base.CFrame;
+
+		task.wait(0.4);
+		for (const emitter of effect.GetChildren()) {
+			if (emitter.IsA("ParticleEmitter")) {
+				emitter.Enabled = false;
+			}
+		}
+		task.wait(3);
+		effect.Destroy();
+	}
+
+	drive() {
+		if (this.idleSoundId !== undefined) {
+			if (volumes.get(this.idleSoundId) !== undefined) {
+				this.model.Base.IdleSound.Volume = volumes.get(this.idleSoundId)!;
+			}
+			this.model.Base.IdleSound.SoundId = "rbxassetid://" + this.idleSoundId;
+		}
+
+		this.model.Base.IdleSound.Play();
+
+		let lastCarHit: Instance | undefined = undefined;
+
+		this.model.Hitboxes.damageBlock.Touched.Connect((part) => {
+			if (part.Parent === undefined) {
+				if (part !== undefined) {
+					part.Destroy();
+				}
+
+				return;
+			}
+			this.velocity = -this.model.Base.CFrame.VectorToObjectSpace(this.model.Base.Velocity).Z; //velocity of vehicle
+			this.propVelocity = math.abs(this.velocity) / this.targetVelocity; //proportional velocity
+
+			if (this.propVelocity > 0.05) {
+				if (
+					(part.Parent!.Name === "Hitboxes" || part.Name === "damageBlock") &&
+					part.Parent!.Parent !== this.model &&
+					part.Parent!.Parent !== lastCarHit
+				) {
+					lastCarHit = part.Parent!.Parent;
+					this.DealDamage(part.Parent!.Parent as VehicleModel, part, this.propVelocity);
+
+					task.delay(1, () => {
+						//This is to stop hitting the same car twice at the same time. Only an issue if our hitboxes are made up of multiple parts
+						lastCarHit = undefined;
+					});
+				}
+			}
+		});
+
+		FunctionsAndEvents.DriveVehicle.FireClient(this.owner!, this);
+
+		/* Original commented-out server-side drive loop preserved for context —
+		   the live implementation runs on the client (src/client/vehicle.client.ts):
+		   gears/gearTorques/playbackSpeeds constants, Touched-based damage,
+		   RunService.Heartbeat driving loop setting LinearVelocity.MaxForce /
+		   LineVelocity / slopeCounterVelocity.MaxForce, aerial correction via
+		   BodyGyro + Aerial, boost/boostIncrement, and the trailing reset:
+		   MaxForce = 100000, LineVelocity = 0, turnWheels(0). */
+	}
+
+	/* Original commented-out methods preserved for context (live client versions
+	   exist in src/client/vehicle.client.ts):
+	   Vehicle:turnWheels(throttle, steerFloat, onGround) — anti-Ackerman steering
+	   Vehicle:DriftHandler(inputState)
+	   Vehicle:drift(steerFloat) / Vehicle:undrift()
+	   Vehicle:Boost(inputState)
+	   Vehicle:setBoostMeter() / Vehicle:boostIncrement(increase, lastInc)
+	   Vehicle:Jump(inputState)
+	   Vehicle:Flip()
+	   Vehicle:aerialControls(axis, value) / aerialControlsReset(axis, compValue)
+	   Vehicle:RollLeft(inputState) / RollRight(inputState)
+	   Vehicle:Yaw(steerFloat) / Pitch(throttle) */
+
+	ChangeTrail(trailName: string) {
+		const boostPart = this.model.BoostEffectPart;
+
+		boostPart.ParticleEmitter.Destroy();
+		boostPart.Trail.Destroy();
+
+		const trailModel = (
+			game.GetService("ServerStorage") as unknown as { BoostTrails: Folder }
+		).BoostTrails.FindFirstChild(trailName)!;
+
+		for (const trail of trailModel.GetChildren()) {
+			const newTrail = trail.Clone();
+			newTrail.Parent = boostPart;
+		}
+	}
+
+	Horn(inputState: Enum.UserInputState) {
+		if (inputState === Enum.UserInputState.Begin) {
+			if (this.model && this.model.FindFirstChild("Base")) {
+				this.model.Base.hornSound.SoundId = this.hornSoundId;
+
+				this.model.Base.hornSound.Play();
+			}
+		}
+	}
+
+	ApplySkin(skin: string) {
+		const skinTexture = (
+			game.GetService("ServerStorage") as unknown as { Skins: Folder }
+		).Skins.FindFirstChild(skin)!;
+		GeneralUtils.IterateOverDescendantsOfType(
+			this.model,
+			"BasePart",
+			applySkinIfSkinned as unknown as (object: Instance, ...args: unknown[]) => void,
+			skinTexture,
+		);
+	}
+
+	GetCost(): number {
+		//	print(self.health)
+		return this.cost;
+	}
+
+	GetCategory(): string {
+		return this.category;
+		// if self.category then return
+		// 	self.category
+		// else
+		// 	return  _G.CarCategorys[math.random(1,#_G.CarCategorys)]
+		// end
+	}
+
+	resetVehicle() {
+		const paintJob = DataUtils.GetEquippedItemOnVehicle(this.owner!, "color", this.model.Name) as string;
+
+		this.PaintVehicle(paintJob);
+
+		const boostTrail = DataUtils.GetEquippedItemOnVehicle(this.owner!, "boostTrail", this.model.Name) as string;
+
+		this.ChangeBoostTrail(boostTrail);
+
+		const hornSound = DataUtils.GetEquippedItemOnVehicle(this.owner!, "hornSound", this.model.Name) as string;
+
+		this.ChangeHornSound(hornSound);
+	}
+}
+
+function CalculatePartVertexPositions(part: BasePart): LuaTuple<[Vector3[], Vector3]> {
+	const partPosition = part.Position;
+	const partSize = part.Size;
+	const vertices: Vector3[] = [];
+	vertices[0] = part.CFrame.PointToWorldSpace(new Vector3(part.Size.X / 2, part.Size.Y / 2, -part.Size.Z / 2));
+	vertices[1] = part.CFrame.PointToWorldSpace(new Vector3(part.Size.X / 2, -part.Size.Y / 2, -part.Size.Z / 2));
+	vertices[2] = part.CFrame.PointToWorldSpace(new Vector3(-part.Size.X / 2, part.Size.Y / 2, -part.Size.Z / 2));
+	vertices[3] = part.CFrame.PointToWorldSpace(new Vector3(-part.Size.X / 2, -part.Size.Y / 2, -part.Size.Z / 2));
+
+	return $tuple(vertices, part.CFrame.LookVector);
+}
+
+function getCenterOfIntersectingPoints(hitBoxPart: BasePart, damagePart: BasePart): Vector3 {
+	const [vertices, direction] = CalculatePartVertexPositions(damagePart);
+	//createDebugingPartsAtHitpoints(vertices)
+	let centerPoint = new Vector3(0, 0, 0);
+	const totalDistance = 0;
+	let centerPointCount = 0;
+
+	for (const vertex of vertices) {
+		const raycastParams = new RaycastParams();
+		raycastParams.FilterType = Enum.RaycastFilterType.Whitelist;
+		raycastParams.FilterDescendantsInstances = hitBoxPart.Parent!.GetChildren();
+		const raycastResult = game.Workspace.Raycast(vertex, direction.mul(200), raycastParams);
+		if (raycastResult) {
+			centerPoint = centerPoint.add(raycastResult.Position);
+			centerPointCount = centerPointCount + 1;
+		}
+	}
+
+	centerPoint = centerPoint.div(centerPointCount);
+	return centerPoint;
+}
+
+function createDebugingPartsAtHitpoints(hitPoints: Vector3[]) {
+	for (const hitPoint of hitPoints) {
+		const debugPart = new Instance("Part");
+		debugPart.Size = new Vector3(0.3, 0.3, 0.3);
+		debugPart.Position = hitPoint;
+		debugPart.Anchored = true;
+		debugPart.CanCollide = false;
+		debugPart.Material = Enum.Material.Neon;
+		debugPart.BrickColor = new BrickColor("Bright red");
+		debugPart.Parent = game.Workspace;
+	}
+}
+
+function createDebugingPartForCenterPoint(centerPoint: Vector3) {
+	const debugPart = new Instance("Part");
+	debugPart.Size = new Vector3(0.5, 0.5, 0.5);
+	debugPart.Position = centerPoint;
+	debugPart.Anchored = true;
+	debugPart.CanCollide = false;
+	debugPart.Color = new Color3(0, 1, 0.333333);
+	debugPart.Material = Enum.Material.Neon;
+	debugPart.Parent = game.Workspace;
+}
+
+function CreateMoneyUiAnimation(MoneyUi: TextLabel, screenPosition: Vector3) {
+	MoneyUi.Position = new UDim2(0, screenPosition.X, 0, screenPosition.Y);
+
+	const startPos = new UDim2(
+		(math.random(1, 20) - 10) / 50,
+		screenPosition.X,
+		(math.random(1, 20) - 10) / 50,
+		screenPosition.Y,
+	);
+
+	const tweenIn = TweenService.Create(
+		MoneyUi,
+		new TweenInfo(1, Enum.EasingStyle.Elastic, Enum.EasingDirection.Out),
+		{ Position: startPos },
+	);
+	tweenIn.Play();
+	tweenIn.Completed.Wait();
+
+	const tweenInfo = new TweenInfo(1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
+	task.wait(0.6);
+
+	const tweenOut = TweenService.Create(MoneyUi, tweenInfo, {
+		Position: new UDim2(startPos.X.Scale, startPos.X.Offset, 1.5, startPos.Y.Offset),
+	});
+	tweenOut.Play();
+}
+
+function showMoneyGainedOnAttackersScreen(attacker: Player, damage: number, wasKill: boolean, collisionPoint: Vector3) {
+	const Gui = (attacker as unknown as { PlayerGui: { PlayerMoneyGainedPopups: ScreenGui } }).PlayerGui
+		.PlayerMoneyGainedPopups;
+	let screenPosition: Vector3 | undefined = undefined;
+
+	// eslint-disable-next-line no-self-compare
+	if (collisionPoint !== collisionPoint) {
+		// NaN check (raycast found no intersection points → 0/0)
+		screenPosition = FunctionsAndEvents.GetPlayerPointToScreenSpace.InvokeClient(
+			attacker,
+			(attacker.Character as unknown as { HumanoidRootPart: BasePart }).HumanoidRootPart.Position,
+		) as Vector3;
+	} else {
+		screenPosition = FunctionsAndEvents.GetPlayerPointToScreenSpace.InvokeClient(
+			attacker,
+			collisionPoint,
+		) as Vector3;
+	}
+
+	const damageUi = (
+		game.GetService("ReplicatedStorage") as unknown as { Ui: { DamageMoney: TextLabel } }
+	).Ui.DamageMoney.Clone();
+	task.delay(0.1, () => {
+		const damageMoney = Globals.calculateMultMoney(attacker, damage * Globals.DAMAGE_MONEY_MULT);
+		const sound = (
+			game.GetService("ServerStorage") as unknown as { Sounds: { cashSmall: Sound; cashBig: Sound } }
+		).Sounds.cashSmall.Clone();
+		if (damageMoney >= 10) {
+			// Original declared a shadowed `local sound` here that was never used
+			// outside this branch — preserved (the outer cashSmall still plays).
+			const soundBig = (
+				game.GetService("ServerStorage") as unknown as { Sounds: { cashBig: Sound } }
+			).Sounds.cashBig.Clone();
+		}
+		sound.Parent = (attacker as unknown as { PlayerGui: Instance }).PlayerGui;
+		sound.Play();
+		damageUi.Text = "+" + damageMoney + "$";
+
+		damageUi.Parent = Gui;
+		CreateMoneyUiAnimation(damageUi, screenPosition!);
+	});
+
+	if (wasKill) {
+		for (let i = 1; i <= 2; i++) {
+			const sound = (
+				(game.GetService("ServerStorage") as unknown as { Sounds: Folder }).Sounds.FindFirstChild(
+					"killCoins" + i,
+				) as Sound
+			).Clone();
+			sound.Parent = (attacker as unknown as { PlayerGui: Instance }).PlayerGui;
+			sound.Play();
+		}
+		const KillMoney = Globals.calculateMultMoney(attacker, Globals.KILL_MONEY);
+
+		const killUi = (
+			game.GetService("ReplicatedStorage") as unknown as { Ui: { KillMoney: TextLabel } }
+		).Ui.KillMoney.Clone();
+		killUi.Text = "+" + KillMoney + "$";
+		task.delay(0.4, () => {
+			killUi.Parent = Gui;
+			CreateMoneyUiAnimation(killUi, screenPosition!);
+		});
+	}
+}
+
+function applySkinIfSkinned(part: BasePart, skinTexture: Instance) {
+	if (part.FindFirstChild("Skinned")) {
+		if (part.FindFirstChildWhichIsA("Texture")) {
+			part.FindFirstChildWhichIsA("Texture")!.Destroy();
+		}
+
+		const skin = skinTexture.Clone();
+		skin.Parent = part;
+	}
+}
+
+const volumes = new Map<number, number>([
+	[484883392, 0.1],
+	[319804747, 0.3],
+	[532147820, 0.5],
+	[2458730465, 0.2],
+	[1724607017, 0.3],
+	[134024901, 0.05],
+]);
+
+// These two handlers receive the CLIENT's serialized vehicle table.
+interface ClientVehicleParams {
+	model: VehicleModel;
+	boost: boolean;
+}
+
+function UpdateBoostEffect(player: Player, params: ClientVehicleParams) {
+	pcall(() => {
+		const boostPart = params.model.BoostEffectPart;
+
+		boostPart.ParticleEmitter.Enabled = params.boost;
+		boostPart.Trail.Enabled = params.boost;
+
+		if (params.boost) {
+			boostPart.boostSound.Play();
+		} else {
+			boostPart.boostSound.Stop();
+		}
+	});
+}
+
+function UpdateDriftEffect(player: Player, toggle: boolean, params: ClientVehicleParams, steerFloat?: number) {
+	pcall(() => {
+		if (toggle) {
+			if (!params.model.Base.driftSound.Playing && steerFloat !== 0) {
+				params.model.Base.driftSound.Play();
+			} else if (steerFloat === 0) {
+				params.model.Base.driftSound.Stop();
+			}
+
+			for (const wheel of params.model.Wheels.GetChildren() as VehicleWheel[]) {
+				if (wheel.turn.FindFirstChild("Trail")) {
+					(wheel.turn.FindFirstChild("Trail") as Trail).Enabled = true;
+				}
+			}
+		} else {
+			if (params.model.FindFirstChild("Base")) {
+				params.model.Base.driftSound.Stop();
+			}
+
+			if (params.model.FindFirstChild("Wheels")) {
+				for (const wheel of params.model.Wheels.GetChildren() as VehicleWheel[]) {
+					if (wheel.turn.FindFirstChild("Trail")) {
+						(wheel.turn.FindFirstChild("Trail") as Trail).Enabled = false;
+					}
+				}
+			}
+		}
+	});
+}
+
+FunctionsAndEvents.UpdateBoostEffect.OnServerEvent.Connect(
+	UpdateBoostEffect as unknown as (player: Player, ...args: unknown[]) => void,
+);
+FunctionsAndEvents.UpdateDriftEffect.OnServerEvent.Connect(
+	UpdateDriftEffect as unknown as (player: Player, ...args: unknown[]) => void,
+);
+
+export default VehicleClass;
