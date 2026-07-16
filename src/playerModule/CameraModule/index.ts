@@ -245,7 +245,11 @@ class CameraModule {
 		// First check to see if there is actually a change. If the module being requested is already
 		// the currently-active solution then just make sure it's enabled and exit early
 		if (this.activeOcclusionModule && this.activeOcclusionModule.GetOcclusionMode() === occlusionMode) {
-			if (!this.activeOcclusionModule.GetEnabled()) {
+			// Note: BaseOcclusion (and, per the original source, neither Poppercam nor Invisicam)
+			// declares GetEnabled — the original calls it here regardless, which would error at
+			// runtime if it were ever actually missing. Preserved as-is via a structural cast rather
+			// than papering over it with an existence check the original doesn't have.
+			if (!(this.activeOcclusionModule as unknown as { GetEnabled(): boolean }).GetEnabled()) {
 				this.activeOcclusionModule.Enable(true);
 			}
 			return;
@@ -256,13 +260,13 @@ class CameraModule {
 		const prevOcclusionModule = this.activeOcclusionModule;
 
 		// If there is no active module, see if the one we need has already been instantiated
-		this.activeOcclusionModule = instantiatedOcclusionModules.get(newModuleCreator);
+		this.activeOcclusionModule = instantiatedOcclusionModules.get(newModuleCreator!);
 
 		// If the module was not already instantiated and selected above, instantiate it
 		if (!this.activeOcclusionModule) {
-			this.activeOcclusionModule = new newModuleCreator();
+			this.activeOcclusionModule = new newModuleCreator!() as unknown as BaseOcclusion;
 			if (this.activeOcclusionModule) {
-				instantiatedOcclusionModules.set(newModuleCreator, this.activeOcclusionModule);
+				instantiatedOcclusionModules.set(newModuleCreator!, this.activeOcclusionModule);
 			}
 		}
 
@@ -408,7 +412,7 @@ class CameraModule {
 		// Create the camera control module we need if it does not already exist in instantiatedCameraControllers
 		let newCameraController = instantiatedCameraControllers.get(newCameraCreator!);
 		if (!newCameraController) {
-			newCameraController = new newCameraCreator!();
+			newCameraController = new newCameraCreator!() as unknown as BaseCamera;
 			instantiatedCameraControllers.set(newCameraCreator!, newCameraController);
 		} else {
 			const resettable = newCameraController as unknown as { Reset?: () => void };
