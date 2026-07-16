@@ -48,7 +48,12 @@ function attachHit(part: BasePart) {
 
 function attachShipIslandWaterScripts(map: Instance) {
 	task.spawn(() => {
-		const ocean = map.WaitForChild("water").WaitForChild("sea").WaitForChild("ocean");
+		const water = map.WaitForChild("water", 5);
+		if (!water) {
+			warn(`[attach] ${map.GetFullName()} has no "water" child — skipping ShipIsland water scripts`);
+			return;
+		}
+		const ocean = water.WaitForChild("sea").WaitForChild("ocean");
 		const secondLevel = ocean.FindFirstChild("Second Level of Water.");
 		if (secondLevel) {
 			attachSecondLevelOfWater(secondLevel as BasePart);

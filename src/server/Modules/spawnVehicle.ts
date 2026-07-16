@@ -19,11 +19,54 @@ function GetSpawnCFrame(humanoidRootPart: BasePart, vehicleModel: Model): CFrame
 }
 
 function SeatPlayer(player: Player, newModel: Model) {
-	const seat = newModel.FindFirstChildWhichIsA("VehicleSeat", true)!;
-	player.Character!.WaitForChild("Humanoid");
-	RunService.Stepped.Wait();
+	warn(`[SeatPlayer] ENTER player=${player.Name} vehicle=${newModel.GetFullName()}`);
+	const seat = newModel.FindFirstChildWhichIsA("VehicleSeat", true);
+	if (!seat) {
+		warn(`[SeatPlayer] ABORT no VehicleSeat on ${newModel.GetFullName()}`);
+		return;
+	}
+	const character = player.Character;
+	if (!character) {
+		warn(`[SeatPlayer] ABORT player.Character is nil`);
+		return;
+	}
+	const humanoid = character.WaitForChild("Humanoid") as Humanoid;
+	const root = character.WaitForChild("HumanoidRootPart") as BasePart;
 
-	seat.Sit((player.Character as unknown as { Humanoid: Humanoid }).Humanoid);
+	// If the character ever ends up as assembly root, make sure the car wins.
+	const base = newModel.FindFirstChild("Base");
+	if (base && base.IsA("BasePart")) {
+		base.RootPriority = 10;
+	}
+	seat.RootPriority = 10;
+
+	if (!newModel.PrimaryPart) {
+		warn(`[SeatPlayer] ABORT no PrimaryPart on ${newModel.GetFullName()}`);
+		return;
+	}
+
+	// Anchor while moving: an unanchored character at map height falls, dies to
+	// fall damage, PlayerDamaged resets them to the menu and KillVehicle tears
+	// the car apart mid-spawn (the 10s-wait failure mode we observed).
+	root.Anchored = true;
+	root.CFrame = seat.CFrame.add(seat.CFrame.UpVector.mul(3));
+	warn(`[SeatPlayer] anchored+moved char to ${root.Position}; vehicle at ${newModel.GetPrimaryPartCFrame().Position}`);
+
+	RunService.Stepped.Wait();
+	task.wait(0.1);
+
+	if (!newModel.Parent || !newModel.PrimaryPart || !seat.Parent) {
+		warn(`[SeatPlayer] ABORT vehicle destroyed before Sit`);
+		root.Anchored = false;
+		return;
+	}
+
+	// Unanchor BEFORE Sit: the car Base is anchored during the whole seating
+	// sequence (see SpawnVehicle), so the seat weld resolves by snapping the
+	// character into the seat — the car cannot be moved by anything.
+	root.Anchored = false;
+	seat.Sit(humanoid);
+	warn(`[SeatPlayer] EXIT vehiclePos=${newModel.GetPrimaryPartCFrame().Position} seated=${humanoid.Sit}`);
 }
 
 const HumanoidSeatedConnection = new Map<Player, RBXScriptConnection>();
@@ -82,6 +125,9 @@ function makeWheelsUncollidable(vehicleModel: VehicleModel) {
 
 const spawnVehicleModule = {
 	SpawnVehicle(player: Player, drivable: boolean, vehicleName: string, spawnCFrame: CFrame, clientSided?: boolean) {
+		warn(
+			`[SpawnVehicle] ENTER player=${player.Name} drivable=${drivable} clientSided=${clientSided === true} vehicleName=${vehicleName} spawnPos=${spawnCFrame.Position}`,
+		);
 		// Original: require(game.ServerStorage.Classes.VehicleSubClass:FindFirstChild(vehicleName, true))
 		// The compiled subclass ModuleScripts live under <TS root>/Classes/VehicleSubClass.
 		// requireModule preserves the original's lazy, name-based dynamic require.
@@ -98,8 +144,12 @@ const spawnVehicleModule = {
 		let newModel: VehicleModel | undefined = model;
 
 		if (!newModel) {
+			warn(`[SpawnVehicle] ABORT VehicleClass.new returned no model for ${vehicleName}`);
 			return;
 		}
+		warn(
+			`[SpawnVehicle] created NEW clone (not menu car) model=${newModel.Name} parent=${newModel.Parent?.GetFullName() ?? "nil"}`,
+		);
 
 		if (clientSided) {
 			//newModel.Parent = ReplicatedStorage
@@ -141,11 +191,28 @@ const spawnVehicleModule = {
 		} else {
 			newModel.Parent = (game.Workspace as unknown as { Vehicles: Folder }).Vehicles;
 			newModel.Name = `${newModel.Name}${player.UserId}`;
+			warn(`[SpawnVehicle] parented match vehicle to ${newModel.GetFullName()}`);
 		}
 
 		const modelSize = newModel.GetExtentsSize();
 
+		// Hold the car server-side through the whole seating sequence. Sitting in
+		// a VehicleSeat auto-transfers network ownership of the car assembly to
+		// the seated client — whose replica of the character is often still at
+		// the lobby spawn (below the map). That client then "solves" the seat
+		// weld from its stale state and drags the car body under the map, wheels
+		// (separate constraint assemblies) lagging above it. An anchored assembly
+		// is server-owned and immovable, so the race cannot happen; it is
+		// unanchored right before SetNetworkOwner below, once the client has had
+		// the correct spawn state replicated.
+		if (drivable) {
+			newModel.Base.Anchored = true;
+		}
+
 		newModel.SetPrimaryPartCFrame(spawnCFrame.add(new Vector3(0, modelSize.Y / 2, 0)));
+		warn(
+			`[SpawnVehicle] placed at ${newModel.GetPrimaryPartCFrame().Position} (extentsY/2=${modelSize.Y / 2})`,
+		);
 
 		makeWheelsUncollidable(newModel);
 
@@ -155,7 +222,9 @@ const spawnVehicleModule = {
 			// 	newModel:WaitForChild("Base")
 			// end)
 
+			warn(`[SpawnVehicle] WaitForChild Vehicles/${newModel.Name}`);
 			(game.Workspace as unknown as { Vehicles: Folder }).Vehicles.WaitForChild(newModel.Name);
+			warn(`[SpawnVehicle] InitialiseControl; Character=${player.Character?.GetFullName() ?? "nil"}`);
 
 			InitialiseControl(player, newModel);
 
@@ -170,20 +239,47 @@ const spawnVehicleModule = {
 			task.wait(2);
 		}
 
-		let loopTimer = 0;
-		while (!newModel.IsDescendantOf(game.Workspace)) {
-			task.wait(0.5);
-			loopTimer += 1;
-			if (loopTimer === 10) {
-				return;
+		// Garage display cars (clientSided) don't need network ownership — and
+		// SetNetworkOwner throws if the assembly is anchored / not yet simulated,
+		// which aborts setTab.Inventory mid-setup and breaks the spawn button flow.
+		if (!clientSided) {
+			let loopTimer = 0;
+			while (!newModel.IsDescendantOf(game.Workspace)) {
+				task.wait(0.5);
+				loopTimer += 1;
+				if (loopTimer === 10) {
+					warn(`[SpawnVehicle] ABORT timed out waiting for Workspace ancestry`);
+					return;
+				}
+			}
+
+			// Release the car to physics only now: the client has received the
+			// anchored (server-authoritative) spawn state, so it starts
+			// simulating from the correct position when it takes ownership.
+			if (newModel.Base.Anchored) {
+				newModel.Base.Anchored = false;
+				RunService.Stepped.Wait();
+			}
+
+			const [ok, err] = pcall(() => {
+				newModel.Base.SetNetworkOwner(player);
+			});
+			if (!ok) {
+				warn(`[SpawnVehicle] SetNetworkOwner failed: ${err}`);
 			}
 		}
 
-		newModel.Base.SetNetworkOwner(player);
+		warn(
+			`[SpawnVehicle] EXIT drivable=${drivable} clientSided=${clientSided === true} model=${newModel.GetFullName()}`,
+		);
 	},
 
 	KillVehicle(player: Player, doubleO?: boolean) {
-		if (Globals.vehiclesTable[player.UserId]) {
+		const existing = Globals.vehiclesTable[player.UserId];
+		warn(
+			`[KillVehicle] player=${player.Name} hasVehicle=${existing !== undefined} model=${existing?.model.GetFullName() ?? "nil"}`,
+		);
+		if (existing) {
 			if (!doubleO) {
 				Globals.vehiclesTable[player.UserId]!.wasKilled = true;
 			}
@@ -230,22 +326,8 @@ const spawnVehicleModule = {
 	},
 };
 
-// Methods that only exist on the client Vehicle class (or are commented out on
-// the server class) still get called here exactly like the original — calling
-// them errors at runtime identically to the Lua (`attempt to call a nil value`),
-// which the game swallows in the remote-event handler.
-interface KeyHandlerVehicle {
-	Flip(): void;
-	Horn(inputState: Enum.UserInputState): void;
-	DriftHandler(inputState: Enum.UserInputState): void;
-	Boost(inputState: Enum.UserInputState): void;
-	Jump(inputState: Enum.UserInputState): void;
-	RollLeft(inputState: Enum.UserInputState): void;
-	RollRight(inputState: Enum.UserInputState): void;
-}
-
 function KeyHandler(player: Player, actionName: unknown, inputState: unknown, inputObject: unknown) {
-	const Vehicle = Globals.vehiclesTable[player.UserId] as unknown as KeyHandlerVehicle | undefined;
+	const Vehicle = Globals.vehiclesTable[player.UserId];
 	if (Vehicle) {
 		if (actionName === "FlipVehicle" && inputState === Enum.UserInputState.Begin) {
 			Vehicle.Flip();

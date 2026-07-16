@@ -55,7 +55,7 @@ interface GlobalsTable {
 	clearPlayerGarage: (player: Player) => void;
 	openCrateMenu: (player: Player, crateName: number) => void;
 	showMultiplier: (player: Player) => void;
-	SpawnInPlayer: (player: Player) => void;
+	SpawnInPlayer: (player: Player) => boolean;
 
 	// tutorial.lua
 	CrateTutorial: (player: Player) => void;

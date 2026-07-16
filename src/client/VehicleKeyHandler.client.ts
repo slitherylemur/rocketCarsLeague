@@ -1,102 +1,347 @@
 // Original: StarterPlayer/StarterPlayerScripts/VehicleKeyHandler (LocalScript)
+//
+// Restored to the server-authoritative input model (bumperCars a5318d46):
+// this script only reads input and forwards it to the server —
+//   * movement floats via the per-vehicle `inputChangedEvent` RemoteEvent
+//   * ability keys (Drift/Boost/Jump/Horn/Rolls) via the KeyHandler RemoteEvent
+// All physics runs in the server VehicleClass drive loop.
+//
+// Deliberate divergence from a5318d46: throttle/steer are derived from
+// per-key held state instead of the original +1/-1 accumulators. The
+// accumulator desynced permanently whenever an End event was missed or CAS
+// delivered UserInputState.Cancel (the "stuck input / weird simultaneous
+// keys" bugs); held-state cannot drift.
 
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import keyCodeImages from "shared/KeyCodeImages";
 import { legacyWait } from "shared/LegacyTiming";
 
 const ContextActionService = game.GetService("ContextActionService");
+const UserInputService = game.GetService("UserInputService");
+const GuiService = game.GetService("GuiService");
+const RunService = game.GetService("RunService");
 const Players = game.GetService("Players");
 const Player = Players.LocalPlayer;
+
+const GetKeyBinding = FunctionsAndEvents.GetKeyBinding;
+const SetKeyBinding = FunctionsAndEvents.SetKeyBinding;
 
 const handleAction = (actionName: string, inputState: Enum.UserInputState, inputObject?: InputObject) => {
 	FunctionsAndEvents.KeyHandler.FireServer(actionName, inputState, inputObject);
 };
-const UserInputService = game.GetService("UserInputService");
 
-let seatedConnection: RBXScriptConnection | undefined = undefined;
+// ---------------------------------------------------------------------------
+// Movement input → inputChangedEvent
+// ---------------------------------------------------------------------------
 
-const GuiService = game.GetService("GuiService");
-
-const RunService = game.GetService("RunService");
-const GetKeyBinding = FunctionsAndEvents.GetKeyBinding;
-const SetKeyBinding = FunctionsAndEvents.SetKeyBinding;
-
-const throttleFloat = 0;
-const steerFloat = 0;
-const vehicleModel = undefined;
-
-interface KeyBindButton extends TextButton {
-	ImageLabel: ImageLabel;
+interface HeldKeys {
+	forward: boolean;
+	backward: boolean;
+	left: boolean;
+	right: boolean;
 }
 
-Player.CharacterAdded.Connect((Character) => {
-	// When the player sits in the vehicle:
+const held: HeldKeys = { forward: false, backward: false, left: false, right: false };
+let analogSteer = 0; // thumbstick / mobile joystick
+let analogThrottle = 0; // mobile joystick
+
+let inputEvent: RemoteEvent | undefined = undefined;
+let lastSentThrottle = 0;
+let lastSentSteer = 0;
+
+function computeThrottle(): number {
+	const digital = (held.forward ? 1 : 0) - (held.backward ? 1 : 0);
+	return digital !== 0 ? digital : math.clamp(analogThrottle, -1, 1);
+}
+
+function computeSteer(): number {
+	const digital = (held.right ? 1 : 0) - (held.left ? 1 : 0);
+	return digital !== 0 ? digital : math.clamp(analogSteer, -1, 1);
+}
+
+function sendMovement(force?: boolean) {
+	if (!inputEvent) {
+		return;
+	}
+	const throttle = computeThrottle();
+	const steer = computeSteer();
+	if (force || throttle !== lastSentThrottle || steer !== lastSentSteer) {
+		lastSentThrottle = throttle;
+		lastSentSteer = steer;
+		inputEvent.FireServer(throttle, steer);
+	}
+}
+
+function resetMovementState() {
+	held.forward = false;
+	held.backward = false;
+	held.left = false;
+	held.right = false;
+	analogSteer = 0;
+	analogThrottle = 0;
+	lastSentThrottle = 0;
+	lastSentSteer = 0;
+}
+
+// Any state that isn't Begin (End, Cancel, …) counts as released — a missed
+// or cancelled key can therefore never wedge the car in a driving state.
+function makeMovementHandler(key: keyof HeldKeys) {
+	return (actionName: string, inputState: Enum.UserInputState, inputObject?: InputObject) => {
+		held[key] = inputState === Enum.UserInputState.Begin;
+		sendMovement();
+	};
+}
+
+const forward = makeMovementHandler("forward");
+const backwards = makeMovementHandler("backward");
+const left = makeMovementHandler("left");
+const right = makeMovementHandler("right");
+
+function controllerSteer(actionName: string, inputState: Enum.UserInputState, inputObject?: InputObject) {
+	if (inputObject === undefined) {
+		return;
+	}
+	if (inputState === Enum.UserInputState.End || inputState === Enum.UserInputState.Cancel) {
+		analogSteer = 0;
+	} else if (math.abs(inputObject.Position.X) < 0.3) {
+		analogSteer = 0;
+	} else {
+		analogSteer = inputObject.Position.X;
+	}
+	sendMovement();
+}
+
+function mobileSteerFunction() {
+	if (Player.Character) {
+		const humanoid = Player.Character.FindFirstChildOfClass("Humanoid");
+		const root = Player.Character.FindFirstChild("HumanoidRootPart") as BasePart | undefined;
+		if (!humanoid || !root) {
+			return;
+		}
+		const MoveDirection = humanoid.MoveDirection;
+		const newMoveVector = root.CFrame.VectorToObjectSpace(MoveDirection);
+
+		if (math.abs(newMoveVector.X - analogSteer) > 0.2 || math.abs(-newMoveVector.Z - analogThrottle) > 0.2) {
+			analogSteer = newMoveVector.X;
+			analogThrottle = -newMoveVector.Z;
+			sendMovement();
+		}
+	}
+}
+
+const MOVEMENT_ACTIONS = ["Forward", "Backwards", "Left", "Right", "ControllerSteer"];
+
+function connectMovementControls(seat: BasePart) {
+	resetMovementState();
+
+	const vehicleModel = seat.Parent!.Parent!;
+	inputEvent = vehicleModel.WaitForChild("inputChangedEvent", 5) as RemoteEvent | undefined;
+	if (!inputEvent) {
+		warn(`[VehicleKeyHandler] no inputChangedEvent on ${vehicleModel.GetFullName()}`);
+		return;
+	}
+
+	ContextActionService.BindAction("Forward", forward as never, false, Enum.KeyCode.W, Enum.KeyCode.ButtonR2);
+	ContextActionService.BindAction("Backwards", backwards as never, false, Enum.KeyCode.S, Enum.KeyCode.ButtonL2);
+	ContextActionService.BindAction("Left", left as never, false, Enum.KeyCode.A);
+	ContextActionService.BindAction("Right", right as never, false, Enum.KeyCode.D);
+
+	ContextActionService.BindAction("ControllerSteer", controllerSteer as never, false, Enum.KeyCode.Thumbstick1);
+
+	if (UserInputService.TouchEnabled) {
+		RunService.BindToRenderStep("MobileSteer", 1, mobileSteerFunction);
+	}
+}
+
+function disconnectMovementControls() {
+	for (const action of MOVEMENT_ACTIONS) {
+		ContextActionService.UnbindAction(action);
+	}
+	if (UserInputService.TouchEnabled) {
+		pcall(() => {
+			RunService.UnbindFromRenderStep("MobileSteer");
+		});
+	}
+
+	// Zero the server-side floats before dropping the event reference, so a
+	// re-seated (or killed) vehicle never keeps stale input.
+	if (inputEvent && inputEvent.Parent) {
+		inputEvent.FireServer(0, 0);
+	}
+	inputEvent = undefined;
+	resetMovementState();
+}
+
+// ---------------------------------------------------------------------------
+// Mobile ability buttons (connected once — the original reconnected them on
+// every seating, stacking duplicate handlers)
+// ---------------------------------------------------------------------------
+
+interface MobileInterfaceShape extends ScreenGui {
+	Jump: TextButton;
+	Drift: TextButton;
+	Boost: TextButton;
+}
+
+if (UserInputService.TouchEnabled) {
+	task.spawn(() => {
+		const mobileInterface = (Player.WaitForChild("PlayerGui") as PlayerGui).WaitForChild(
+			"MobileInterface",
+			30,
+		) as MobileInterfaceShape | undefined;
+		if (!mobileInterface) {
+			return;
+		}
+
+		mobileInterface.Boost.MouseButton1Down.Connect(() => handleAction("Boost", Enum.UserInputState.Begin));
+		mobileInterface.Boost.MouseButton1Up.Connect(() => handleAction("Boost", Enum.UserInputState.End));
+
+		mobileInterface.Drift.MouseButton1Down.Connect(() => handleAction("Drift", Enum.UserInputState.Begin));
+		mobileInterface.Drift.MouseButton1Up.Connect(() => handleAction("Drift", Enum.UserInputState.End));
+
+		mobileInterface.Jump.MouseButton1Down.Connect(() => handleAction("Jump1", Enum.UserInputState.Begin));
+		mobileInterface.Jump.MouseButton1Up.Connect(() => handleAction("Jump1", Enum.UserInputState.End));
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Seat handling
+// ---------------------------------------------------------------------------
+
+let seatedConnection: RBXScriptConnection | undefined = undefined;
+let jumpGamepadConnection: RBXScriptConnection | undefined = undefined;
+
+function onSeated(humanoid: Humanoid, isSeated: boolean) {
+	if (isSeated === true) {
+		while (humanoid.SeatPart === undefined) {
+			task.wait();
+		}
+		while (humanoid.SeatPart!.Parent === undefined) {
+			task.wait();
+		}
+
+		// Only vehicle seats belonging to a car model carry the input event;
+		// connectMovementControls warns and bails for anything else.
+		connectMovementControls(humanoid.SeatPart!);
+
+		ContextActionService.BindAction(
+			"HonkHorn",
+			handleAction as never,
+			false,
+			GetKeyBinding.InvokeServer("Horn") as Enum.KeyCode,
+			Enum.KeyCode.ButtonY,
+		);
+		ContextActionService.BindAction(
+			"Drift",
+			handleAction as never,
+			false,
+			GetKeyBinding.InvokeServer("Drift") as Enum.KeyCode,
+			Enum.KeyCode.ButtonL1,
+		);
+		ContextActionService.BindAction(
+			"Boost",
+			handleAction as never,
+			false,
+			GetKeyBinding.InvokeServer("Boost") as Enum.KeyCode,
+			Enum.KeyCode.ButtonR1,
+		);
+		ContextActionService.BindAction(
+			"Jump1",
+			handleAction as never,
+			false,
+			GetKeyBinding.InvokeServer("Jump") as Enum.KeyCode,
+		);
+
+		// ButtonA doubles as UI "accept"; the original only bound it after the
+		// first press while seated, to avoid stealing menu navigation.
+		if (jumpGamepadConnection) {
+			jumpGamepadConnection.Disconnect();
+		}
+		jumpGamepadConnection = UserInputService.InputBegan.Connect((input) => {
+			if (input.KeyCode === Enum.KeyCode.ButtonA) {
+				jumpGamepadConnection!.Disconnect();
+				jumpGamepadConnection = undefined;
+				ContextActionService.BindAction("Jump2", handleAction as never, false, Enum.KeyCode.ButtonA);
+			}
+		});
+
+		ContextActionService.BindAction(
+			"RollLeft",
+			handleAction as never,
+			false,
+			GetKeyBinding.InvokeServer("RollLeft") as Enum.KeyCode,
+			Enum.KeyCode.ButtonL3,
+		);
+		ContextActionService.BindAction(
+			"RollRight",
+			handleAction as never,
+			false,
+			GetKeyBinding.InvokeServer("RollRight") as Enum.KeyCode,
+			Enum.KeyCode.ButtonR3,
+		);
+
+		if (UserInputService.TouchEnabled) {
+			const mobileInterface = (Player as unknown as { PlayerGui: Instance }).PlayerGui.FindFirstChild(
+				"MobileInterface",
+			) as ScreenGui | undefined;
+			if (mobileInterface) {
+				mobileInterface.Enabled = true;
+			}
+		}
+	} else {
+		// When the player gets out:
+		disconnectMovementControls();
+
+		ContextActionService.UnbindAction("FlipVehicle");
+		ContextActionService.UnbindAction("HonkHorn");
+		ContextActionService.UnbindAction("Drift");
+		ContextActionService.UnbindAction("Boost");
+		ContextActionService.UnbindAction("RollLeft");
+		ContextActionService.UnbindAction("RollRight");
+
+		pcall(() => {
+			ContextActionService.UnbindAction("Jump1");
+		});
+		pcall(() => {
+			ContextActionService.UnbindAction("Jump2");
+		});
+		if (jumpGamepadConnection) {
+			jumpGamepadConnection.Disconnect();
+			jumpGamepadConnection = undefined;
+		}
+
+		if (UserInputService.TouchEnabled) {
+			const mobileInterface = (Player as unknown as { PlayerGui: Instance }).PlayerGui.FindFirstChild(
+				"MobileInterface",
+			) as ScreenGui | undefined;
+			if (mobileInterface) {
+				mobileInterface.Enabled = false;
+			}
+		}
+	}
+}
+
+function connectCharacter(Character: Model) {
 	if (seatedConnection) {
 		seatedConnection.Disconnect();
 	}
 
 	const humanoid = Character.WaitForChild("Humanoid") as Humanoid;
 	seatedConnection = humanoid.Seated.Connect((isSeated) => {
-		if (isSeated === true) {
-			while (humanoid.SeatPart === undefined) {
-				task.wait();
-			}
-			while (humanoid.SeatPart!.Parent === undefined) {
-				task.wait();
-			}
-
-			//ContextActionService:BindAction("FlipVehicle", handleAction, false, Enum.KeyCode.V, Enum.KeyCode.ButtonX)
-			ContextActionService.BindAction(
-				"HonkHorn",
-				handleAction as never,
-				false,
-				GetKeyBinding.InvokeServer("Horn") as Enum.KeyCode,
-				Enum.KeyCode.ButtonY,
-			);
-			//ContextActionService:BindAction("Jump1", handleAction, false, GetKeyBinding:InvokeServer("Jump"))
-
-			if (UserInputService.TouchEnabled) {
-				//print("The user's device has a touchscreen!")
-				(
-					(Player as unknown as { PlayerGui: Instance }).PlayerGui.FindFirstChild(
-						"MobileInterface",
-					) as ScreenGui
-				).Enabled = true;
-			}
-		} else {
-			// When the player gets out:
-			ContextActionService.UnbindAction("FlipVehicle");
-			ContextActionService.UnbindAction("Drift");
-			ContextActionService.UnbindAction("Boost");
-			ContextActionService.UnbindAction("RollLeft");
-			ContextActionService.UnbindAction("RollRight");
-
-			pcall(() => {
-				ContextActionService.UnbindAction("Jump");
-			});
-			pcall(() => {
-				ContextActionService.UnbindAction("Jump2");
-			});
-
-			if (UserInputService.TouchEnabled) {
-				//print("The user's device has a touchscreen!")
-				(
-					(Player as unknown as { PlayerGui: Instance }).PlayerGui.FindFirstChild(
-						"MobileInterface",
-					) as ScreenGui
-				).Enabled = false;
-			}
-		}
+		onSeated(humanoid, isSeated);
 	});
-});
-
-if (UserInputService.TouchEnabled) {
-	//print("The user's device has a touchscreen!")
 }
 
-const UserInputService2 = game.GetService("UserInputService");
+Player.CharacterAdded.Connect(connectCharacter);
+if (Player.Character) {
+	task.spawn(() => connectCharacter(Player.Character!));
+}
 
-UserInputService2.InputBegan.Connect((input, gameProcessed) => {
+// ---------------------------------------------------------------------------
+// Gamepad menu buttons (unchanged)
+// ---------------------------------------------------------------------------
+
+UserInputService.InputBegan.Connect((input, gameProcessed) => {
 	if (input.UserInputType === Enum.UserInputType.Gamepad1) {
 		if (input.KeyCode === Enum.KeyCode.ButtonX) {
 			FunctionsAndEvents.GamePadButtonXDown.FireServer();
@@ -113,6 +358,14 @@ UserInputService2.InputBegan.Connect((input, gameProcessed) => {
 		}
 	}
 });
+
+// ---------------------------------------------------------------------------
+// Keybinding menu UI (unchanged)
+// ---------------------------------------------------------------------------
+
+interface KeyBindButton extends TextButton {
+	ImageLabel: ImageLabel;
+}
 
 function WaitForKeyBind(button: KeyBindButton) {
 	const OldImage = button.ImageLabel.Image;

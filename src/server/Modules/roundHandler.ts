@@ -75,6 +75,8 @@ Globals.FFA_MAX_KILLS = 20;
 Globals.TDM_MAX_KILLS = 40;
 //_G.LMS_SPAWN_TIME = 60
 let gameRunning = false;
+/** Bumped to cancel any in-flight round timer loop (prevents stacked endRound calls). */
+let roundTimerGeneration = 0;
 
 const END_SCREEN_DURATION = 7;
 
@@ -168,6 +170,10 @@ function gamemodeStat(mode: string): string | undefined {
 }
 
 handler.startRound = () => {
+	// Invalidate any previous timer before starting a new round.
+	roundTimerGeneration += 1;
+	gameRunning = false;
+
 	if (math.random() < 0.7) {
 		Globals.gamemode = "FFA";
 	} else {
@@ -209,8 +215,6 @@ handler.endRound = () => {
 	stopRoundTimer();
 	EndScreen();
 
-	(game.Workspace as unknown as { Map: Folder }).Map.ClearAllChildren();
-	(game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints.ClearAllChildren();
 	handler.startRound();
 	sendToMenu();
 };
@@ -227,11 +231,20 @@ handler.endRound = () => {
 // end
 
 function loadMap() {
+	const mapFolder = (game.Workspace as unknown as { Map: Folder }).Map;
+	const spawnFolder = (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints;
+
+	// Always clear first. The place file (and a previous startRound without a
+	// matching endRound) can leave maps/spawn points in Workspace — stacking a
+	// second map + mixing SpawnPoints causes "two maps" and ~50% bad car spawns.
+	mapFolder.ClearAllChildren();
+	spawnFolder.ClearAllChildren();
+
 	const rand = math.random(1, maps.size());
 	const map = maps[rand - 1].Clone() as MapModel;
 
 	for (const v of map.SpawnPoints.GetChildren()) {
-		v.Parent = (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints;
+		v.Parent = spawnFolder;
 	}
 
 	game.Workspace.Terrain.Clear();
@@ -245,7 +258,10 @@ function loadMap() {
 		);
 	}
 	loadLighting(map.Name);
-	map.Parent = (game.Workspace as unknown as { Map: Folder }).Map;
+	map.Parent = mapFolder;
+	warn(
+		`[loadMap] loaded ${map.Name}; mapsInWorkspace=${mapFolder.GetChildren().size()} spawnPoints=${spawnFolder.GetChildren().size()}`,
+	);
 }
 
 function loadLighting(mapName: string) {
@@ -616,15 +632,16 @@ function disableRespawn() {
 }
 
 function startRoundTimer(gameTime: number) {
+	const gen = ++roundTimerGeneration;
 	gameRunning = true;
 	Globals.roundTime = gameTime;
 	toggleUiTimer();
 
 	task.spawn(() => {
-		while (Globals.roundTime > 0) {
+		while (Globals.roundTime > 0 && gen === roundTimerGeneration) {
 			Globals.roundTime -= 1;
 
-			if (Globals.roundTime === 0) {
+			if (Globals.roundTime === 0 && gen === roundTimerGeneration) {
 				gameRunning = false;
 				handler.endRound();
 			}
@@ -635,6 +652,7 @@ function startRoundTimer(gameTime: number) {
 }
 
 function stopRoundTimer() {
+	roundTimerGeneration += 1;
 	Globals.roundTime = -1;
 	task.wait(1);
 }

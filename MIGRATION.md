@@ -98,7 +98,7 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
 |---|---|---|---|---|---|
 | ReplicatedStorage/PopulateCrateFrame | ModuleScript | 95 | src/shared/PopulateCrateFrame.ts | Verified | |
 | ReplicatedStorage/KeyCodeImages | ModuleScript | 88 | src/shared/KeyCodeImages.ts | Verified | |
-| ReplicatedStorage/EffectComposerPro/RuntimeEngine | ModuleScript | 464 | src/shared/EffectComposerPro/RuntimeEngine.ts | Verified | |
+| ReplicatedStorage/EffectComposerPro/** | Plugin content | — | *(not migrated — leave in place file)* | Skipped | Effect Composer Pro plugin owns RuntimeEngine + Effects/Defaults |
 
 ## StarterPlayer
 
@@ -110,10 +110,10 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
 | StarterPlayer/StarterPlayerScripts/crateAnimation | LocalScript | 107 | src/client/crateAnimation.client.ts | Verified | |
 | StarterPlayer/StarterPlayerScripts/TerrainReset | LocalScript | 13 | src/client/TerrainReset.client.ts | Verified | |
 | StarterPlayer/StarterPlayerScripts/HideVehicles | LocalScript | 57 | src/client/HideVehicles.client.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/VehicleKeyHandler | LocalScript | 186 | src/client/VehicleKeyHandler.client.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/VehicleKeyHandler | LocalScript | 186 | src/client/VehicleKeyHandler.client.ts | Verified | Rebuilt to the a5318d46 server-authoritative input model (see "Vehicle architecture restoration" below) |
 | StarterPlayer/StarterPlayerScripts/music | LocalScript | 53 | src/client/music.client.ts | Verified | |
-| StarterPlayer/StarterPlayerScripts/PlayerModule/** | ModuleScript tree | — | *(not shipped — engine default)* | Dropped | Old fork only set `onlyTriggersForThrottle`; gamepad R2/L2 throttle is in vehicle.client.ts |
-| StarterPlayer/StarterPlayerScripts/vehicle | LocalScript | 621 | src/client/vehicle.client.ts | Verified | |
+| StarterPlayer/StarterPlayerScripts/PlayerModule/** | ModuleScript tree | — | *(not shipped — engine default)* | Dropped | Old fork only set `onlyTriggersForThrottle`; gamepad R2/L2 throttle is in VehicleKeyHandler.client.ts |
+| StarterPlayer/StarterPlayerScripts/vehicle | LocalScript | 621 | *(deleted)* | Removed | Client-sided physics script removed; drive loop restored server-side in VehicleClass.ts (a5318d46 architecture) |
 
 ## StarterGui
 
@@ -204,7 +204,7 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
    - Do NOT place a custom PlayerModule under StarterPlayerScripts — leave that
      absent so Roblox injects the engine default. (The old place fork only changed
      `onlyTriggersForThrottle`; gamepad throttle is already handled in
-     `src/client/vehicle.client.ts` via R2/L2.)
+     `src/client/VehicleKeyHandler.client.ts` via R2/L2.)
 3. Delete the original Luau implementations (every Script/LocalScript/ModuleScript
    listed in this ledger, including the place-file PlayerModule tree) and the original StarterGui ScreenGuis (Game,
    MobileInterface, Garage, CrateMenu, Multipliers, TimerGui, PlayerMoneyGainedPopups,
@@ -214,12 +214,52 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
      BoostTrails, CarHorns, Skins, Maps, MapTerrains, Events, Sounds, Effects, Nuke,
      HealthBar, TeamHighlight, CarCategory, CarTitle, SaveInStudio;
      ReplicatedStorage: FunctionsAndEvents, Ui, Colors, BoostTrails,
-     EffectComposerPro (Effects/Defaults folders); Workspace: everything;
+     EffectComposerPro (entire plugin folder — do not translate or delete);
+     Workspace: everything;
      StarterPlayerScripts: the gameMusic Sound)
    - ServerStorage/MapLightings ModuleScripts CAN be deleted (values + children are
      reproduced in src/server/MapLightings), and the scripts embedded in
      ServerStorage models (ShipIsland water, Nuke light, TestVehicle seat) are
      replaced by src/server/EmbeddedScripts/attach.server.ts.
+
+## Vehicle architecture restoration (2026-07-16)
+
+The migration originally reproduced the bumperCars HEAD architecture, which was the
+**client-sided** refactor (commit 8cbfdf1c, 2022-07-03): the drive loop, drift, boost
+and aerial control all ran in `vehicle.client.ts` on the driver's machine, syncing
+effects and the boost meter back to the server through the DriveVehicle /
+UpdateBoostEffect / UpdateDriftEffect remotes. That architecture is the source of the
+observed desyncs, boost-meter glitches and input drop-outs.
+
+Restored to the **server-authoritative** architecture of bumperCars commit a5318d46
+("SERVER SIDE", 2022-07-03):
+
+- `src/server/Classes/VehicleClass.ts` — full drive loop (gears, slope compensation,
+  aerial correction), `turnWheels`/anti-Ackerman steering, `drift`/`undrift`, `Boost`/
+  `boostIncrement`/`setBoostMeter`, `Jump`, `Flip`, aerial roll/yaw/pitch, and the
+  `onGround`/`closeGround`/`GetTotalMass` physics queries all run on the server again.
+  The car's `Base` keeps client network ownership (set in spawnVehicle.ts), so the
+  driver's machine still simulates the BodyMover forces smoothly — same as a5318d46.
+- `src/client/vehicle.client.ts` — **deleted**. The client no longer runs physics.
+- `src/client/VehicleKeyHandler.client.ts` — rebuilt: W/S/A/D + gamepad + mobile send
+  throttle/steer floats over the per-vehicle `inputChangedEvent`; Drift/Boost/Jump/
+  Horn/Rolls go through the KeyHandler remote to the server vehicle methods.
+- DriveVehicle / UpdateBoostEffect / UpdateDriftEffect remotes are no longer used by
+  code (instances may remain in the place file harmlessly).
+
+Deliberate fixes on top of the a5318d46 behavior (feel/constants unchanged):
+
+1. Throttle/steer are derived from per-key **held state**, not the original +1/-1
+   accumulators — a missed End or a `UserInputState.Cancel` can no longer permanently
+   desync movement (stuck throttle / weird simultaneous-key behavior).
+2. Server clamps incoming throttle/steer to [-1, 1] and rejects non-number/NaN values
+   (also caps the drift side force at its designed maximum).
+3. `setBoostMeter` only tweens when `boostAmount` actually changes — the original
+   re-created a 0.2 s tween every Heartbeat, which made the bar jitter.
+4. Movement actions are unbound and input floats zeroed on unseat; drift/boost state
+   and input floats are reset when a drive session starts.
+5. Mobile ability buttons are connected once at startup instead of re-connected on
+   every seating (the original stacked duplicate handlers, causing double-fires).
 
 ## Known items requiring manual testing in Studio
 
@@ -227,6 +267,8 @@ Conventions: see CONVENTIONS.md. UI React structure notes at the bottom.
   player joining sees all 8 ScreenGuis and the menu flow works end-to-end.
 - DataStore2 fork translation — verify data round-trips (money increment, rejoin).
 - Promise translation trailing-nil vararg caveat (see DataStore2/Promise row).
-- Vehicle physics parity (client drive loop) and boost/drift/jump timing.
+- Vehicle physics parity (now the server drive loop — a5318d46) and boost/drift/jump
+  timing; verify boost feels punchy (force ×3, target 1.6× max speed) on ground and
+  in the air, drift side force, and that multiple simultaneous keys behave.
 - Crate open animation timing and the money-gained popups.
 - Gamepad navigation (NextSelection wiring is applied post-mount by PlayerGuiManager).

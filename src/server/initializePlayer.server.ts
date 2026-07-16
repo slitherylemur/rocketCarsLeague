@@ -584,13 +584,15 @@ Globals.showMultiplier = (player: Player) => {
 
 const resetting = new Map<Player, boolean>();
 
-Globals.SpawnInPlayer = (player: Player) => {
+Globals.SpawnInPlayer = (player: Player): boolean => {
+	warn(`[SpawnInPlayer] ENTER ${player.Name}`);
 	Globals.clearPlayerGarage(player);
 
 	// Original: for i,v in pairs(player.PlayerGui:GetChildren()) do v:Destroy() end
 	PlayerGuiManager.destroyAll(player);
 
 	player.LoadCharacter();
+	warn(`[SpawnInPlayer] after LoadCharacter Character=${player.Character?.GetFullName() ?? "nil"}`);
 	// Original: the engine re-cloned StarterGui into PlayerGui on LoadCharacter
 	// (every ScreenGui has ResetOnSpawn = true) — the React equivalent mounts here.
 	PlayerGuiManager.mountAll(player);
@@ -615,8 +617,19 @@ Globals.SpawnInPlayer = (player: Player) => {
 	const playerMoney = DataStore2("money", player);
 	setPlayerCash(player, playerMoney.Get(DataStoreDefaults.money) as number);
 
-	const rand = math.random(1, (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints.GetChildren().size());
-	const spawnPoint = (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints.GetChildren()[rand - 1];
+	const spawnPoints = (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints.GetChildren();
+	const mapsInWorld = (game.Workspace as unknown as { Map: Folder }).Map.GetChildren();
+	let mapNames = "";
+	for (const m of mapsInWorld) {
+		mapNames = mapNames === "" ? m.Name : `${mapNames},${m.Name}`;
+	}
+	warn(`[SpawnInPlayer] maps=${mapsInWorld.size()} [${mapNames}] spawnPoints=${spawnPoints.size()}`);
+	if (spawnPoints.size() === 0) {
+		warn(`[SpawnInPlayer] ABORT no SpawnPoints — cannot spawn vehicle`);
+		return false;
+	}
+	const rand = math.random(1, spawnPoints.size());
+	const spawnPoint = spawnPoints[rand - 1];
 	spawnVehicle.SpawnVehicle(
 		player,
 		true,
@@ -647,6 +660,7 @@ Globals.SpawnInPlayer = (player: Player) => {
 
 	task.wait(1);
 	//game.ReplicatedStorage.FunctionsAndEvents.ToggleMenuCamera:FireClient(player,false)
+	return true;
 };
 
 function initialisePlayerUi(player: Player) {
@@ -672,17 +686,30 @@ function initialisePlayerUi(player: Player) {
 
 	garageUi.Inventory.SpawnButton.Button.Visible = true;
 
-	let spawnConnect: RBXScriptConnection;
-	spawnConnect = garageUi.Inventory.SpawnButton.Button.MouseButton1Click.Connect(() => {
-		spawnConnect.Disconnect();
-		// if _G.gamemode == "LMS" and _G.LMS_GAME_TIME - _G.roundTime > _G.LMS_SPAWN_TIME then
-		// 	enablePayOrSpectate(player)
-		// else
-		Globals.SpawnInPlayer(player);
-		//end
-	});
+	const bindSpawnButton = () => {
+		let spawnConnect: RBXScriptConnection;
+		spawnConnect = garageUi.Inventory.SpawnButton.Button.MouseButton1Click.Connect(() => {
+			spawnConnect.Disconnect();
+			const [ok, result] = pcall(() => Globals.SpawnInPlayer(player));
+			if (!ok) {
+				warn(`[SpawnButton] SpawnInPlayer error: ${result}`);
+				bindSpawnButton();
+				return;
+			}
+			if (result !== true) {
+				warn(`[SpawnButton] SpawnInPlayer aborted — rebinding spawn button`);
+				bindSpawnButton();
+			}
+		});
+	};
+	bindSpawnButton();
 
-	OpenInventory(player);
+	const [invOk, invErr] = pcall(() => {
+		OpenInventory(player);
+	});
+	if (!invOk) {
+		warn(`[initialisePlayerUi] OpenInventory error: ${invErr}`);
+	}
 	playerGarage = undefined;
 	//wait(3)
 	//player:LoadCharacter()

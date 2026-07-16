@@ -2130,7 +2130,7 @@ export function GarageGui(): React.Element {
 						SelectionOrder: 0,
 						Size: new UDim2(0.802657247, 0, 0.749999762, 0),
 						SizeConstraint: Enum.SizeConstraint.RelativeXY,
-						Text: "\u00e2\u009a\u0099\u00ef\u00b8\u008f Controls",
+						Text: "Controls",
 						TextColor3: new Color3(0, 0, 0),
 						TextDirection: Enum.TextDirection.Auto,
 						TextScaled: true,
