@@ -142,6 +142,29 @@ export const VehicleAttr = {
 	JumpReadyAt: "JumpReadyAt",
 	TargetVelocity: "TargetVelocity",
 	ScriptedInput: "ScriptedInput", // FeelHarness: both peers skip IAS reads while set
+	// Rollback-safe sim state (Phase 4). EVERY value the sim carries across
+	// ticks lives in an attribute on the predicted Base: a rollback restores
+	// attributes to the server snapshot before resimulating, and any
+	// client/server mismatch in one of them is what TRIGGERS a rollback in the
+	// first place. Plain Lua fields neither roll back nor compare. All times
+	// are SIM time (SimTime, advanced by the fixed simulation deltaTime while
+	// driving) — wall-clock time() differs between peers, so a time()-stamped
+	// attribute could never match and would force a rollback every frame.
+	SimTime: "SimTime",
+	LastThrottle: "LastThrottle",
+	ReleasedThrottle: "ReleasedThrottle",
+	JumpStabilizing: "JumpStabilizing",
+	JumpStabilizeStart: "JumpStabilizeStart",
+	BoostLastInc: "BoostLastInc",
+	FlipActive: "FlipActive",
+	FlipUntil: "FlipUntil",
+	FlipReadyAt: "FlipReadyAt",
+	FlipTarget: "FlipTarget", // CFrame
+	FlipLiftPos: "FlipLiftPos", // Vector3
+	PrevBoostHeld: "PrevBoostHeld",
+	PrevJumpHeld: "PrevJumpHeld",
+	PrevRollLeft: "PrevRollLeft",
+	PrevRollRight: "PrevRollRight",
 } as const;
 
 // Tuning attributes written at server registration so the client sim can
@@ -224,27 +247,21 @@ interface SimEntry {
 	// mass cache: recomputed on occupant change instead of every tick
 	baseMass: number;
 	totalMass: number;
-	// per-tick micro-state (Phase 4: rollback-relevant parts move to attributes)
-	driving: boolean;
-	lastThrottle: number;
-	releasedThrottle: boolean;
-	jumpStabilizing: boolean;
-	jumpStabilizeStart: number;
-	boostLastInc: number;
-	driftEngaged: boolean;
-	flipActive: boolean;
-	flipUntil: number;
-	flipReadyAt: number;
-	flipAlignTarget?: CFrame;
-	flipLiftPosition?: Vector3;
+	// Recomputed from physics state at the top of every drive tick — never
+	// carried across ticks, so plain fields are rollback-safe here.
 	velocity: number;
 	propVelocity: number;
 	errorLogged: boolean;
-	// IAS input edge state
-	prevBoostHeld: boolean;
-	prevJumpHeld: boolean;
-	prevRollLeft: boolean;
-	prevRollRight: boolean;
+	diagTickCounter: number; // diagnostics only — not sim state
+	// Server-only pending ops from OUTSIDE the simulation (FeelHarness, the
+	// FlipVehicle remote): queued here and consumed INSIDE the next sim step,
+	// because attributes on predicted instances may only be written from
+	// within BindToSimulation. The client never sets these; it learns of the
+	// resulting attribute changes through rollback.
+	pendingBoostHeld?: boolean;
+	pendingJump?: boolean;
+	pendingFlip?: boolean;
+	pendingRolls?: Array<{ direction: -1 | 1; begin: boolean }>;
 	inputActions?: {
 		context: InputContext;
 		throttleForward?: InputAction;
@@ -505,23 +522,10 @@ function buildEntry(model: VehicleModel, tuning: VehicleTuning, movers: MoverSet
 		l: fl.Position.sub(bl.Position).Magnitude,
 		baseMass: getMassOfModel(model),
 		totalMass: 0,
-		driving: false,
-		lastThrottle: 0,
-		releasedThrottle: false,
-		jumpStabilizing: false,
-		jumpStabilizeStart: 0,
-		boostLastInc: 0,
-		driftEngaged: false,
-		flipActive: false,
-		flipUntil: 0,
-		flipReadyAt: 0,
 		velocity: 0,
 		propVelocity: 0,
 		errorLogged: false,
-		prevBoostHeld: false,
-		prevJumpHeld: false,
-		prevRollLeft: false,
-		prevRollRight: false,
+		diagTickCounter: 0,
 	};
 	entry.totalMass = entry.baseMass;
 	return entry;
@@ -546,6 +550,19 @@ export function register(model: VehicleModel, tuning: VehicleTuning, owner?: Pla
 	base.SetAttribute(VehicleAttr.JumpReadyAt, 0);
 	base.SetAttribute(VehicleAttr.TargetVelocity, tuning.targetVelocity);
 	base.SetAttribute(VehicleAttr.ScriptedInput, false);
+	base.SetAttribute(VehicleAttr.SimTime, 0);
+	base.SetAttribute(VehicleAttr.LastThrottle, 0);
+	base.SetAttribute(VehicleAttr.ReleasedThrottle, false);
+	base.SetAttribute(VehicleAttr.JumpStabilizing, false);
+	base.SetAttribute(VehicleAttr.JumpStabilizeStart, 0);
+	base.SetAttribute(VehicleAttr.BoostLastInc, 0);
+	base.SetAttribute(VehicleAttr.FlipActive, false);
+	base.SetAttribute(VehicleAttr.FlipUntil, 0);
+	base.SetAttribute(VehicleAttr.FlipReadyAt, 0);
+	base.SetAttribute(VehicleAttr.PrevBoostHeld, false);
+	base.SetAttribute(VehicleAttr.PrevJumpHeld, false);
+	base.SetAttribute(VehicleAttr.PrevRollLeft, false);
+	base.SetAttribute(VehicleAttr.PrevRollRight, false);
 	base.SetAttribute(VehicleTuningAttr.Mass, tuning.mass);
 	base.SetAttribute(VehicleTuningAttr.Acceleration, tuning.acceleration);
 	base.SetAttribute(VehicleTuningAttr.MinTurnRadius, tuning.minTurnRadius);
@@ -662,7 +679,7 @@ function applyBoostHeld(entry: SimEntry, held: boolean, now: number) {
 export function setBoostHeld(model: Model, held: boolean) {
 	const entry = registry.get(model);
 	if (entry) {
-		applyBoostHeld(entry, held, time());
+		entry.pendingBoostHeld = held; // consumed inside the next sim step
 	}
 }
 
@@ -671,15 +688,15 @@ function tryJump(entry: SimEntry, now: number) {
 		entry.base.SetAttribute(VehicleAttr.JumpForceUntil, now + JUMP_FORCE_TIME);
 		entry.base.SetAttribute(VehicleAttr.JumpReadyAt, now + JUMP_FORCE_TIME + JUMP_DEBOUNCE_TIME);
 		// Arm the post-jump upright hold.
-		entry.jumpStabilizing = true;
-		entry.jumpStabilizeStart = now;
+		entry.base.SetAttribute(VehicleAttr.JumpStabilizing, true);
+		entry.base.SetAttribute(VehicleAttr.JumpStabilizeStart, now);
 	}
 }
 
 export function requestJump(model: Model) {
 	const entry = registry.get(model);
-	if (entry && entry.driving) {
-		tryJump(entry, time());
+	if (entry) {
+		entry.pendingJump = true; // consumed inside the next sim step (drive-gated there)
 	}
 }
 
@@ -695,11 +712,16 @@ export function setScriptedInput(model: Model, scripted: boolean) {
 
 export function requestFlip(model: Model) {
 	const entry = registry.get(model);
-	if (!entry) {
-		return;
+	if (entry) {
+		entry.pendingFlip = true; // eligibility checked inside the next sim step
 	}
-	const now = time();
-	if (entry.flipActive || now < entry.flipReadyAt) {
+}
+
+// The old requestFlip body, run INSIDE the sim step so the flip state
+// attributes are written where rollback can track them.
+function tryFlip(entry: SimEntry, now: number) {
+	const base = entry.base;
+	if (attrBool(base, VehicleAttr.FlipActive) || now < attrNumber(base, VehicleAttr.FlipReadyAt, 0)) {
 		return;
 	}
 	if (math.abs(entry.velocity) >= 5) {
@@ -723,16 +745,14 @@ export function requestFlip(model: Model) {
 		const upVector = new Vector3(0, 1, 0);
 		const newRV = vehicleLV.Cross(upVector).Unit;
 		const newUV = newRV.Cross(vehicleLV).Unit;
-		entry.flipAlignTarget = CFrame.fromMatrix(
-			primary.Position.add(new Vector3(0, 10, 0)),
-			newRV,
-			newUV,
-			vehicleLV.mul(-1),
+		base.SetAttribute(
+			VehicleAttr.FlipTarget,
+			CFrame.fromMatrix(primary.Position.add(new Vector3(0, 10, 0)), newRV, newUV, vehicleLV.mul(-1)),
 		);
-		entry.flipLiftPosition = primary.Position.add(new Vector3(0, 10, 0));
-		entry.flipActive = true;
-		entry.flipUntil = now + FLIP_HOLD_TIME;
-		entry.flipReadyAt = now + FLIP_DEBOUNCE_TIME;
+		base.SetAttribute(VehicleAttr.FlipLiftPos, primary.Position.add(new Vector3(0, 10, 0)));
+		base.SetAttribute(VehicleAttr.FlipActive, true);
+		base.SetAttribute(VehicleAttr.FlipUntil, now + FLIP_HOLD_TIME);
+		base.SetAttribute(VehicleAttr.FlipReadyAt, now + FLIP_DEBOUNCE_TIME);
 	}
 }
 
@@ -741,7 +761,8 @@ export function requestFlip(model: Model) {
 function applyRoll(entry: SimEntry, direction: -1 | 1, begin: boolean) {
 	const value = direction * 6;
 	if (begin && !closeGroundQuery(entry)[0]) {
-		entry.jumpStabilizing = false; // deliberate roll takes over from the upright hold
+		// A deliberate roll takes over from the upright hold.
+		entry.base.SetAttribute(VehicleAttr.JumpStabilizing, false);
 		aerialControls(entry, "X", value);
 	} else if (!begin) {
 		aerialControlsReset(entry, "X", value);
@@ -751,7 +772,9 @@ function applyRoll(entry: SimEntry, direction: -1 | 1, begin: boolean) {
 export function setRoll(model: Model, direction: -1 | 1, begin: boolean) {
 	const entry = registry.get(model);
 	if (entry) {
-		applyRoll(entry, direction, begin);
+		const pending = entry.pendingRolls ?? [];
+		pending.push({ direction, begin });
+		entry.pendingRolls = pending; // consumed inside the next sim step
 	}
 }
 
@@ -860,26 +883,28 @@ function readPlayerInputs(entry: SimEntry, now: number) {
 
 	base.SetAttribute(VehicleAttr.DriftHeld, stateBool(actions.drift));
 
+	// Edge detection against the PREVIOUS SIM STEP's input, stored in
+	// attributes (the docs' pattern) so a resimulation replays the same edges.
 	const boostHeld = stateBool(actions.boost);
-	if (boostHeld !== entry.prevBoostHeld) {
-		entry.prevBoostHeld = boostHeld;
+	if (boostHeld !== attrBool(base, VehicleAttr.PrevBoostHeld)) {
+		base.SetAttribute(VehicleAttr.PrevBoostHeld, boostHeld);
 		applyBoostHeld(entry, boostHeld, now);
 	}
 
 	const jumpHeld = stateBool(actions.jump);
-	if (jumpHeld && !entry.prevJumpHeld) {
+	if (jumpHeld && !attrBool(base, VehicleAttr.PrevJumpHeld)) {
 		tryJump(entry, now);
 	}
-	entry.prevJumpHeld = jumpHeld;
+	base.SetAttribute(VehicleAttr.PrevJumpHeld, jumpHeld);
 
 	const rollLeft = stateBool(actions.rollLeft);
-	if (rollLeft !== entry.prevRollLeft) {
-		entry.prevRollLeft = rollLeft;
+	if (rollLeft !== attrBool(base, VehicleAttr.PrevRollLeft)) {
+		base.SetAttribute(VehicleAttr.PrevRollLeft, rollLeft);
 		applyRoll(entry, -1, rollLeft);
 	}
 	const rollRight = stateBool(actions.rollRight);
-	if (rollRight !== entry.prevRollRight) {
-		entry.prevRollRight = rollRight;
+	if (rollRight !== attrBool(base, VehicleAttr.PrevRollRight)) {
+		base.SetAttribute(VehicleAttr.PrevRollRight, rollRight);
 		applyRoll(entry, 1, rollRight);
 	}
 }
@@ -951,6 +976,10 @@ function closeGroundQuery(entry: SimEntry): LuaTuple<[boolean, CFrame?]> {
 
 // Swap the wheels between normal grip and sliding grip. frictionWeight 100
 // makes the wheel's friction dominate whatever ground material it touches.
+// Called EVERY drive tick (not just on the engage/disengage edge): a rollback
+// restores the DriftEngaged attribute but not this physical property, so the
+// friction must be re-asserted from the attribute. The compare keeps the
+// steady state write-free.
 function setWheelFriction(entry: SimEntry, sliding: boolean) {
 	const friction = sliding ? DRIFT_WHEEL_FRICTION : DRIVE_WHEEL_FRICTION;
 	for (const wheel of entry.wheels) {
@@ -959,6 +988,9 @@ function setWheelFriction(entry: SimEntry, sliding: boolean) {
 			continue;
 		}
 		const cur = part.CurrentPhysicalProperties;
+		if (math.abs(cur.Friction - friction) < 1e-4 && cur.FrictionWeight === 100) {
+			continue;
+		}
 		part.CustomPhysicalProperties = new PhysicalProperties(
 			cur.Density,
 			friction,
@@ -1008,11 +1040,8 @@ function drift(entry: SimEntry, steerFloat: number) {
 		return;
 	}
 
-	if (!entry.driftEngaged) {
-		entry.driftEngaged = true;
-		setWheelFriction(entry, true);
-		entry.base.SetAttribute(VehicleAttr.DriftEngaged, true);
-	}
+	entry.base.SetAttribute(VehicleAttr.DriftEngaged, true);
+	setWheelFriction(entry, true);
 
 	const dir = entry.velocity >= 0 ? 1 : -1;
 
@@ -1042,11 +1071,8 @@ function drift(entry: SimEntry, steerFloat: number) {
 }
 
 function undrift(entry: SimEntry) {
-	if (entry.driftEngaged) {
-		entry.driftEngaged = false;
-		setWheelFriction(entry, false);
-		entry.base.SetAttribute(VehicleAttr.DriftEngaged, false);
-	}
+	entry.base.SetAttribute(VehicleAttr.DriftEngaged, false);
+	setWheelFriction(entry, false);
 
 	entry.driftYaw.MaxTorque = 0;
 	entry.driftYaw.AngularVelocity = new Vector3(0, 0, 0);
@@ -1105,7 +1131,7 @@ function turnWheels(entry: SimEntry, throttle: number, steerFloat: number, onGro
 
 // Boost meter cadence — the old boostIncrement, on sim time.
 function boostTick(entry: SimEntry, increase: boolean, now: number) {
-	if (now - entry.boostLastInc >= BOOST_TICK_INTERVAL) {
+	if (now - attrNumber(entry.base, VehicleAttr.BoostLastInc, 0) >= BOOST_TICK_INTERVAL) {
 		const amount = attrNumber(entry.base, VehicleAttr.BoostAmount, 0);
 		if (increase) {
 			entry.base.SetAttribute(VehicleAttr.BoostAmount, math.clamp(amount + 1, 0, 100));
@@ -1119,40 +1145,53 @@ function boostTick(entry: SimEntry, increase: boolean, now: number) {
 				entry.base.SetAttribute(VehicleAttr.BoostAmount, math.clamp(amount - 4, 0, 100));
 			}
 		}
-		entry.boostLastInc = now;
+		entry.base.SetAttribute(VehicleAttr.BoostLastInc, now);
 	}
 }
 
 // ---- the tick ----
 
-function stepVehicle(entry: SimEntry, now: number) {
+function stepVehicle(entry: SimEntry, dt: number) {
 	const model = entry.model;
 	const base = entry.base;
 
 	// Occupancy gate — the old drive() while-condition, evaluated per tick.
+	// The Driving ATTRIBUTE is the previous step's value (rollback-safe), so
+	// the sit/exit edges replay identically during a resimulation.
 	const seat = entry.seat;
 	const occupant = seat ? seat.Occupant : undefined;
 	const ownerCharacter = entry.owner ? entry.owner.Character : undefined;
 	const ownerHumanoid = ownerCharacter ? ownerCharacter.FindFirstChildOfClass("Humanoid") : undefined;
 	const drivingNow =
 		occupant !== undefined && ownerHumanoid !== undefined && occupant === ownerHumanoid && model.Parent !== undefined;
+	const drivingWas = attrBool(base, VehicleAttr.Driving);
 
-	if (drivingNow && !entry.driving) {
+	// The sit/exit EDGES run on the SERVER only. They are game-flow decisions,
+	// not physics: if the client ran them off its own (possibly not yet
+	// replicated) view of seat.Occupant, a Driving=true attribute arriving
+	// before the Occupant property would fire the drive-end edge and pin the
+	// predicted car with the parking brake — a constraint property write that
+	// rollback does NOT restore. The client instead trusts the replicated
+	// Driving attribute below and mispredicts only the single flip step.
+	if (!IS_SERVER) {
+		if (!drivingWas) {
+			return;
+		}
+	} else if (drivingNow && !drivingWas) {
 		// Fresh sit: never inherit input or ability state from a previous drive.
-		entry.driving = true;
 		base.SetAttribute(VehicleAttr.Throttle, 0);
 		base.SetAttribute(VehicleAttr.Steer, 0);
 		base.SetAttribute(VehicleAttr.DriftHeld, false);
 		base.SetAttribute(VehicleAttr.BoostHeld, false); // no regen-block: matches the old fresh-sit reset
 		base.SetAttribute(VehicleAttr.Driving, true);
-		entry.lastThrottle = 0;
-		entry.releasedThrottle = false;
-		entry.boostLastInc = now;
+		base.SetAttribute(VehicleAttr.LastThrottle, 0);
+		base.SetAttribute(VehicleAttr.ReleasedThrottle, false);
+		base.SetAttribute(VehicleAttr.BoostLastInc, attrNumber(base, VehicleAttr.SimTime, 0));
+		base.SetAttribute(VehicleAttr.PrevBoostHeld, false);
+		base.SetAttribute(VehicleAttr.PrevJumpHeld, false);
+		base.SetAttribute(VehicleAttr.PrevRollLeft, false);
+		base.SetAttribute(VehicleAttr.PrevRollRight, false);
 		entry.errorLogged = false;
-		entry.prevBoostHeld = false;
-		entry.prevJumpHeld = false;
-		entry.prevRollLeft = false;
-		entry.prevRollRight = false;
 		setOwnerContextEnabled(entry, true);
 		// Diagnostic: live mass vs the register-time snapshot. A large gap
 		// means post-spawn changes (paint→Metal, skins) moved the mass — the
@@ -1165,9 +1204,13 @@ function stepVehicle(entry: SimEntry, now: number) {
 				)} (register-time=${string.format("%.0f", entry.baseMass)})`,
 			);
 		}
-	} else if (!drivingNow && entry.driving) {
+	} else if (!drivingNow && drivingWas) {
 		// Drive ended: parking brake, exactly like the old loop exit.
-		entry.driving = false;
+		warn(
+			`[VehicleSim] ${model.Name}: drive end (occupant=${occupant !== undefined} ownerHumanoid=${
+				ownerHumanoid !== undefined
+			} parent=${model.Parent !== undefined})`,
+		);
 		base.SetAttribute(VehicleAttr.Driving, false);
 		base.LinearVelocity.MaxForce = 100000;
 		base.LinearVelocity.LineVelocity = 0;
@@ -1177,11 +1220,41 @@ function stepVehicle(entry: SimEntry, now: number) {
 		setOwnerContextEnabled(entry, false);
 	}
 
-	if (!entry.driving) {
+	if (IS_SERVER && !drivingNow) {
 		return;
 	}
 
+	// Sim clock: advances by the fixed simulation delta while driving. Stored
+	// as an attribute so a rollback rewinds it with everything else — every
+	// timer below compares against THIS clock, never wall time, because the
+	// two peers' wall clocks can never agree.
+	const now = attrNumber(base, VehicleAttr.SimTime, 0) + dt;
+	base.SetAttribute(VehicleAttr.SimTime, now);
+
 	readPlayerInputs(entry, now);
+
+	// Server-side pending ops queued outside the sim (FeelHarness, remotes).
+	if (entry.pendingBoostHeld !== undefined) {
+		const held = entry.pendingBoostHeld;
+		entry.pendingBoostHeld = undefined;
+		base.SetAttribute(VehicleAttr.PrevBoostHeld, held);
+		applyBoostHeld(entry, held, now);
+	}
+	if (entry.pendingJump) {
+		entry.pendingJump = undefined;
+		tryJump(entry, now);
+	}
+	if (entry.pendingRolls) {
+		const rolls = entry.pendingRolls;
+		entry.pendingRolls = undefined;
+		for (const roll of rolls) {
+			applyRoll(entry, roll.direction, roll.begin);
+		}
+	}
+	if (entry.pendingFlip) {
+		entry.pendingFlip = undefined;
+		tryFlip(entry, now);
+	}
 
 	// Mass is measured EVERY tick — exactly the old GetTotalMass(). It must
 	// track post-spawn changes (PaintVehicle swaps body pieces to Metal at
@@ -1204,16 +1277,20 @@ function stepVehicle(entry: SimEntry, now: number) {
 	}
 
 	// Flip hold window.
-	if (entry.flipActive) {
-		if (now >= entry.flipUntil) {
-			entry.flipActive = false;
+	if (attrBool(base, VehicleAttr.FlipActive)) {
+		if (now >= attrNumber(base, VehicleAttr.FlipUntil, 0)) {
+			base.SetAttribute(VehicleAttr.FlipActive, false);
 			entry.flipLift.MaxAxesForce = new Vector3(0, 0, 0);
 			entry.flipAlign.MaxTorque = 0;
 		} else {
-			entry.flipLift.Position = entry.flipLiftPosition!;
-			entry.flipLift.MaxAxesForce = new Vector3(0, math.huge, 0);
-			entry.flipAlign.CFrame = entry.flipAlignTarget!;
-			entry.flipAlign.MaxTorque = math.huge;
+			const flipTarget = base.GetAttribute(VehicleAttr.FlipTarget);
+			const flipLiftPos = base.GetAttribute(VehicleAttr.FlipLiftPos);
+			if (typeIs(flipTarget, "CFrame") && typeIs(flipLiftPos, "Vector3")) {
+				entry.flipLift.Position = flipLiftPos;
+				entry.flipLift.MaxAxesForce = new Vector3(0, math.huge, 0);
+				entry.flipAlign.CFrame = flipTarget;
+				entry.flipAlign.MaxTorque = math.huge;
+			}
 		}
 	}
 
@@ -1236,22 +1313,23 @@ function stepVehicle(entry: SimEntry, now: number) {
 	entry.propVelocity = math.abs(entry.velocity) / entry.tuning.targetVelocity;
 
 	//Aerial Correction and controls
+	const jumpStabilizeStart = attrNumber(base, VehicleAttr.JumpStabilizeStart, 0);
 	if (onGround) {
 		// Landed (the grace period skips the still-grounded takeoff frames).
-		if (entry.jumpStabilizing && now - entry.jumpStabilizeStart > JUMP_UPRIGHT_LAND_GRACE) {
-			entry.jumpStabilizing = false;
+		if (attrBool(base, VehicleAttr.JumpStabilizing) && now - jumpStabilizeStart > JUMP_UPRIGHT_LAND_GRACE) {
+			base.SetAttribute(VehicleAttr.JumpStabilizing, false);
 		}
 		entry.aerial.MaxTorque = 0;
 		entry.upright.MaxTorque = 0;
-		if (entry.releasedThrottle) {
+		if (attrBool(base, VehicleAttr.ReleasedThrottle)) {
 			pitch(entry, 0);
 		}
-		entry.releasedThrottle = false;
+		base.SetAttribute(VehicleAttr.ReleasedThrottle, false);
 	} else if (!closeGroundBool) {
-		if (entry.jumpStabilizing && now - entry.jumpStabilizeStart > JUMP_UPRIGHT_MAX_TIME) {
-			entry.jumpStabilizing = false;
+		if (attrBool(base, VehicleAttr.JumpStabilizing) && now - jumpStabilizeStart > JUMP_UPRIGHT_MAX_TIME) {
+			base.SetAttribute(VehicleAttr.JumpStabilizing, false);
 		}
-		if (entry.jumpStabilizing) {
+		if (attrBool(base, VehicleAttr.JumpStabilizing)) {
 			// Post-jump upright hold: level roll+pitch, yaw free.
 			entry.upright.CFrame = cframeFromXAxis(new Vector3(0, 1, 0));
 			entry.upright.MaxTorque = math.huge;
@@ -1260,16 +1338,16 @@ function stepVehicle(entry: SimEntry, now: number) {
 		}
 		yaw(entry, steerFloat);
 
-		if (entry.releasedThrottle) {
+		if (attrBool(base, VehicleAttr.ReleasedThrottle)) {
 			// A deliberate pitch input takes over from the upright hold.
 			if (throttle !== 0) {
-				entry.jumpStabilizing = false;
+				base.SetAttribute(VehicleAttr.JumpStabilizing, false);
 			}
 			pitch(entry, throttle);
 		}
 
-		if (entry.lastThrottle === 0 && throttle !== 0) {
-			entry.releasedThrottle = true;
+		if (attrNumber(base, VehicleAttr.LastThrottle, 0) === 0 && throttle !== 0) {
+			base.SetAttribute(VehicleAttr.ReleasedThrottle, true);
 		}
 	} else {
 		//closeGround
@@ -1277,11 +1355,11 @@ function stepVehicle(entry: SimEntry, now: number) {
 		// Slope hug: align the car's up axis to the surface normal, yaw free.
 		entry.upright.CFrame = cframeFromXAxis(gyroCFrame!.YVector);
 		entry.upright.MaxTorque = math.huge;
-		if (entry.lastThrottle === 0 && throttle !== 0) {
-			entry.releasedThrottle = true;
+		if (attrNumber(base, VehicleAttr.LastThrottle, 0) === 0 && throttle !== 0) {
+			base.SetAttribute(VehicleAttr.ReleasedThrottle, true);
 		}
 	}
-	entry.lastThrottle = throttle;
+	base.SetAttribute(VehicleAttr.LastThrottle, throttle);
 
 	turnWheels(entry, throttle, steerFloat, grounded);
 
@@ -1356,10 +1434,40 @@ function stepVehicle(entry: SimEntry, now: number) {
 	base.LinearVelocity.MaxForce = force;
 	base.LinearVelocity.LineVelocity = targetVelocity;
 	base.slopeCounterVelocity.MaxForce = slopeCounterForce;
+
+	// Phase 4 diagnostics: throttled drive-state line on both peers (first
+	// driven tick prints immediately, then every ~150 sim steps).
+	entry.diagTickCounter += 1;
+	if (entry.diagTickCounter % 150 === 1) {
+		const rootPart = base.AssemblyRootPart;
+		const assemblyVel = base.AssemblyLinearVelocity;
+		print(
+			string.format(
+				"[VehicleSim][%s] %s t=%.2f thr=%d gnd=%s F=%.0f v=%.1f mass=%.0f y=%.1f velY=%.1f root=%s anch=%s",
+				IS_SERVER ? "S" : "C",
+				model.Name,
+				now,
+				throttle,
+				tostring(grounded),
+				force,
+				entry.velocity,
+				totalMass,
+				base.Position.Y,
+				assemblyVel.Y,
+				rootPart ? rootPart.Name : "nil",
+				tostring(rootPart ? rootPart.Anchored : false),
+			),
+		);
+	}
 }
 
-function tick() {
-	const now = time();
+let diagFirstTick = true;
+
+function tick(dt: number) {
+	if (diagFirstTick) {
+		diagFirstTick = false;
+		print(`[VehicleSim] ${IS_SERVER ? "server" : "client"} first sim tick dt=${dt}`);
+	}
 	for (const [model, entry] of registry) {
 		if (entry.model.Parent === undefined || entry.base.Parent === undefined) {
 			registry.delete(model);
@@ -1374,7 +1482,7 @@ function tick() {
 		if (!IS_SERVER && entry.owner !== LOCAL_PLAYER) {
 			continue;
 		}
-		const [ok, err] = pcall(() => stepVehicle(entry, now));
+		const [ok, err] = pcall(() => stepVehicle(entry, dt));
 		if (!ok && !entry.errorLogged) {
 			// One log per drive session — the old loop swallowed these silently,
 			// which hid real breakage.
@@ -1398,10 +1506,25 @@ export function initialize() {
 	// during rollback-resimulation. Falls back to Heartbeat (Phase 2/3
 	// behavior) if the API is unavailable.
 	const [ok, err] = pcall(() => {
-		RunService.BindToSimulation(() => tick());
+		RunService.BindToSimulation((deltaTime: number) => tick(deltaTime));
 	});
-	if (!ok) {
+	// Guard against silent netcode regressions: EVERYTHING in Phase 4 assumes
+	// AuthorityMode=Server. If this ever prints Client, the place property has
+	// reverted and the whole prediction architecture is inert (and spawnVehicle
+	// falls back to the classic anchor + SetNetworkOwner choreography).
+	const [modeOk, mode] = pcall(() => tostring((game.Workspace as unknown as Record<string, unknown>).AuthorityMode));
+	warn(
+		`[VehicleSim] ${IS_SERVER ? "server" : "client"} Workspace.AuthorityMode=${
+			modeOk ? mode : "unreadable from Lua (expected under current beta; code assumes Server)"
+		}`,
+	);
+	if (ok) {
+		print(`[VehicleSim] ${IS_SERVER ? "server" : "client"} bound via BindToSimulation`);
+	} else {
+		// Fallback ONLY for engines without the server-authority beta — under
+		// AuthorityMode=Server this branch must never run (Heartbeat code is
+		// invisible to rollback-resimulation).
 		warn(`[VehicleSim] BindToSimulation unavailable (${err}); falling back to Heartbeat`);
-		RunService.Heartbeat.Connect(() => tick());
+		RunService.Heartbeat.Connect((deltaTime) => tick(deltaTime));
 	}
 }

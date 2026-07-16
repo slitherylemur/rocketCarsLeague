@@ -15,15 +15,25 @@ const RunService = game.GetService("RunService");
 Globals.vehiclesTable = {};
 
 // Under Workspace.AuthorityMode = Server there is no network ownership: the
-// server simulates every assembly and SetNetworkOwner throws. pcall-read the
-// property so this also runs on engines/types that predate the beta.
+// server simulates every assembly and SetNetworkOwner throws.
+//
+// IMPORTANT: Workspace.AuthorityMode is NOT script-readable in the current
+// beta (the property access throws), so it cannot be used for detection —
+// reading it and defaulting to false silently re-enabled the ENTIRE classic
+// choreography (anchor-during-seat + SetNetworkOwner) under server authority,
+// which anchors a predicted assembly mid-seat and skips markPredictable.
+// The game is committed to server authority, so this is a constant; flip it
+// only to A/B against classic netcode in a place that actually runs classic.
+const SERVER_AUTHORITY = true;
 function isServerAuthority(): boolean {
-	let result = false;
+	let readable = false;
+	let result = SERVER_AUTHORITY;
 	pcall(() => {
 		const mode = tostring((game.Workspace as unknown as Record<string, unknown>).AuthorityMode);
+		readable = true;
 		result = mode === "Enum.AuthorityMode.Server" || mode === "Server";
 	});
-	return result;
+	return readable ? result : SERVER_AUTHORITY;
 }
 
 // Phase 4: the car must be predictable on the owner's client. Client-side
