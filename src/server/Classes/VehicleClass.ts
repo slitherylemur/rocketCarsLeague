@@ -26,6 +26,7 @@ export type { VehicleWheel, VehicleBase, VehicleModel } from "shared/vehicleSim/
 const Players = game.GetService("Players");
 const TweenService = game.GetService("TweenService");
 const MarketplaceService = game.GetService("MarketplaceService");
+const RunService = game.GetService("RunService");
 
 //Globals
 Globals.CarCategorys = ["City", "Off Road", "Sports", "Specials", "Military"];
@@ -179,16 +180,24 @@ export class VehicleClass {
 		// movement floats arrive through the owner's InputActions, read by the
 		// sim tick.)
 
-		// Damage hitbox — connected once per vehicle (used to live inside the
-		// drive loop; a parked or ownerless car can't exceed the speed gate, so
-		// connecting unconditionally is equivalent).
+		// Damage detection (server): a spatial query instead of .Touched — a
+		// Touched connection plants a TouchTransmitter inside the assembly,
+		// and the prediction system refuses assemblies containing
+		// unpredictable instance types. Same checks, same speed gate, same
+		// single-slot 1s dedupe as the old handler.
+		this.model.Hitboxes.damageBlock.CanQuery = true; // spatial queries need it
 		let lastCarHit: Instance | undefined = undefined;
-		this.model.Hitboxes.damageBlock.Touched.Connect((part) => {
-			if (part.Parent === undefined) {
-				if (part !== undefined) {
-					part.Destroy();
-				}
-
+		const overlapParams = new OverlapParams();
+		overlapParams.FilterType = Enum.RaycastFilterType.Whitelist;
+		overlapParams.FilterDescendantsInstances = [(game.Workspace as unknown as { Vehicles: Folder }).Vehicles];
+		const damageConnection = RunService.Heartbeat.Connect(() => {
+			if (this.model.Parent === undefined) {
+				damageConnection.Disconnect();
+				return;
+			}
+			const hitboxes = this.model.FindFirstChild("Hitboxes");
+			const damageBlock = hitboxes && hitboxes.FindFirstChild("damageBlock");
+			if (!damageBlock || !damageBlock.IsA("BasePart") || !this.model.FindFirstChild("Base")) {
 				return;
 			}
 			// GetVelocityAtPosition(Base.Position) == the old Base.Velocity read.
@@ -196,8 +205,13 @@ export class VehicleClass {
 				this.model.Base.GetVelocityAtPosition(this.model.Base.Position),
 			).Z;
 			const propVelocity = math.abs(velocity) / this.targetVelocity;
-
-			if (propVelocity > 0.05) {
+			if (propVelocity <= 0.05) {
+				return;
+			}
+			for (const part of game.Workspace.GetPartsInPart(damageBlock, overlapParams)) {
+				if (part.Parent === undefined) {
+					continue;
+				}
 				if (
 					(part.Parent!.Name === "Hitboxes" || part.Name === "damageBlock") &&
 					part.Parent!.Parent !== this.model &&

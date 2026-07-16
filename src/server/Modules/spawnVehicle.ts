@@ -26,21 +26,34 @@ function isServerAuthority(): boolean {
 	return result;
 }
 
-// Prediction is disabled around the car until the shared simulation exists
-// (SERVER_AUTHORITY_PLAN.md Phases 2-4): a predicted character welded into an
-// unpredicted car makes the engine fight itself (hover/bob + "Instance ... is
-// not predicted" spam). Set on the server AND the client (VehicleKeyHandler)
-// since the docs don't say which side owns the flag; pcall makes it a no-op
-// on classic netcode.
-function setPredictionDeep(root: Instance, mode: Enum.PredictionMode) {
+// Phase 4: the car must be predictable on the owner's client. Client-side
+// SetPredictionMode(On) alone left the car Authoritative, so the server also
+// marks every predictable part/constraint of drivable cars On at spawn.
+// (Remote clients still set them Off locally in initVehicleSim.client.ts.)
+function canPredict(instance: Instance): boolean {
+	return (
+		instance.IsA("BasePart") ||
+		instance.IsA("Model") ||
+		instance.IsA("Folder") ||
+		instance.IsA("Attachment") ||
+		instance.IsA("Constraint") ||
+		instance.IsA("JointInstance")
+	);
+}
+
+function markPredictable(root: Instance) {
 	const [ok, err] = pcall(() => {
-		RunService.SetPredictionMode(root, mode);
+		if (canPredict(root)) {
+			RunService.SetPredictionMode(root, Enum.PredictionMode.On);
+		}
 		for (const descendant of root.GetDescendants()) {
-			RunService.SetPredictionMode(descendant, mode);
+			if (canPredict(descendant)) {
+				RunService.SetPredictionMode(descendant, Enum.PredictionMode.On);
+			}
 		}
 	});
 	if (!ok) {
-		warn(`[spawnVehicle] SetPredictionMode(${mode}) failed: ${err}`);
+		warn(`[SpawnVehicle] markPredictable failed: ${err}`);
 	}
 }
 
@@ -227,10 +240,7 @@ const spawnVehicleModule = {
 			warn(`[SpawnVehicle] InitialiseControl; Character=${player.Character?.GetFullName() ?? "nil"}`);
 
 			if (isServerAuthority()) {
-				setPredictionDeep(newModel, Enum.PredictionMode.Off);
-				if (player.Character) {
-					setPredictionDeep(player.Character, Enum.PredictionMode.Off);
-				}
+				markPredictable(newModel);
 			}
 
 			SeatPlayer(player, newModel);
@@ -330,10 +340,6 @@ const spawnVehicleModule = {
 			//playerGarage:FindFirstChild("VehicleFolder"):ClearAllChildren()
 		}
 
-		// Give the character its default prediction back once it's out of the car.
-		if (isServerAuthority() && player.Character) {
-			setPredictionDeep(player.Character, Enum.PredictionMode.Automatic);
-		}
 	},
 };
 

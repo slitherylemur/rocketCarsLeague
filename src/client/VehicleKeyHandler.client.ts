@@ -37,33 +37,43 @@ const handleAction = (actionName: string, inputState: Enum.UserInputState, input
 // ---------------------------------------------------------------------------
 // Server authority: prediction management while seated
 // ---------------------------------------------------------------------------
-// Under Workspace.AuthorityMode = Server the local character is predicted by
-// default. Seating welds it into the car assembly, and the engine cannot
-// predict half an assembly. Until the shared sim runs on the client too
-// (Phase 4), the stable configuration is NO prediction around the car: both
-// the car and the character are forced to PredictionMode.Off while seated and
-// revert to Automatic on exit. The server sets the same modes (spawnVehicle);
-// every call is pcall-guarded so this is a no-op without server authority.
+// Phase 4: the local car is fully PREDICTED. The client runs the same sim
+// (initVehicleSim.client.ts) under BindToSimulation, and every part and
+// constraint of the car is forced to PredictionMode.On while seated (the
+// engine can't predict half an assembly — the seated character is predicted
+// by default and is welded into the car). Reverts to Automatic on exit.
+// pcall-guarded: a no-op without server authority.
 
 let managedVehicle: Instance | undefined = undefined;
 let managedCharacter: Instance | undefined = undefined;
 
+// Only these classes can be predicted — sweeping everything made the engine
+// warn about TouchTransmitter/Humanoid.Status and refuse the whole car.
+function canPredict(instance: Instance): boolean {
+	return (
+		instance.IsA("BasePart") ||
+		instance.IsA("Model") ||
+		instance.IsA("Folder") ||
+		instance.IsA("Attachment") ||
+		instance.IsA("Constraint") ||
+		instance.IsA("JointInstance")
+	);
+}
+
 function setPredictionDeep(root: Instance, mode: Enum.PredictionMode) {
 	const [ok, err] = pcall(() => {
-		RunService.SetPredictionMode(root, mode);
+		if (canPredict(root)) {
+			RunService.SetPredictionMode(root, mode);
+		}
 		for (const descendant of root.GetDescendants()) {
-			RunService.SetPredictionMode(descendant, mode);
+			if (canPredict(descendant)) {
+				RunService.SetPredictionMode(descendant, mode);
+			}
 		}
 	});
 	if (!ok) {
 		warn(`[VehicleKeyHandler] SetPredictionMode(${mode}) failed: ${err}`);
 	}
-}
-
-function logPredictionStatus(label: string, instance: Instance) {
-	pcall(() => {
-		print(`[VehicleKeyHandler] prediction status of ${label}: ${RunService.GetPredictionStatus(instance)}`);
-	});
 }
 
 // ---------------------------------------------------------------------------
@@ -174,20 +184,20 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 		if (vehicleModel && vehicleModel.FindFirstChild("Base")) {
 			managedVehicle = vehicleModel;
 			managedCharacter = Player.Character;
-			setPredictionDeep(vehicleModel, Enum.PredictionMode.Off);
+			setPredictionDeep(vehicleModel, Enum.PredictionMode.On);
 			if (managedCharacter) {
-				setPredictionDeep(managedCharacter, Enum.PredictionMode.Off);
+				setPredictionDeep(managedCharacter, Enum.PredictionMode.On);
 			}
-			task.delay(1, () => {
+			// One-shot diagnostic: the engine's predicted-instance count is the
+			// only trustworthy signal (GetPredictionStatus outside a resim pass
+			// reports Authoritative even for predicted instances). Expect
+			// roughly "car + character"-sized numbers while seated.
+			task.delay(2, () => {
 				if (managedVehicle === vehicleModel) {
-					const base = vehicleModel.FindFirstChild("Base");
-					if (base) {
-						logPredictionStatus("vehicle Base", base);
-					}
-					const root = managedCharacter ? managedCharacter.FindFirstChild("HumanoidRootPart") : undefined;
-					if (root) {
-						logPredictionStatus("HumanoidRootPart", root);
-					}
+					pcall(() => {
+						const predicted = game.GetService("AuroraService").GetPredictedInstances();
+						print(`[VehicleKeyHandler] engine predicted-instance count while seated: ${predicted.size()}`);
+					});
 				}
 			});
 		}

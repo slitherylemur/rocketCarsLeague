@@ -24,6 +24,12 @@
 const RunService = game.GetService("RunService");
 const Players = game.GetService("Players");
 
+const IS_SERVER = RunService.IsServer();
+// On the client, only the local player's own car is stepped (predicted);
+// remote cars render authoritative server state (Phase 5 may extrapolate
+// them from the replicated input attributes).
+const LOCAL_PLAYER = IS_SERVER ? undefined : Players.LocalPlayer;
+
 // ---- feel tuning knobs (a5318d46 baseline: 1.0 / 3 / 3 / 1.6 / uncapped / 0.01) ----
 const DRIVE_FORCE_MULT = 1.25; // overall engine force, forward and reverse
 const BOOST_FORCE_MULT = 3; // boost punch on the ground (baseline 3)
@@ -135,6 +141,20 @@ export const VehicleAttr = {
 	JumpForceUntil: "JumpForceUntil",
 	JumpReadyAt: "JumpReadyAt",
 	TargetVelocity: "TargetVelocity",
+	ScriptedInput: "ScriptedInput", // FeelHarness: both peers skip IAS reads while set
+} as const;
+
+// Tuning attributes written at server registration so the client sim can
+// rebuild the same tuning from the replicated model (Phase 4).
+export const VehicleTuningAttr = {
+	Mass: "TuneMass",
+	Acceleration: "TuneAcceleration",
+	MinTurnRadius: "TuneMinTurnRadius",
+	MaxTurnRadius: "TuneMaxTurnRadius",
+	MaxAngularSpeed: "TuneMaxAngularSpeed",
+	MinAngularSpeed: "TuneMinAngularSpeed",
+	BoostAmount: "TuneBoostAmount",
+	DriftingMult: "TuneDriftingMult",
 } as const;
 
 // Attributes on the vehicle MODEL (game state, written by the server
@@ -192,9 +212,15 @@ interface SimEntry {
 	flipAlign: AlignOrientation;
 	flipLift: AlignPosition;
 	jumpThrust: VectorForce;
+	driftThrust: VectorForce;
 	// Ackermann geometry
 	t: number;
 	l: number;
+	// Bounding box, precomputed at registration: Model.GetBoundingBox() is
+	// not allowed inside simulation callbacks, and the model is rigid so the
+	// size and the box center's Base-local offset are constant.
+	boundingSizeX: number;
+	boundingCenterOffset: Vector3;
 	// mass cache: recomputed on occupant change instead of every tick
 	baseMass: number;
 	totalMass: number;
@@ -215,7 +241,6 @@ interface SimEntry {
 	propVelocity: number;
 	errorLogged: boolean;
 	// IAS input edge state
-	scriptedInput: boolean; // FeelHarness override: skip IAS reads, keep attrs as scripted
 	prevBoostHeld: boolean;
 	prevJumpHeld: boolean;
 	prevRollLeft: boolean;
@@ -325,13 +350,13 @@ function cframeFromXAxis(x: Vector3): CFrame {
 // ---- movers (modern constraint replacements for the legacy BodyMovers) ----
 
 function createMovers(base: VehicleBase) {
-	// Clear legacy movers and any hand-added replacement constraints — all
+	// Clear ALL legacy BodyMovers (the model's DriftThrust turned out to be a
+	// legacy BodyThrust — legacy movers cannot be written inside simulation
+	// callbacks) and any hand-added replacement constraints — all
 	// configuration lives here so nothing in the model can fight the sim.
 	for (const child of base.GetChildren()) {
 		if (
-			child.IsA("BodyAngularVelocity") ||
-			child.IsA("BodyGyro") ||
-			child.IsA("BodyPosition") ||
+			child.IsA("BodyMover") ||
 			child.IsA("AngularVelocity") ||
 			child.IsA("AlignOrientation") ||
 			child.IsA("AlignPosition")
@@ -424,23 +449,45 @@ function createMovers(base: VehicleBase) {
 	jumpThrust.Force = new Vector3(0, 0, 0);
 	jumpThrust.Parent = base;
 
-	return { aerial, driftYaw, upright, flipAlign, flipLift, jumpThrust };
+	// Drift centripetal assist. Replaces the model's legacy BodyThrust of the
+	// same name: force in the BASE-LOCAL frame (RelativeTo Attachment0, with
+	// the attachment axis-aligned at the Base origin) applied at the origin —
+	// BodyThrust's exact semantics.
+	const driftThrust = new Instance("VectorForce");
+	driftThrust.Name = "DriftThrust";
+	driftThrust.Attachment0 = centerAttachment;
+	driftThrust.ApplyAtCenterOfMass = false;
+	driftThrust.RelativeTo = Enum.ActuatorRelativeTo.Attachment0;
+	driftThrust.Force = new Vector3(0, 0, 0);
+	driftThrust.Parent = base;
+
+	return { aerial, driftYaw, upright, flipAlign, flipLift, jumpThrust, driftThrust };
 }
 
 // ---- registration ----
 
-export function register(model: VehicleModel, tuning: VehicleTuning, owner?: Player) {
-	const base = model.Base;
-	const movers = createMovers(base);
+interface MoverSet {
+	aerial: AngularVelocity;
+	driftYaw: AngularVelocity;
+	upright: AlignOrientation;
+	flipAlign: AlignOrientation;
+	flipLift: AlignPosition;
+	jumpThrust: VectorForce;
+	driftThrust: VectorForce;
+}
 
+function buildEntry(model: VehicleModel, tuning: VehicleTuning, movers: MoverSet, owner?: Player): SimEntry {
 	const wheels = model.Wheels.GetChildren() as VehicleWheel[];
 	const fl = model.Wheels.FL.WheelMount;
 	const fr = model.Wheels.FR.WheelMount;
 	const bl = model.Wheels.BL.WheelMount;
+	const [bbCFrame, bbSize] = model.GetBoundingBox();
 
 	const entry: SimEntry = {
 		model,
-		base,
+		base: model.Base,
+		boundingSizeX: bbSize.X,
+		boundingCenterOffset: model.Base.CFrame.PointToObjectSpace(bbCFrame.Position),
 		seat: model.Seats.FindFirstChild("VehicleSeat") as VehicleSeat | undefined,
 		tuning,
 		owner,
@@ -453,6 +500,7 @@ export function register(model: VehicleModel, tuning: VehicleTuning, owner?: Pla
 		flipAlign: movers.flipAlign,
 		flipLift: movers.flipLift,
 		jumpThrust: movers.jumpThrust,
+		driftThrust: movers.driftThrust,
 		t: fl.Position.sub(fr.Position).Magnitude,
 		l: fl.Position.sub(bl.Position).Magnitude,
 		baseMass: getMassOfModel(model),
@@ -470,13 +518,21 @@ export function register(model: VehicleModel, tuning: VehicleTuning, owner?: Pla
 		velocity: 0,
 		propVelocity: 0,
 		errorLogged: false,
-		scriptedInput: false,
 		prevBoostHeld: false,
 		prevJumpHeld: false,
 		prevRollLeft: false,
 		prevRollRight: false,
 	};
 	entry.totalMass = entry.baseMass;
+	return entry;
+}
+
+// Server-side registration: creates the movers, writes tuning + initial
+// state attributes, applies wheel friction.
+export function register(model: VehicleModel, tuning: VehicleTuning, owner?: Player) {
+	const base = model.Base;
+	const movers = createMovers(base);
+	const entry = buildEntry(model, tuning, movers, owner);
 
 	base.SetAttribute(VehicleAttr.Throttle, 0);
 	base.SetAttribute(VehicleAttr.Steer, 0);
@@ -489,11 +545,75 @@ export function register(model: VehicleModel, tuning: VehicleTuning, owner?: Pla
 	base.SetAttribute(VehicleAttr.JumpForceUntil, 0);
 	base.SetAttribute(VehicleAttr.JumpReadyAt, 0);
 	base.SetAttribute(VehicleAttr.TargetVelocity, tuning.targetVelocity);
+	base.SetAttribute(VehicleAttr.ScriptedInput, false);
+	base.SetAttribute(VehicleTuningAttr.Mass, tuning.mass);
+	base.SetAttribute(VehicleTuningAttr.Acceleration, tuning.acceleration);
+	base.SetAttribute(VehicleTuningAttr.MinTurnRadius, tuning.minTurnRadius);
+	base.SetAttribute(VehicleTuningAttr.MaxTurnRadius, tuning.maxTurnRadius);
+	base.SetAttribute(VehicleTuningAttr.MaxAngularSpeed, tuning.maxAngularSpeed);
+	base.SetAttribute(VehicleTuningAttr.MinAngularSpeed, tuning.minAngularSpeed);
+	base.SetAttribute(VehicleTuningAttr.BoostAmount, tuning.boostAmount);
+	base.SetAttribute(VehicleTuningAttr.DriftingMult, tuning.driftingMult);
 	model.SetAttribute(VehicleModelAttr.OwnerUserId, owner ? owner.UserId : 0);
 
 	setWheelFriction(entry, false);
 
 	registry.set(model, entry);
+}
+
+// Client-side registration (Phase 4): adopts the replicated movers and
+// rebuilds the tuning from attributes. Never writes state — the server owns
+// initial state; the client sim only writes attributes while predicting.
+// Returns false while the replica is still incomplete (caller retries).
+export function registerReplica(model: VehicleModel, owner: Player): boolean {
+	if (registry.has(model)) {
+		return true;
+	}
+	const base = model.FindFirstChild("Base") as VehicleBase | undefined;
+	if (!base || !model.FindFirstChild("Wheels") || !model.FindFirstChild("Seats")) {
+		return false;
+	}
+	const findMover = <T extends Instance>(name: string) => base.FindFirstChild(name) as T | undefined;
+	const aerial = findMover<AngularVelocity>("Aerial");
+	const driftYaw = findMover<AngularVelocity>("DriftYaw");
+	const upright = findMover<AlignOrientation>("UprightAlign");
+	const flipAlign = findMover<AlignOrientation>("FlipAlign");
+	const flipLift = findMover<AlignPosition>("FlipLift");
+	const jumpThrust = findMover<VectorForce>("JumpThrust");
+	const driftThrust = findMover<VectorForce>("DriftThrust");
+	if (!aerial || !driftYaw || !upright || !flipAlign || !flipLift || !jumpThrust || !driftThrust) {
+		return false;
+	}
+	if (!driftThrust.IsA("VectorForce")) {
+		// Still the model's legacy BodyThrust — the server-created replacement
+		// hasn't replicated yet.
+		return false;
+	}
+	const targetVelocity = attrNumber(base, VehicleAttr.TargetVelocity, 0);
+	const mass = attrNumber(base, VehicleTuningAttr.Mass, 0);
+	if (targetVelocity === 0 || mass === 0) {
+		return false; // tuning attributes not replicated yet
+	}
+	const tuning: VehicleTuning = {
+		mass,
+		acceleration: attrNumber(base, VehicleTuningAttr.Acceleration, 0),
+		targetVelocity,
+		minTurnRadius: attrNumber(base, VehicleTuningAttr.MinTurnRadius, 30),
+		maxTurnRadius: attrNumber(base, VehicleTuningAttr.MaxTurnRadius, 60),
+		maxAngularSpeed: attrNumber(base, VehicleTuningAttr.MaxAngularSpeed, math.pi),
+		minAngularSpeed: attrNumber(base, VehicleTuningAttr.MinAngularSpeed, 0.6),
+		boostAmount: attrNumber(base, VehicleTuningAttr.BoostAmount, 100),
+		driftingMult: attrNumber(base, VehicleTuningAttr.DriftingMult, 1),
+	};
+	const [ok, err] = pcall(() => {
+		const movers: MoverSet = { aerial, driftYaw, upright, flipAlign, flipLift, jumpThrust, driftThrust };
+		registry.set(model, buildEntry(model, tuning, movers, owner));
+	});
+	if (!ok) {
+		warn(`[VehicleSim] registerReplica(${model.Name}) failed: ${err}`);
+		return false;
+	}
+	return true;
 }
 
 export function unregister(model: Model) {
@@ -563,12 +683,13 @@ export function requestJump(model: Model) {
 	}
 }
 
-// FeelHarness override: while true, the sim does not read the owner's
-// InputActions, so scripted attribute writes stay in force.
+// FeelHarness override: while set, the sim does not read the owner's
+// InputActions, so scripted attribute writes stay in force. Stored as an
+// attribute so the client's predicted sim honors it too.
 export function setScriptedInput(model: Model, scripted: boolean) {
 	const entry = registry.get(model);
 	if (entry) {
-		entry.scriptedInput = scripted;
+		entry.base.SetAttribute(VehicleAttr.ScriptedInput, scripted);
 	}
 }
 
@@ -689,18 +810,24 @@ function getInputActions(entry: SimEntry) {
 }
 
 function setOwnerContextEnabled(entry: SimEntry, enabled: boolean) {
-	if (entry.owner) {
-		const context = entry.owner.FindFirstChild(VehicleInput.ContextName);
+	// Server only (the property replicates), and deferred out of the
+	// simulation step — InputContext.Enabled is not simulation-access.
+	if (!IS_SERVER || !entry.owner) {
+		return;
+	}
+	const owner = entry.owner;
+	task.defer(() => {
+		const context = owner.FindFirstChild(VehicleInput.ContextName);
 		if (context && context.IsA("InputContext")) {
 			context.Enabled = enabled;
 		}
-	}
+	});
 }
 
 // Reads the owner's InputActions and applies them exactly like the old
 // remote handlers did: floats into the attributes, held-abilities on edges.
 function readPlayerInputs(entry: SimEntry, now: number) {
-	if (entry.scriptedInput) {
+	if (attrBool(entry.base, VehicleAttr.ScriptedInput)) {
 		return;
 	}
 	const actions = getInputActions(entry);
@@ -803,8 +930,13 @@ function closeGroundQuery(entry: SimEntry): LuaTuple<[boolean, CFrame?]> {
 		filter.push(entry.owner.Character);
 	}
 	groundRaycastParams.FilterDescendantsInstances = filter;
-	const [Cframe, size] = entry.model.GetBoundingBox();
-	const raycastResult = game.Workspace.Raycast(Cframe.Position, new Vector3(0, -size.X / 2, 0), groundRaycastParams);
+	// Precomputed bounding box (GetBoundingBox is banned in sim callbacks).
+	const boxCenter = entry.base.CFrame.PointToWorldSpace(entry.boundingCenterOffset);
+	const raycastResult = game.Workspace.Raycast(
+		boxCenter,
+		new Vector3(0, -entry.boundingSizeX / 2, 0),
+		groundRaycastParams,
+	);
 	if (raycastResult) {
 		const vehicleLV = entry.base.CFrame.LookVector;
 		const upVector = raycastResult.Normal;
@@ -906,7 +1038,7 @@ function drift(entry: SimEntry, steerFloat: number) {
 	if ((sideForce > 0 && sideVelocity > maxSideSpeed) || (sideForce < 0 && sideVelocity < -maxSideSpeed)) {
 		sideForce = 0;
 	}
-	entry.base.DriftThrust.Force = new Vector3(sideForce, 0, 0);
+	entry.driftThrust.Force = new Vector3(sideForce, 0, 0);
 }
 
 function undrift(entry: SimEntry) {
@@ -918,7 +1050,7 @@ function undrift(entry: SimEntry) {
 
 	entry.driftYaw.MaxTorque = 0;
 	entry.driftYaw.AngularVelocity = new Vector3(0, 0, 0);
-	entry.base.DriftThrust.Force = new Vector3(0, 0, 0);
+	entry.driftThrust.Force = new Vector3(0, 0, 0);
 }
 
 function turnWheels(entry: SimEntry, throttle: number, steerFloat: number, onGround: boolean) {
@@ -1025,12 +1157,14 @@ function stepVehicle(entry: SimEntry, now: number) {
 		// Diagnostic: live mass vs the register-time snapshot. A large gap
 		// means post-spawn changes (paint→Metal, skins) moved the mass — the
 		// reason the sim must measure per tick, never cache.
-		warn(
-			`[VehicleSim] ${model.Name}: drive start; totalMass=${string.format(
-				"%.0f",
-				getMassOfModel(model) + occupantsMass(model),
-			)} (register-time=${string.format("%.0f", entry.baseMass)})`,
-		);
+		if (IS_SERVER) {
+			warn(
+				`[VehicleSim] ${model.Name}: drive start; totalMass=${string.format(
+					"%.0f",
+					getMassOfModel(model) + occupantsMass(model),
+				)} (register-time=${string.format("%.0f", entry.baseMass)})`,
+			);
+		}
 	} else if (!drivingNow && entry.driving) {
 		// Drive ended: parking brake, exactly like the old loop exit.
 		entry.driving = false;
@@ -1231,6 +1365,15 @@ function tick() {
 			registry.delete(model);
 			continue;
 		}
+		// Client prediction covers only the local player's own car. (No status
+		// gating: GetPredictionStatus outside a resimulation pass reports
+		// Authoritative even for instances the engine predicts — the
+		// visualizer's predicted-instance count is the ground truth, and it
+		// confirms the car. The docs pattern is simply "run the same sim in
+		// BindToSimulation on both peers".)
+		if (!IS_SERVER && entry.owner !== LOCAL_PLAYER) {
+			continue;
+		}
 		const [ok, err] = pcall(() => stepVehicle(entry, now));
 		if (!ok && !entry.errorLogged) {
 			// One log per drive session — the old loop swallowed these silently,
@@ -1250,8 +1393,15 @@ export function initialize() {
 		return;
 	}
 	initialized = true;
-	// Phase 2: plain Heartbeat, server only — identical cadence to the old
-	// loops. Phase 4 rebinds this through RunService:BindToSimulation() on
-	// both server and client.
-	RunService.Heartbeat.Connect(() => tick());
+	// Phase 4: the tick is bound through BindToSimulation on BOTH peers — on
+	// the client this is what makes the engine re-run the vehicle logic
+	// during rollback-resimulation. Falls back to Heartbeat (Phase 2/3
+	// behavior) if the API is unavailable.
+	const [ok, err] = pcall(() => {
+		RunService.BindToSimulation(() => tick());
+	});
+	if (!ok) {
+		warn(`[VehicleSim] BindToSimulation unavailable (${err}); falling back to Heartbeat`);
+		RunService.Heartbeat.Connect(() => tick());
+	}
 }
