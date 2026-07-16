@@ -7,7 +7,7 @@ const Players = game.GetService("Players");
 type IterAction = (object: Instance, ...args: unknown[]) => void;
 
 const GeneralUtils = {
-	IterateOverArrayValuesOfType(Table: Instance[], Type: keyof Instances, action: IterAction, ...args: unknown[]) {
+	IterateOverArrayValuesOfType(this: void, Table: Instance[], Type: keyof Instances, action: IterAction, ...args: unknown[]) {
 		for (const object of Table) {
 			if (object.IsA(Type)) {
 				action(object, ...args);
@@ -15,7 +15,7 @@ const GeneralUtils = {
 		}
 	},
 
-	GetArrayValuesOfType(Table: Instance[], Type: keyof Instances): Instance[] {
+	GetArrayValuesOfType(this: void, Table: Instance[], Type: keyof Instances): Instance[] {
 		const newTable: Instance[] = [];
 		for (const object of Table) {
 			if (object.IsA(Type)) {
@@ -25,7 +25,7 @@ const GeneralUtils = {
 		return newTable;
 	},
 
-	RemoveArrayValuesOfType(Table: Instance[], Type: keyof Instances) {
+	RemoveArrayValuesOfType(this: void, Table: Instance[], Type: keyof Instances) {
 		for (let i = Table.size() - 1; i >= 1 - 1; i--) {
 			const object = Table[i];
 
@@ -37,33 +37,33 @@ const GeneralUtils = {
 	},
 
 	//Children
-	GetChildrenOfType(parent: Instance, Type: keyof Instances) {
+	GetChildrenOfType(this: void, parent: Instance, Type: keyof Instances) {
 		return GeneralUtils.GetArrayValuesOfType(parent.GetChildren(), Type);
 	},
 
-	RemoveChildrenOfType(parent: Instance, Type: keyof Instances) {
+	RemoveChildrenOfType(this: void, parent: Instance, Type: keyof Instances) {
 		return GeneralUtils.RemoveArrayValuesOfType(parent.GetChildren(), Type);
 	},
 
-	IterateOverChildrenOfType(parent: Instance, Type: keyof Instances, action: IterAction, ...args: unknown[]) {
+	IterateOverChildrenOfType(this: void, parent: Instance, Type: keyof Instances, action: IterAction, ...args: unknown[]) {
 		return GeneralUtils.IterateOverArrayValuesOfType(parent.GetChildren(), Type, action, ...args);
 	},
 
 	//Descendants
-	GetDescendantsOfType(parent: Instance, Type: keyof Instances) {
+	GetDescendantsOfType(this: void, parent: Instance, Type: keyof Instances) {
 		return GeneralUtils.GetArrayValuesOfType(parent.GetDescendants(), Type);
 	},
 
-	RemoveDescendantsOfType(parent: Instance, Type: keyof Instances) {
+	RemoveDescendantsOfType(this: void, parent: Instance, Type: keyof Instances) {
 		return GeneralUtils.RemoveArrayValuesOfType(parent.GetDescendants(), Type);
 	},
 
-	IterateOverDescendantsOfType(parent: Instance, Type: keyof Instances, action: IterAction, ...args: unknown[]) {
+	IterateOverDescendantsOfType(this: void, parent: Instance, Type: keyof Instances, action: IterAction, ...args: unknown[]) {
 		return GeneralUtils.IterateOverArrayValuesOfType(parent.GetDescendants(), Type, action, ...args);
 	},
 
 	//Collision groups
-	setCollisionGroup(object: Instance, GroupName: string) {
+	setCollisionGroup(this: void, object: Instance, GroupName: string) {
 		if (object.IsA("BasePart")) {
 			setCollisionGroup(object, GroupName);
 		}
@@ -72,7 +72,7 @@ const GeneralUtils = {
 	},
 
 	//String
-	StringAddSpacesBeforeCaps(String: string): string {
+	StringAddSpacesBeforeCaps(this: void, String: string): string {
 		const SplitLocation = string.find(String, "%l%u")[0];
 
 		if (SplitLocation !== undefined) {
@@ -89,7 +89,7 @@ const GeneralUtils = {
 		}
 	},
 
-	StringNumberFormat(Number: number): string {
+	StringNumberFormat(this: void, Number: number): string {
 		const Abbreviations = ["K", "M", "b", "t", "qa", "qi", "sx", "sp", "o", "n", "d"];
 
 		assert(Number !== undefined && typeOf(Number) === "number", "Supplied value must be a number");
@@ -134,7 +134,7 @@ const GeneralUtils = {
 		return String;
 	},
 
-	StringCreatePrice(Number: number, Sign: string, atFront?: boolean): string {
+	StringCreatePrice(this: void, Number: number, Sign: string, atFront?: boolean): string {
 		const NumberString = GeneralUtils.StringNumberFormat(Number);
 		if (atFront) {
 			return Sign + NumberString;
@@ -143,7 +143,7 @@ const GeneralUtils = {
 		}
 	},
 
-	CommaNumber(Number: number): string {
+	CommaNumber(this: void, Number: number): string {
 		//	print(Number)
 		assert(Number !== undefined && typeOf(Number) === "number", "Supplied value must be a number");
 
