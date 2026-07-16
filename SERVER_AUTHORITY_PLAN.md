@@ -5,8 +5,9 @@
 > - Phase 0 ✅ — `/feel` harness in `src/server/FeelHarness.server.ts` (chat `/feel` while seated, Studio only).
 > - Phase 1 ✅ — legacy BodyMovers replaced by code-created modern constraints; verified in-game.
 > - Phase 2 ✅ code-complete — sim extracted to `src/shared/vehicleSim/VehicleSim.ts` (server-ticked), timers are sim-time state machines, sim state in attributes, rendering in `src/client/vehicleRenderer.client.ts`. Pending playtest + `/feel` parity.
-> - Interim prediction stance: car + seated character forced `PredictionMode.Off` (server + client set it); real prediction arrives with Phases 3-4.
-> - Phase 3 (IAS) and Phase 4 (client sim under `BindToSimulation`) not started.
+> - Interim prediction stance: car + seated character forced `PredictionMode.Off` (server + client set it); real prediction arrives with Phase 4.
+> - Phase 3 ✅ code-complete — per-player `VehicleControls` InputContext built in code (`vehicleInputActions.ts`), sim reads InputActions each tick, remotes deleted (Horn stays), keybind menu rebinds live, mobile joystick fires Touch actions. Pending input-matrix test.
+> - Phase 4 (client sim under `BindToSimulation`) not started. Note: Flip has no client-side trigger (pre-existing); give it an IAS binding if wanted.
 
 Goal: move the game onto Roblox's server authority model (`Workspace.AuthorityMode = Server`)
 with client-side prediction of the local player's car, so that:

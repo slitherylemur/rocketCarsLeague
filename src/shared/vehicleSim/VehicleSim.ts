@@ -145,6 +145,36 @@ export const VehicleModelAttr = {
 	OwnerUserId: "OwnerUserId",
 } as const;
 
+// ---- Input Action System naming (Phase 3) ----
+// The per-player InputContext is built server-side (vehicleInputActions.ts)
+// and lives under the Player; the sim reads the actions by these names on
+// whichever peer it runs on. IAS is the only client-authoritative data the
+// rollback system replays, which is why all sim-affecting input goes here.
+export const VehicleInput = {
+	ContextName: "VehicleControls",
+	// One Bool action PER KEY: IAS resolves multiple bindings on one action as
+	// "latest binding event wins", so releasing A while D is held zeroed the
+	// whole axis. Per-key held-state combined in the sim restores the old
+	// (right?1:0)-(left?1:0) semantics: both held cancels, releasing one
+	// resumes the other.
+	ThrottleForward: "ThrottleForward", // Bool: W
+	ThrottleBackward: "ThrottleBackward", // Bool: S
+	SteerRight: "SteerRight", // Bool: D
+	SteerLeft: "SteerLeft", // Bool: A
+	ThrottleAxis: "ThrottleAxis", // Direction1D: gamepad triggers R2 +1 / L2 -1 (analog)
+	SteerStick: "SteerStick", // Direction2D: Thumbstick1 (X used, 0.3 deadzone)
+	ThrottleTouch: "ThrottleTouch", // Direction1D: fired by the mobile joystick code
+	SteerTouch: "SteerTouch", // Direction1D: fired by the mobile joystick code
+	Drift: "Drift",
+	Boost: "Boost",
+	Jump: "Jump",
+	RollLeft: "RollLeft",
+	RollRight: "RollRight",
+	PrimaryBinding: "Primary", // the rebindable keyboard binding
+	GamepadBinding: "Gamepad",
+	TouchBinding: "Touch", // client assigns UIButton locally on touch devices
+} as const;
+
 // ---- registry ----
 
 interface SimEntry {
@@ -184,6 +214,28 @@ interface SimEntry {
 	velocity: number;
 	propVelocity: number;
 	errorLogged: boolean;
+	// IAS input edge state
+	scriptedInput: boolean; // FeelHarness override: skip IAS reads, keep attrs as scripted
+	prevBoostHeld: boolean;
+	prevJumpHeld: boolean;
+	prevRollLeft: boolean;
+	prevRollRight: boolean;
+	inputActions?: {
+		context: InputContext;
+		throttleForward?: InputAction;
+		throttleBackward?: InputAction;
+		steerRight?: InputAction;
+		steerLeft?: InputAction;
+		throttleAxis?: InputAction;
+		steerStick?: InputAction;
+		throttleTouch?: InputAction;
+		steerTouch?: InputAction;
+		drift?: InputAction;
+		boost?: InputAction;
+		jump?: InputAction;
+		rollLeft?: InputAction;
+		rollRight?: InputAction;
+	};
 }
 
 const registry = new Map<Model, SimEntry>();
@@ -418,6 +470,11 @@ export function register(model: VehicleModel, tuning: VehicleTuning, owner?: Pla
 		velocity: 0,
 		propVelocity: 0,
 		errorLogged: false,
+		scriptedInput: false,
+		prevBoostHeld: false,
+		prevJumpHeld: false,
+		prevRollLeft: false,
+		prevRollRight: false,
 	};
 	entry.totalMass = entry.baseMass;
 
@@ -445,6 +502,7 @@ export function unregister(model: Model) {
 		registry.delete(model);
 		pcall(() => {
 			entry.base.SetAttribute(VehicleAttr.Driving, false);
+			setOwnerContextEnabled(entry, false);
 		});
 	}
 }
@@ -472,31 +530,45 @@ export function setDriftHeld(model: Model, held: boolean) {
 	}
 }
 
-export function setBoostHeld(model: Model, held: boolean) {
-	const entry = registry.get(model);
-	if (!entry) {
-		return;
-	}
+function applyBoostHeld(entry: SimEntry, held: boolean, now: number) {
 	entry.base.SetAttribute(VehicleAttr.BoostHeld, held);
 	if (!held) {
 		// Releasing (or depleting) boost blocks regen for a spell — the old
 		// boostDelay + task.delay(3).
-		entry.base.SetAttribute(VehicleAttr.BoostBlockedUntil, time() + BOOST_REGEN_DELAY);
+		entry.base.SetAttribute(VehicleAttr.BoostBlockedUntil, now + BOOST_REGEN_DELAY);
 	}
 }
 
-export function requestJump(model: Model) {
+export function setBoostHeld(model: Model, held: boolean) {
 	const entry = registry.get(model);
-	if (!entry || !entry.driving) {
-		return;
+	if (entry) {
+		applyBoostHeld(entry, held, time());
 	}
-	const now = time();
+}
+
+function tryJump(entry: SimEntry, now: number) {
 	if (now >= attrNumber(entry.base, VehicleAttr.JumpReadyAt, 0)) {
 		entry.base.SetAttribute(VehicleAttr.JumpForceUntil, now + JUMP_FORCE_TIME);
 		entry.base.SetAttribute(VehicleAttr.JumpReadyAt, now + JUMP_FORCE_TIME + JUMP_DEBOUNCE_TIME);
 		// Arm the post-jump upright hold.
 		entry.jumpStabilizing = true;
 		entry.jumpStabilizeStart = now;
+	}
+}
+
+export function requestJump(model: Model) {
+	const entry = registry.get(model);
+	if (entry && entry.driving) {
+		tryJump(entry, time());
+	}
+}
+
+// FeelHarness override: while true, the sim does not read the owner's
+// InputActions, so scripted attribute writes stay in force.
+export function setScriptedInput(model: Model, scripted: boolean) {
+	const entry = registry.get(model);
+	if (entry) {
+		entry.scriptedInput = scripted;
 	}
 }
 
@@ -545,17 +617,143 @@ export function requestFlip(model: Model) {
 
 // Aerial roll input (event-driven, exactly like the old RollLeft/RollRight:
 // Begin engages only when airborne; anything else resets that component).
-export function setRoll(model: Model, direction: -1 | 1, begin: boolean) {
-	const entry = registry.get(model);
-	if (!entry) {
-		return;
-	}
+function applyRoll(entry: SimEntry, direction: -1 | 1, begin: boolean) {
 	const value = direction * 6;
 	if (begin && !closeGroundQuery(entry)[0]) {
 		entry.jumpStabilizing = false; // deliberate roll takes over from the upright hold
 		aerialControls(entry, "X", value);
 	} else if (!begin) {
 		aerialControlsReset(entry, "X", value);
+	}
+}
+
+export function setRoll(model: Model, direction: -1 | 1, begin: boolean) {
+	const entry = registry.get(model);
+	if (entry) {
+		applyRoll(entry, direction, begin);
+	}
+}
+
+// ---- IAS input reading (Phase 3) ----
+
+function stateNumber(action: InputAction | undefined): number {
+	if (!action) {
+		return 0;
+	}
+	const state = action.GetState();
+	return typeIs(state, "number") ? state : 0;
+}
+
+function stateBool(action: InputAction | undefined): boolean {
+	return action !== undefined && action.GetState() === true;
+}
+
+function stateVector2X(action: InputAction | undefined): number {
+	if (!action) {
+		return 0;
+	}
+	const state = action.GetState();
+	return typeIs(state, "Vector2") ? state.X : 0;
+}
+
+function getInputActions(entry: SimEntry) {
+	const owner = entry.owner;
+	if (!owner) {
+		return undefined;
+	}
+	const context = owner.FindFirstChild(VehicleInput.ContextName) as InputContext | undefined;
+	if (!context) {
+		return undefined;
+	}
+	if (entry.inputActions && entry.inputActions.context === context) {
+		return entry.inputActions;
+	}
+	const find = (name: string) => context.FindFirstChild(name) as InputAction | undefined;
+	entry.inputActions = {
+		context,
+		throttleForward: find(VehicleInput.ThrottleForward),
+		throttleBackward: find(VehicleInput.ThrottleBackward),
+		steerRight: find(VehicleInput.SteerRight),
+		steerLeft: find(VehicleInput.SteerLeft),
+		throttleAxis: find(VehicleInput.ThrottleAxis),
+		steerStick: find(VehicleInput.SteerStick),
+		throttleTouch: find(VehicleInput.ThrottleTouch),
+		steerTouch: find(VehicleInput.SteerTouch),
+		drift: find(VehicleInput.Drift),
+		boost: find(VehicleInput.Boost),
+		jump: find(VehicleInput.Jump),
+		rollLeft: find(VehicleInput.RollLeft),
+		rollRight: find(VehicleInput.RollRight),
+	};
+	return entry.inputActions;
+}
+
+function setOwnerContextEnabled(entry: SimEntry, enabled: boolean) {
+	if (entry.owner) {
+		const context = entry.owner.FindFirstChild(VehicleInput.ContextName);
+		if (context && context.IsA("InputContext")) {
+			context.Enabled = enabled;
+		}
+	}
+}
+
+// Reads the owner's InputActions and applies them exactly like the old
+// remote handlers did: floats into the attributes, held-abilities on edges.
+function readPlayerInputs(entry: SimEntry, now: number) {
+	if (entry.scriptedInput) {
+		return;
+	}
+	const actions = getInputActions(entry);
+	if (!actions) {
+		return; // no context (yet) — attributes keep their last values
+	}
+	const base = entry.base;
+
+	// Movement floats: per-key held-state combined like the old client code —
+	// (positive?1:0)-(negative?1:0), so both-held cancels and releasing one
+	// resumes the other. Digital keys win, else the analog sources (gamepad
+	// triggers/stick with the old 0.3 deadzone, else the mobile joystick).
+	const digitalThrottle =
+		(stateBool(actions.throttleForward) ? 1 : 0) - (stateBool(actions.throttleBackward) ? 1 : 0);
+	const axisThrottle = stateNumber(actions.throttleAxis);
+	const touchThrottle = stateNumber(actions.throttleTouch);
+	const throttle = digitalThrottle !== 0 ? digitalThrottle : axisThrottle !== 0 ? axisThrottle : touchThrottle;
+
+	const digitalSteer = (stateBool(actions.steerRight) ? 1 : 0) - (stateBool(actions.steerLeft) ? 1 : 0);
+	const stickX = stateVector2X(actions.steerStick);
+	const stickSteer = math.abs(stickX) < 0.3 ? 0 : stickX;
+	const touchSteer = stateNumber(actions.steerTouch);
+	const steer = digitalSteer !== 0 ? digitalSteer : stickSteer !== 0 ? stickSteer : touchSteer;
+
+	// Same NaN/clamp choke point as the old remote path.
+	if (throttle === throttle && steer === steer) {
+		base.SetAttribute(VehicleAttr.Throttle, math.clamp(throttle, -1, 1));
+		base.SetAttribute(VehicleAttr.Steer, math.clamp(steer, -1, 1));
+	}
+
+	base.SetAttribute(VehicleAttr.DriftHeld, stateBool(actions.drift));
+
+	const boostHeld = stateBool(actions.boost);
+	if (boostHeld !== entry.prevBoostHeld) {
+		entry.prevBoostHeld = boostHeld;
+		applyBoostHeld(entry, boostHeld, now);
+	}
+
+	const jumpHeld = stateBool(actions.jump);
+	if (jumpHeld && !entry.prevJumpHeld) {
+		tryJump(entry, now);
+	}
+	entry.prevJumpHeld = jumpHeld;
+
+	const rollLeft = stateBool(actions.rollLeft);
+	if (rollLeft !== entry.prevRollLeft) {
+		entry.prevRollLeft = rollLeft;
+		applyRoll(entry, -1, rollLeft);
+	}
+	const rollRight = stateBool(actions.rollRight);
+	if (rollRight !== entry.prevRollRight) {
+		entry.prevRollRight = rollRight;
+		applyRoll(entry, 1, rollRight);
 	}
 }
 
@@ -819,6 +1017,11 @@ function stepVehicle(entry: SimEntry, now: number) {
 		entry.releasedThrottle = false;
 		entry.boostLastInc = now;
 		entry.errorLogged = false;
+		entry.prevBoostHeld = false;
+		entry.prevJumpHeld = false;
+		entry.prevRollLeft = false;
+		entry.prevRollRight = false;
+		setOwnerContextEnabled(entry, true);
 		// Diagnostic: live mass vs the register-time snapshot. A large gap
 		// means post-spawn changes (paint→Metal, skins) moved the mass — the
 		// reason the sim must measure per tick, never cache.
@@ -837,11 +1040,14 @@ function stepVehicle(entry: SimEntry, now: number) {
 		entry.velocity = 0;
 		entry.propVelocity = 0;
 		turnWheels(entry, 0, 0, false);
+		setOwnerContextEnabled(entry, false);
 	}
 
 	if (!entry.driving) {
 		return;
 	}
+
+	readPlayerInputs(entry, now);
 
 	// Mass is measured EVERY tick — exactly the old GetTotalMass(). It must
 	// track post-spawn changes (PaintVehicle swaps body pieces to Metal at

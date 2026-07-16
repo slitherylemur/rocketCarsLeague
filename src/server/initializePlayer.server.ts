@@ -16,6 +16,7 @@ import ContentModule from "./Modules/Content";
 import { Globals } from "./Globals";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import { PlayerGuiManager } from "./ui/PlayerGuiManager";
+import VehicleInputActions from "./Modules/vehicleInputActions";
 import { CASH_PURCHACE_MENU_OPEN_SIZE } from "./ui/uiConstants";
 import type { MultiplierEntry } from "./Modules/dataTypes";
 import type { CrateItem } from "./Modules/dataTypes";
@@ -158,7 +159,10 @@ FunctionsAndEvents.GetKeyBinding.OnServerInvoke = (player, action) => {
 	return DataUtilities.GetKeyBinding(player, action as string);
 };
 FunctionsAndEvents.SetKeyBinding.OnServerInvoke = (player, action, key) => {
-	return DataUtilities.SetKeyBinding(player, action as string, key as EnumItem);
+	const result = DataUtilities.SetKeyBinding(player, action as string, key as EnumItem);
+	// Retarget the live IAS binding too (Phase 3) — rebinds apply immediately.
+	VehicleInputActions.updateBinding(player, action as string, key as EnumItem);
+	return result;
 };
 
 // (Removed the legacy FunctionsAndEvents.Throttle handler: nothing on the

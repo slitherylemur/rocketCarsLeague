@@ -337,6 +337,9 @@ const spawnVehicleModule = {
 	},
 };
 
+// Phase 3: movement and abilities travel through the Input Action System —
+// only the non-sim actions remain on this remote (Horn; FlipVehicle kept for
+// parity, though nothing currently binds it client-side).
 function KeyHandler(player: Player, actionName: unknown, inputState: unknown, inputObject: unknown) {
 	const Vehicle = Globals.vehiclesTable[player.UserId];
 	if (Vehicle) {
@@ -344,16 +347,6 @@ function KeyHandler(player: Player, actionName: unknown, inputState: unknown, in
 			Vehicle.Flip();
 		} else if (actionName === "HonkHorn") {
 			Vehicle.Horn(inputState as Enum.UserInputState);
-		} else if (actionName === "Drift") {
-			Vehicle.DriftHandler(inputState as Enum.UserInputState);
-		} else if (actionName === "Boost") {
-			Vehicle.Boost(inputState as Enum.UserInputState);
-		} else if (actionName === "Jump1" || actionName === "Jump2") {
-			Vehicle.Jump(inputState as Enum.UserInputState);
-		} else if (actionName === "RollLeft") {
-			Vehicle.RollLeft(inputState as Enum.UserInputState);
-		} else if (actionName === "RollRight") {
-			Vehicle.RollRight(inputState as Enum.UserInputState);
 		}
 	}
 }

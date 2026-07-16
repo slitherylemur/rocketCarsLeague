@@ -65,14 +65,6 @@ export interface VehicleParams {
 	owner?: Player;
 }
 
-function createInputEvent(vehicle: Model): RemoteEvent {
-	// Original used Instance.new("RemoteEvent", vehicle) — parent set at creation.
-	const event = new Instance("RemoteEvent");
-	event.Parent = vehicle;
-	event.Name = "inputChangedEvent";
-	return event;
-}
-
 export class VehicleClass {
 	// copied params
 	cost!: number;
@@ -183,14 +175,9 @@ export class VehicleClass {
 		this.model.SetAttribute(VehicleModelAttr.MaxHealth, this.baseHealth);
 		this.model.SetAttribute(VehicleModelAttr.Health, this.health);
 
-		const InputEvent = createInputEvent(this.model);
-		InputEvent.OnServerEvent.Connect((player, throttle, steer) => {
-			// Server-authoritative input: accept only sane floats from the owner
-			// (the sim clamps and NaN-guards again at its boundary).
-			if (player === this.owner && typeIs(throttle, "number") && typeIs(steer, "number")) {
-				VehicleSim.setThrottleSteer(this.model, throttle, steer);
-			}
-		});
+		// (Phase 3: the per-vehicle inputChangedEvent RemoteEvent is gone —
+		// movement floats arrive through the owner's InputActions, read by the
+		// sim tick.)
 
 		// Damage hitbox — connected once per vehicle (used to live inside the
 		// drive loop; a parked or ownerless car can't exceed the speed gate, so

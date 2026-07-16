@@ -1,20 +1,24 @@
 // Original: StarterPlayer/StarterPlayerScripts/VehicleKeyHandler (LocalScript)
 //
-// Restored to the server-authoritative input model (bumperCars a5318d46):
-// this script only reads input and forwards it to the server —
-//   * movement floats via the per-vehicle `inputChangedEvent` RemoteEvent
-//   * ability keys (Drift/Boost/Jump/Horn/Rolls) via the KeyHandler RemoteEvent
-// All physics runs in the server VehicleClass drive loop.
+// Phase 3 (SERVER_AUTHORITY_PLAN.md): vehicle inputs moved to the Input
+// Action System. The per-player InputContext (Player.VehicleControls) is
+// built server-side and enabled by the sim while driving; the engine
+// captures keyboard/gamepad bindings natively and streams them into the
+// server authority input system — no remotes, and inputs get replayed on
+// rollback once client prediction lands (Phase 4).
 //
-// Deliberate divergence from a5318d46: throttle/steer are derived from
-// per-key held state instead of the original +1/-1 accumulators. The
-// accumulator desynced permanently whenever an End event was missed or CAS
-// delivered UserInputState.Cancel (the "stuck input / weird simultaneous
-// keys" bugs); held-state cannot drift.
+// What remains in this script:
+//   - prediction management while seated (car + character Off until Phase 4)
+//   - the Horn key (cosmetic, stays on the legacy KeyHandler remote)
+//   - mobile: joystick sampling fired into ThrottleTouch/SteerTouch actions,
+//     and UIButton wiring for the Drift/Boost/Jump touch bindings
+//   - the keybindings menu UI (rebinds now apply live via SetKeyBinding)
+//   - gamepad menu buttons + GetPlayerPointToScreenSpace (unchanged)
 
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import keyCodeImages from "shared/KeyCodeImages";
 import { legacyWait } from "shared/LegacyTiming";
+import { VehicleInput } from "shared/vehicleSim/VehicleSim";
 
 const ContextActionService = game.GetService("ContextActionService");
 const UserInputService = game.GetService("UserInputService");
@@ -31,122 +35,15 @@ const handleAction = (actionName: string, inputState: Enum.UserInputState, input
 };
 
 // ---------------------------------------------------------------------------
-// Movement input → inputChangedEvent
-// ---------------------------------------------------------------------------
-
-interface HeldKeys {
-	forward: boolean;
-	backward: boolean;
-	left: boolean;
-	right: boolean;
-}
-
-const held: HeldKeys = { forward: false, backward: false, left: false, right: false };
-let analogSteer = 0; // thumbstick / mobile joystick
-let analogThrottle = 0; // mobile joystick
-
-let inputEvent: RemoteEvent | undefined = undefined;
-let lastSentThrottle = 0;
-let lastSentSteer = 0;
-
-function computeThrottle(): number {
-	const digital = (held.forward ? 1 : 0) - (held.backward ? 1 : 0);
-	return digital !== 0 ? digital : math.clamp(analogThrottle, -1, 1);
-}
-
-function computeSteer(): number {
-	const digital = (held.right ? 1 : 0) - (held.left ? 1 : 0);
-	return digital !== 0 ? digital : math.clamp(analogSteer, -1, 1);
-}
-
-function sendMovement(force?: boolean) {
-	if (!inputEvent) {
-		return;
-	}
-	const throttle = computeThrottle();
-	const steer = computeSteer();
-	if (force || throttle !== lastSentThrottle || steer !== lastSentSteer) {
-		lastSentThrottle = throttle;
-		lastSentSteer = steer;
-		inputEvent.FireServer(throttle, steer);
-	}
-}
-
-function resetMovementState() {
-	held.forward = false;
-	held.backward = false;
-	held.left = false;
-	held.right = false;
-	analogSteer = 0;
-	analogThrottle = 0;
-	lastSentThrottle = 0;
-	lastSentSteer = 0;
-}
-
-// Any state that isn't Begin (End, Cancel, …) counts as released — a missed
-// or cancelled key can therefore never wedge the car in a driving state.
-function makeMovementHandler(key: keyof HeldKeys) {
-	return (actionName: string, inputState: Enum.UserInputState, inputObject?: InputObject) => {
-		held[key] = inputState === Enum.UserInputState.Begin;
-		sendMovement();
-	};
-}
-
-const forward = makeMovementHandler("forward");
-const backwards = makeMovementHandler("backward");
-const left = makeMovementHandler("left");
-const right = makeMovementHandler("right");
-
-function controllerSteer(actionName: string, inputState: Enum.UserInputState, inputObject?: InputObject) {
-	if (inputObject === undefined) {
-		return;
-	}
-	if (inputState === Enum.UserInputState.End || inputState === Enum.UserInputState.Cancel) {
-		analogSteer = 0;
-	} else if (math.abs(inputObject.Position.X) < 0.3) {
-		analogSteer = 0;
-	} else {
-		analogSteer = inputObject.Position.X;
-	}
-	sendMovement();
-}
-
-function mobileSteerFunction() {
-	if (Player.Character) {
-		const humanoid = Player.Character.FindFirstChildOfClass("Humanoid");
-		const root = Player.Character.FindFirstChild("HumanoidRootPart") as BasePart | undefined;
-		if (!humanoid || !root) {
-			return;
-		}
-		const MoveDirection = humanoid.MoveDirection;
-		const newMoveVector = root.CFrame.VectorToObjectSpace(MoveDirection);
-
-		if (math.abs(newMoveVector.X - analogSteer) > 0.2 || math.abs(-newMoveVector.Z - analogThrottle) > 0.2) {
-			analogSteer = newMoveVector.X;
-			analogThrottle = -newMoveVector.Z;
-			sendMovement();
-		}
-	}
-}
-
-const MOVEMENT_ACTIONS = ["Forward", "Backwards", "Left", "Right", "ControllerSteer"];
-
-// ---------------------------------------------------------------------------
 // Server authority: prediction management while seated
 // ---------------------------------------------------------------------------
 // Under Workspace.AuthorityMode = Server the local character is predicted by
 // default. Seating welds it into the car assembly, and the engine cannot
-// predict half an assembly: it emits "Instance ... is not predicted" for the
-// car's parts/constraints and the resulting render fight shows up as the car
-// hovering and bobbing.
-//
-// Until the shared simulation module exists (SERVER_AUTHORITY_PLAN.md Phases
-// 2-4), the stable configuration is NO prediction around the car: while
-// seated, both the car and the character are forced to PredictionMode.Off so
-// the client renders pure authoritative server state. Both revert to
-// Automatic on exit. The same modes are also set server-side in spawnVehicle
-// (the docs don't say which side owns the flag); every call is pcall-guarded
-// so this is a no-op without server authority.
+// predict half an assembly. Until the shared sim runs on the client too
+// (Phase 4), the stable configuration is NO prediction around the car: both
+// the car and the character are forced to PredictionMode.Off while seated and
+// revert to Automatic on exit. The server sets the same modes (spawnVehicle);
+// every call is pcall-guarded so this is a no-op without server authority.
 
 let managedVehicle: Instance | undefined = undefined;
 let managedCharacter: Instance | undefined = undefined;
@@ -169,115 +66,98 @@ function logPredictionStatus(label: string, instance: Instance) {
 	});
 }
 
-function connectMovementControls(seat: BasePart) {
-	resetMovementState();
+// ---------------------------------------------------------------------------
+// Mobile: joystick → ThrottleTouch/SteerTouch, buttons → Touch bindings
+// ---------------------------------------------------------------------------
 
-	const vehicleModel = seat.Parent!.Parent!;
-	inputEvent = vehicleModel.WaitForChild("inputChangedEvent", 5) as RemoteEvent | undefined;
-	if (!inputEvent) {
-		warn(`[VehicleKeyHandler] no inputChangedEvent on ${vehicleModel.GetFullName()}`);
+let vehicleContext: InputContext | undefined = undefined;
+
+function fireTouchAction(actionName: string, value: number) {
+	if (!vehicleContext) {
 		return;
 	}
-
-	managedVehicle = vehicleModel;
-	managedCharacter = Player.Character;
-	setPredictionDeep(vehicleModel, Enum.PredictionMode.Off);
-	if (managedCharacter) {
-		setPredictionDeep(managedCharacter, Enum.PredictionMode.Off);
-	}
-	task.delay(1, () => {
-		// Diagnostic: confirm the engine honored the modes (expect no
-		// "Instance ... is not predicted" spam and no bobbing when it did).
-		if (managedVehicle === vehicleModel) {
-			const base = vehicleModel.FindFirstChild("Base");
-			if (base) {
-				logPredictionStatus("vehicle Base", base);
-			}
-			const root = managedCharacter ? managedCharacter.FindFirstChild("HumanoidRootPart") : undefined;
-			if (root) {
-				logPredictionStatus("HumanoidRootPart", root);
-			}
-		}
-	});
-
-	ContextActionService.BindAction("Forward", forward as never, false, Enum.KeyCode.W, Enum.KeyCode.ButtonR2);
-	ContextActionService.BindAction("Backwards", backwards as never, false, Enum.KeyCode.S, Enum.KeyCode.ButtonL2);
-	ContextActionService.BindAction("Left", left as never, false, Enum.KeyCode.A);
-	ContextActionService.BindAction("Right", right as never, false, Enum.KeyCode.D);
-
-	ContextActionService.BindAction("ControllerSteer", controllerSteer as never, false, Enum.KeyCode.Thumbstick1);
-
-	if (UserInputService.TouchEnabled) {
-		RunService.BindToRenderStep("MobileSteer", 1, mobileSteerFunction);
+	const action = vehicleContext.FindFirstChild(actionName);
+	if (action && action.IsA("InputAction")) {
+		action.Fire(value);
 	}
 }
 
-function disconnectMovementControls() {
-	if (managedVehicle) {
-		setPredictionDeep(managedVehicle, Enum.PredictionMode.Automatic);
-		managedVehicle = undefined;
-	}
-	if (managedCharacter) {
-		setPredictionDeep(managedCharacter, Enum.PredictionMode.Automatic);
-		managedCharacter = undefined;
-	}
+let analogSteer = 0;
+let analogThrottle = 0;
 
-	for (const action of MOVEMENT_ACTIONS) {
-		ContextActionService.UnbindAction(action);
-	}
-	if (UserInputService.TouchEnabled) {
-		pcall(() => {
-			RunService.UnbindFromRenderStep("MobileSteer");
-		});
-	}
-
-	// Zero the server-side floats before dropping the event reference, so a
-	// re-seated (or killed) vehicle never keeps stale input.
-	if (inputEvent && inputEvent.Parent) {
-		inputEvent.FireServer(0, 0);
-	}
-	inputEvent = undefined;
-	resetMovementState();
-}
-
-// ---------------------------------------------------------------------------
-// Mobile ability buttons (connected once — the original reconnected them on
-// every seating, stacking duplicate handlers)
-// ---------------------------------------------------------------------------
-
-interface MobileInterfaceShape extends ScreenGui {
-	Jump: TextButton;
-	Drift: TextButton;
-	Boost: TextButton;
-}
-
-if (UserInputService.TouchEnabled) {
-	task.spawn(() => {
-		const mobileInterface = (Player.WaitForChild("PlayerGui") as PlayerGui).WaitForChild(
-			"MobileInterface",
-			30,
-		) as MobileInterfaceShape | undefined;
-		if (!mobileInterface) {
+function mobileSteerFunction() {
+	if (Player.Character) {
+		const humanoid = Player.Character.FindFirstChildOfClass("Humanoid");
+		const root = Player.Character.FindFirstChild("HumanoidRootPart") as BasePart | undefined;
+		if (!humanoid || !root) {
 			return;
 		}
+		const MoveDirection = humanoid.MoveDirection;
+		const newMoveVector = root.CFrame.VectorToObjectSpace(MoveDirection);
 
-		mobileInterface.Boost.MouseButton1Down.Connect(() => handleAction("Boost", Enum.UserInputState.Begin));
-		mobileInterface.Boost.MouseButton1Up.Connect(() => handleAction("Boost", Enum.UserInputState.End));
-
-		mobileInterface.Drift.MouseButton1Down.Connect(() => handleAction("Drift", Enum.UserInputState.Begin));
-		mobileInterface.Drift.MouseButton1Up.Connect(() => handleAction("Drift", Enum.UserInputState.End));
-
-		mobileInterface.Jump.MouseButton1Down.Connect(() => handleAction("Jump1", Enum.UserInputState.Begin));
-		mobileInterface.Jump.MouseButton1Up.Connect(() => handleAction("Jump1", Enum.UserInputState.End));
-	});
+		if (math.abs(newMoveVector.X - analogSteer) > 0.2 || math.abs(-newMoveVector.Z - analogThrottle) > 0.2) {
+			analogSteer = newMoveVector.X;
+			analogThrottle = -newMoveVector.Z;
+			fireTouchAction(VehicleInput.SteerTouch, math.clamp(analogSteer, -1, 1));
+			fireTouchAction(VehicleInput.ThrottleTouch, math.clamp(analogThrottle, -1, 1));
+		}
+	}
 }
+
+function resetTouchMovement() {
+	analogSteer = 0;
+	analogThrottle = 0;
+	fireTouchAction(VehicleInput.SteerTouch, 0);
+	fireTouchAction(VehicleInput.ThrottleTouch, 0);
+}
+
+function fireBoolAction(actionName: string, held: boolean) {
+	if (!vehicleContext) {
+		return;
+	}
+	const action = vehicleContext.FindFirstChild(actionName);
+	if (action && action.IsA("InputAction")) {
+		action.Fire(held);
+	}
+}
+
+// Wire the MobileInterface buttons to Fire() the Bool actions — the same
+// programmatic path the mobile joystick uses (proven to reach the server's
+// input stream). MobileInterface is recreated from StarterGui on every
+// character respawn, so this must re-wire whenever the instance changes —
+// it's called on every seating.
+let wiredMobileInterface: Instance | undefined = undefined;
+
+function wireTouchButtons() {
+	const mobileInterface = (Player.WaitForChild("PlayerGui") as PlayerGui).FindFirstChild("MobileInterface") as
+		| (ScreenGui & { Jump: TextButton; Drift: TextButton; Boost: TextButton })
+		| undefined;
+	if (!mobileInterface || mobileInterface === wiredMobileInterface) {
+		return;
+	}
+	wiredMobileInterface = mobileInterface;
+
+	const hook = (actionName: string, button: GuiButton) => {
+		button.MouseButton1Down.Connect(() => fireBoolAction(actionName, true));
+		button.MouseButton1Up.Connect(() => fireBoolAction(actionName, false));
+	};
+	hook(VehicleInput.Boost, mobileInterface.Boost);
+	hook(VehicleInput.Drift, mobileInterface.Drift);
+	hook(VehicleInput.Jump, mobileInterface.Jump);
+}
+
+task.spawn(() => {
+	vehicleContext = Player.WaitForChild(VehicleInput.ContextName, 60) as InputContext | undefined;
+	if (!vehicleContext) {
+		warn("[VehicleKeyHandler] no VehicleControls InputContext arrived — vehicle inputs will be dead");
+	}
+});
 
 // ---------------------------------------------------------------------------
 // Seat handling
 // ---------------------------------------------------------------------------
 
 let seatedConnection: RBXScriptConnection | undefined = undefined;
-let jumpGamepadConnection: RBXScriptConnection | undefined = undefined;
 
 function onSeated(humanoid: Humanoid, isSeated: boolean) {
 	if (isSeated === true) {
@@ -288,10 +168,31 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 			task.wait();
 		}
 
-		// Only vehicle seats belonging to a car model carry the input event;
-		// connectMovementControls warns and bails for anything else.
-		connectMovementControls(humanoid.SeatPart!);
+		// Only manage prediction for actual cars (seat lives in Model.Seats
+		// inside a model that has a Base).
+		const vehicleModel = humanoid.SeatPart!.Parent!.Parent;
+		if (vehicleModel && vehicleModel.FindFirstChild("Base")) {
+			managedVehicle = vehicleModel;
+			managedCharacter = Player.Character;
+			setPredictionDeep(vehicleModel, Enum.PredictionMode.Off);
+			if (managedCharacter) {
+				setPredictionDeep(managedCharacter, Enum.PredictionMode.Off);
+			}
+			task.delay(1, () => {
+				if (managedVehicle === vehicleModel) {
+					const base = vehicleModel.FindFirstChild("Base");
+					if (base) {
+						logPredictionStatus("vehicle Base", base);
+					}
+					const root = managedCharacter ? managedCharacter.FindFirstChild("HumanoidRootPart") : undefined;
+					if (root) {
+						logPredictionStatus("HumanoidRootPart", root);
+					}
+				}
+			});
+		}
 
+		// Horn stays on the legacy remote (cosmetic, not part of the sim).
 		ContextActionService.BindAction(
 			"HonkHorn",
 			handleAction as never,
@@ -299,86 +200,39 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 			GetKeyBinding.InvokeServer("Horn") as Enum.KeyCode,
 			Enum.KeyCode.ButtonY,
 		);
-		ContextActionService.BindAction(
-			"Drift",
-			handleAction as never,
-			false,
-			GetKeyBinding.InvokeServer("Drift") as Enum.KeyCode,
-			Enum.KeyCode.ButtonL1,
-		);
-		ContextActionService.BindAction(
-			"Boost",
-			handleAction as never,
-			false,
-			GetKeyBinding.InvokeServer("Boost") as Enum.KeyCode,
-			Enum.KeyCode.ButtonR1,
-		);
-		ContextActionService.BindAction(
-			"Jump1",
-			handleAction as never,
-			false,
-			GetKeyBinding.InvokeServer("Jump") as Enum.KeyCode,
-		);
-
-		// ButtonA doubles as UI "accept"; the original only bound it after the
-		// first press while seated, to avoid stealing menu navigation.
-		if (jumpGamepadConnection) {
-			jumpGamepadConnection.Disconnect();
-		}
-		jumpGamepadConnection = UserInputService.InputBegan.Connect((input) => {
-			if (input.KeyCode === Enum.KeyCode.ButtonA) {
-				jumpGamepadConnection!.Disconnect();
-				jumpGamepadConnection = undefined;
-				ContextActionService.BindAction("Jump2", handleAction as never, false, Enum.KeyCode.ButtonA);
-			}
-		});
-
-		ContextActionService.BindAction(
-			"RollLeft",
-			handleAction as never,
-			false,
-			GetKeyBinding.InvokeServer("RollLeft") as Enum.KeyCode,
-			Enum.KeyCode.ButtonL3,
-		);
-		ContextActionService.BindAction(
-			"RollRight",
-			handleAction as never,
-			false,
-			GetKeyBinding.InvokeServer("RollRight") as Enum.KeyCode,
-			Enum.KeyCode.ButtonR3,
-		);
 
 		if (UserInputService.TouchEnabled) {
+			RunService.BindToRenderStep("MobileSteer", 1, mobileSteerFunction);
 			const mobileInterface = (Player as unknown as { PlayerGui: Instance }).PlayerGui.FindFirstChild(
 				"MobileInterface",
 			) as ScreenGui | undefined;
 			if (mobileInterface) {
 				mobileInterface.Enabled = true;
 			}
+			wireTouchButtons(); // re-wires if the interface was recreated on respawn
 		}
 	} else {
 		// When the player gets out:
-		disconnectMovementControls();
-
-		ContextActionService.UnbindAction("FlipVehicle");
-		ContextActionService.UnbindAction("HonkHorn");
-		ContextActionService.UnbindAction("Drift");
-		ContextActionService.UnbindAction("Boost");
-		ContextActionService.UnbindAction("RollLeft");
-		ContextActionService.UnbindAction("RollRight");
-
-		pcall(() => {
-			ContextActionService.UnbindAction("Jump1");
-		});
-		pcall(() => {
-			ContextActionService.UnbindAction("Jump2");
-		});
-		if (jumpGamepadConnection) {
-			jumpGamepadConnection.Disconnect();
-			jumpGamepadConnection = undefined;
+		if (managedVehicle) {
+			setPredictionDeep(managedVehicle, Enum.PredictionMode.Automatic);
+			managedVehicle = undefined;
+		}
+		if (managedCharacter) {
+			setPredictionDeep(managedCharacter, Enum.PredictionMode.Automatic);
+			managedCharacter = undefined;
 		}
 
+		ContextActionService.UnbindAction("HonkHorn");
+
 		if (UserInputService.TouchEnabled) {
+			pcall(() => {
+				RunService.UnbindFromRenderStep("MobileSteer");
+			});
+			resetTouchMovement();
+			// A button still held while exiting must not stay latched.
+			fireBoolAction(VehicleInput.Boost, false);
+			fireBoolAction(VehicleInput.Drift, false);
+			fireBoolAction(VehicleInput.Jump, false);
 			const mobileInterface = (Player as unknown as { PlayerGui: Instance }).PlayerGui.FindFirstChild(
 				"MobileInterface",
 			) as ScreenGui | undefined;
@@ -428,7 +282,8 @@ UserInputService.InputBegan.Connect((input, gameProcessed) => {
 });
 
 // ---------------------------------------------------------------------------
-// Keybinding menu UI (unchanged)
+// Keybinding menu UI (unchanged — SetKeyBinding now also retargets the live
+// IAS binding server-side)
 // ---------------------------------------------------------------------------
 
 interface KeyBindButton extends TextButton {

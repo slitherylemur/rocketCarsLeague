@@ -112,6 +112,10 @@ function runSuite(player: Player) {
 	const vehicleName = vehicle.model.Name;
 	warn(`[feel] ==== suite start: ${vehicleName} (targetVelocity=${vehicle.targetVelocity}) ====`);
 
+	// Stop the sim from reading the player's InputActions — the suite owns
+	// the input attributes for its duration.
+	VehicleSim.setScriptedInput(vehicle.model, true);
+
 	// 1. acceleration + top speed
 	resetCar(vehicle, pose);
 	setInputs(vehicle, 1, 0);
@@ -221,8 +225,9 @@ function runSuite(player: Player) {
 	metrics.jump_apex = round2(apex);
 	metrics.jump_airtime = round2(airtime);
 
-	// hand control back to the client (next real key change overwrites these)
+	// hand control back to the client
 	resetCar(vehicle, pose);
+	VehicleSim.setScriptedInput(vehicle.model, false);
 	running = false;
 
 	warn(`[feel] ==== results: ${vehicleName} ====`);
