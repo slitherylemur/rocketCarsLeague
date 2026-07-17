@@ -4,6 +4,7 @@ import DataUtilities from "./DataUtilities";
 import DataStore2 from "./DataStore2";
 import DSDefaultValues from "./DataStoreDefaults";
 import spawnVehicle from "./spawnVehicle";
+import ballSpawner from "./ballSpawner";
 import MapLightings from "../MapLightings";
 import requireModule from "shared/requireModule";
 import { Globals } from "../Globals";
@@ -259,6 +260,8 @@ function loadMap() {
 	}
 	loadLighting(map.Name);
 	map.Parent = mapFolder;
+	// Ball raycasts against the map for its floor, so spawn after parenting.
+	ballSpawner.SpawnBall(map);
 	warn(
 		`[loadMap] loaded ${map.Name}; mapsInWorkspace=${mapFolder.GetChildren().size()} spawnPoints=${spawnFolder.GetChildren().size()}`,
 	);
