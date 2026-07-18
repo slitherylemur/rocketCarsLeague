@@ -14,6 +14,7 @@ import populateCrateFrameModule from "shared/PopulateCrateFrame";
 import codesModule from "./Modules/CodesModule";
 import ContentModule from "./Modules/Content";
 import { Globals } from "./Globals";
+import footballMatch from "./Modules/footballMatch";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import { PlayerGuiManager } from "./ui/PlayerGuiManager";
 import VehicleInputActions from "./Modules/vehicleInputActions";
@@ -618,25 +619,46 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 	const playerMoney = DataStore2("money", player);
 	setPlayerCash(player, playerMoney.Get(DataStoreDefaults.money) as number);
 
-	const spawnPoints = (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints.GetChildren();
+	// SpawnPoints may now hold Red/Blue team subfolders (football maps) —
+	// collect BaseParts at any depth for the counts/fallback.
+	const spawnParts: BasePart[] = [];
+	for (const descendant of (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints.GetDescendants()) {
+		if (descendant.IsA("BasePart")) {
+			spawnParts.push(descendant);
+		}
+	}
 	const mapsInWorld = (game.Workspace as unknown as { Map: Folder }).Map.GetChildren();
 	let mapNames = "";
 	for (const m of mapsInWorld) {
 		mapNames = mapNames === "" ? m.Name : `${mapNames},${m.Name}`;
 	}
-	warn(`[SpawnInPlayer] maps=${mapsInWorld.size()} [${mapNames}] spawnPoints=${spawnPoints.size()}`);
-	if (spawnPoints.size() === 0) {
+	warn(`[SpawnInPlayer] maps=${mapsInWorld.size()} [${mapNames}] spawnParts=${spawnParts.size()}`);
+	if (spawnParts.size() === 0) {
 		warn(`[SpawnInPlayer] ABORT no SpawnPoints — cannot spawn vehicle`);
 		return false;
 	}
-	const rand = math.random(1, spawnPoints.size());
-	const spawnPoint = spawnPoints[rand - 1];
-	spawnVehicle.SpawnVehicle(
-		player,
-		true,
-		DataUtilities.getPlayerEquippedVehicle(player),
-		(spawnPoint as BasePart).CFrame,
-	);
+
+	// Football: the match controller assigns a team and hands out that team's
+	// spawn point (players re-use their slot on every respawn).
+	let spawnCFrame: CFrame | undefined;
+	if (Globals.gamemode === "Football") {
+		spawnCFrame = footballMatch.getSpawnCFrame(player);
+	}
+	if (spawnCFrame === undefined) {
+		const rand = math.random(1, spawnParts.size());
+		spawnCFrame = spawnParts[rand - 1].CFrame;
+	}
+	spawnVehicle.SpawnVehicle(player, true, DataUtilities.getPlayerEquippedVehicle(player), spawnCFrame);
+
+	if (Globals.gamemode === "Football") {
+		// After SpawnVehicle: its internal waits guarantee the sim's sit-edge
+		// context enable has run, so the phase lock applied here sticks.
+		footballMatch.onPlayerSpawned(player);
+		const matchHud = player.WaitForChild("PlayerGui").FindFirstChild("MatchHud");
+		if (matchHud && matchHud.IsA("ScreenGui")) {
+			matchHud.Enabled = true;
+		}
+	}
 	//game.ReplicatedStorage.FunctionsAndEvents.ToggleMenuCamera:FireClient(player,false)
 	// player.PlayerGui.Game.KillVehicle.MouseButton1Click:Connect(function()
 	// 	if not resetting[player] then
@@ -692,14 +714,17 @@ function initialisePlayerUi(player: Player) {
 		spawnConnect = garageUi.Inventory.SpawnButton.Button.MouseButton1Click.Connect(() => {
 			spawnConnect.Disconnect();
 			const [ok, result] = pcall(() => Globals.SpawnInPlayer(player));
-			if (!ok) {
-				warn(`[SpawnButton] SpawnInPlayer error: ${result}`);
-				bindSpawnButton();
-				return;
-			}
-			if (result !== true) {
-				warn(`[SpawnButton] SpawnInPlayer aborted — rebinding spawn button`);
-				bindSpawnButton();
+			if (!ok || result !== true) {
+				if (!ok) {
+					warn(`[SpawnButton] SpawnInPlayer error: ${result}`);
+				} else {
+					warn(`[SpawnButton] SpawnInPlayer aborted — returning player to menu`);
+				}
+				// SpawnInPlayer already destroyed+remounted PlayerGui, so the
+				// captured garageUi is stale — a full menu re-init rebuilds the
+				// UI and binds a fresh spawn button instead of erroring on the
+				// dead instance.
+				ResetAndInitialisePlayerMenuUI(player);
 			}
 		});
 	};
@@ -921,6 +946,11 @@ FunctionsAndEvents.GamePadButtonR2Down.OnServerEvent.Connect((player) => {
 	const [player, attacker, damage, killed] = args as [Player, Player | undefined, number, boolean];
 	//if the player is killed by a player then show the killed by screen
 	if (killed) {
+		// Football: no spectate/menu round-trip — the match controller
+		// respawns the car at the team spawn with a 5s control lock.
+		if (Globals.gamemode === "Football" && footballMatch.onPlayerDied(player)) {
+			return;
+		}
 		if (attacker) {
 			showKilledByScreen(player, attacker);
 			enableSpectateScreen(player, attacker);

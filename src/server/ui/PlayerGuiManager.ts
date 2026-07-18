@@ -32,6 +32,7 @@ import { GarageGui } from "./components/GarageGui";
 import { CrateMenuGui } from "./components/CrateMenuGui";
 import { MultipliersGui } from "./components/MultipliersGui";
 import { TimerGui } from "./components/TimerGui";
+import { MatchHudGui } from "./components/MatchHudGui";
 import { PlayerMoneyGainedPopupsGui } from "./components/PlayerMoneyGainedPopupsGui";
 import { DataLossGui } from "./components/DataLossGui";
 import { NEXT_SELECTION_WIRINGS } from "./components/guiMetadata";
@@ -66,6 +67,8 @@ function buildTree(): React.Element {
 		React.createElement(CrateMenuGui, { key: "CrateMenu" }),
 		React.createElement(MultipliersGui, { key: "Multipliers" }),
 		React.createElement(TimerGui, { key: "TimerGui" }),
+		// Football match HUD (new, not from the original place file).
+		React.createElement(MatchHudGui, { key: "MatchHud" }),
 		// Steer NumberValue — a plain (non-UI) StarterGui child, cloned along
 		// with everything else in the original. Value was 0 in the place file.
 		React.createElement("NumberValue", { Name: "Steer", Value: 0, key: "Steer" } as never),
@@ -79,6 +82,8 @@ function applyTemplateState(playerGui: Instance) {
 	// values. Apply the tracked template state to the freshly mounted instances.
 	const gameGui = playerGui.FindFirstChild("Game");
 	if (gameGui) {
+		const information = gameGui.FindFirstChild("Information") as Frame | undefined;
+		if (information) information.Visible = StarterGuiState.Game.Information.Visible;
 		const gamemode = resolvePath(gameGui, "Information/Gamemode") as TextLabel | undefined;
 		if (gamemode) gamemode.Text = StarterGuiState.Game.Information.GamemodeText;
 		const teamScore = gameGui.FindFirstChild("TeamScore") as Frame | undefined;
@@ -89,6 +94,8 @@ function applyTemplateState(playerGui: Instance) {
 			const blue = teamScore.FindFirstChild("Blue") as TextLabel | undefined;
 			if (blue) blue.Text = StarterGuiState.Game.TeamScore.BlueText;
 		}
+		const leaderboard = gameGui.FindFirstChild("Leaderboard") as Frame | undefined;
+		if (leaderboard) leaderboard.Visible = StarterGuiState.Game.Leaderboard.Visible;
 	}
 }
 

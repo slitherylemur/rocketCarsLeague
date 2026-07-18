@@ -5,6 +5,7 @@ import DataStore2 from "./DataStore2";
 import DSDefaultValues from "./DataStoreDefaults";
 import spawnVehicle from "./spawnVehicle";
 import ballSpawner from "./ballSpawner";
+import footballMatch from "./footballMatch";
 import MapLightings from "../MapLightings";
 import requireModule from "shared/requireModule";
 import { Globals } from "../Globals";
@@ -66,7 +67,12 @@ const handler = {} as {
 	endRound: () => void;
 };
 
-const maps = (ServerStorage as unknown as { Maps: Folder }).Maps.GetChildren();
+// Read at call time (loadMap), not module load: an empty/late-populated
+// ServerStorage.Maps then produces a clear warning + retry instead of a
+// module-level snapshot that can never recover.
+function getMaps(): Instance[] {
+	return (ServerStorage as unknown as { Maps: Folder }).Maps.GetChildren();
+}
 
 Globals.gamemode = "FFA";
 Globals.roundTime = 0;
@@ -157,6 +163,8 @@ function gamemodeName(mode: string): string | undefined {
 		return "Free For All";
 	} else if (mode === "TDM") {
 		return "Team Deathmatch";
+	} else if (mode === "Football") {
+		return "Football";
 	}
 	return undefined;
 }
@@ -166,6 +174,8 @@ function gamemodeStat(mode: string): string | undefined {
 		return "Kills";
 	} else if (mode === "TDM") {
 		return "Kills";
+	} else if (mode === "Football") {
+		return "Goals";
 	}
 	return undefined;
 }
@@ -175,11 +185,9 @@ handler.startRound = () => {
 	roundTimerGeneration += 1;
 	gameRunning = false;
 
-	if (math.random() < 0.7) {
-		Globals.gamemode = "FFA";
-	} else {
-		Globals.gamemode = "TDM";
-	}
+	// Football (Rocket-League style) is now the only rotation entry; the
+	// FFA/TDM machinery below is kept intact for a future mode selector.
+	Globals.gamemode = "Football";
 
 	unassignTeams();
 
@@ -199,7 +207,13 @@ handler.startRound = () => {
 	// Original: game.StarterGui.Game.Information.Gamemode.Text = ... (template
 	// mutation so future clones inherit it) — template state module instead.
 	StarterGuiState.Game.Information.GamemodeText = gamemodeName(Globals.gamemode)!;
-	loadMap();
+	const map = loadMap();
+	if (map === undefined) {
+		// ServerStorage.Maps is empty (see loadMap warn) — retry until maps
+		// exist rather than crashing the round system.
+		task.delay(10, () => handler.startRound());
+		return;
+	}
 
 	moneyAwarded = new Map();
 
@@ -210,10 +224,17 @@ handler.startRound = () => {
 	if (Globals.gamemode === "TDM") {
 		startTDM();
 	}
+
+	if (Globals.gamemode === "Football") {
+		startFootball(map);
+	}
 };
 
 handler.endRound = () => {
 	stopRoundTimer();
+	// Kill the football flow loops/locks before the victory stage (scores stay
+	// readable for the winning banner; beginMatch resets them next round).
+	footballMatch.stop();
 	EndScreen();
 
 	handler.startRound();
@@ -231,7 +252,7 @@ handler.endRound = () => {
 // 	end
 // end
 
-function loadMap() {
+function loadMap(): MapModel | undefined {
 	const mapFolder = (game.Workspace as unknown as { Map: Folder }).Map;
 	const spawnFolder = (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints;
 
@@ -241,8 +262,31 @@ function loadMap() {
 	mapFolder.ClearAllChildren();
 	spawnFolder.ClearAllChildren();
 
-	const rand = math.random(1, maps.size());
-	const map = maps[rand - 1].Clone() as MapModel;
+	const maps = getMaps();
+	if (maps.size() === 0) {
+		warn(
+			"[loadMap] ServerStorage.Maps is EMPTY — every playable map must be a child of ServerStorage.Maps " +
+				"(a Folder holding the map parts, its SpawnPoints folder and, for football, the Blue/Red goal parts). " +
+				"Workspace.Map is CLEARED and re-cloned from there each round, so a map placed directly in Workspace is wiped. No map loaded.",
+		);
+		return undefined;
+	}
+
+	// Football needs a pitch: only maps carrying both goal parts qualify
+	// (currently the stadium). Fall back to the full pool rather than wedging
+	// the rotation if none match.
+	let candidates = maps;
+	if (Globals.gamemode === "Football") {
+		const withGoals = maps.filter((m) => footballMatch.mapHasGoalParts(m));
+		if (withGoals.size() > 0) {
+			candidates = withGoals;
+		} else {
+			warn("[loadMap] no map has Blue+Red goal parts — football will run goalless");
+		}
+	}
+
+	const rand = math.random(1, candidates.size());
+	const map = candidates[rand - 1].Clone() as MapModel;
 
 	for (const v of map.SpawnPoints.GetChildren()) {
 		v.Parent = spawnFolder;
@@ -265,6 +309,7 @@ function loadMap() {
 	warn(
 		`[loadMap] loaded ${map.Name}; mapsInWorkspace=${mapFolder.GetChildren().size()} spawnPoints=${spawnFolder.GetChildren().size()}`,
 	);
+	return map;
 }
 
 function loadLighting(mapName: string) {
@@ -397,6 +442,21 @@ function setupVictoryStage(winnerTable: Player[]) {
 				ui.Frame.Knockouts.Text = "Kills: " + (winner.WaitForChild("kills") as NumberValue).Value;
 			}
 		});
+	}
+
+	if (Globals.gamemode === "Football") {
+		const { Blue, Red } = footballMatch.getScores();
+		if (Blue > Red) {
+			VictoryStage.floor.WinningTeam.TextLabel.Text = `Blue wins ${Blue} - ${Red}!`;
+			VictoryStage.floor.WinningTeam.TextLabel.TextColor3 = new Color3(0, 0, 1);
+		} else if (Red > Blue) {
+			VictoryStage.floor.WinningTeam.TextLabel.Text = `Red wins ${Red} - ${Blue}!`;
+			VictoryStage.floor.WinningTeam.TextLabel.TextColor3 = new Color3(1, 0, 0);
+		} else {
+			VictoryStage.floor.WinningTeam.TextLabel.Text = `The game is a ${Blue} - ${Red} tie!`;
+			VictoryStage.floor.WinningTeam.TextLabel.TextColor3 = new Color3(0, 1, 0);
+		}
+		VictoryStage.floor.WinningTeam.Enabled = true;
 	}
 
 	if (Globals.gamemode === "TDM") {
@@ -563,6 +623,24 @@ function startTDM() {
 	startRoundTimer(Globals.TDM_GAME_TIME);
 }
 
+function startFootball(map: MapModel) {
+	const Teams = game.GetService("Teams") as unknown as { Red: TeamWithKills; Blue: TeamWithKills };
+	Teams.Red.Kills.Value = 0;
+	Teams.Blue.Kills.Value = 0;
+	// MatchHud replaces the deathmatch chrome: the kill-count TeamScore, the
+	// kill-icon Leaderboard row and the old Information clock all stay hidden
+	// on every fresh mount. Teams are assigned per player as they spawn in
+	// (footballMatch.getSpawnCFrame), not up front.
+	StarterGuiState.Game.TeamScore.Visible = false;
+	StarterGuiState.Game.Information.Visible = false;
+	StarterGuiState.Game.Leaderboard.Visible = false;
+	// No startRoundTimer: the football match runs its own clock and calls
+	// endRound itself when it expires.
+	footballMatch.beginMatch(map, () => {
+		handler.endRound();
+	});
+}
+
 function turnOnTeamUi() {
 	const Teams = game.GetService("Teams") as unknown as { Red: TeamWithKills; Blue: TeamWithKills };
 	// Original wrote the StarterGui TEMPLATE texts (future clones); live per-player
@@ -684,9 +762,22 @@ PlayerService.PlayerAdded.Connect((player) => {
 			FFAUpdater(player, attacker, damage, isDeath);
 		} else if (Globals.gamemode === "TDM") {
 			TDMUpdater(player, attacker, damage, isDeath);
+		} else if (Globals.gamemode === "Football") {
+			FootballUpdater(player, attacker, damage, isDeath);
 		}
 	}
 });
+
+// Kills/deaths still count in football (leaderstats, end-screen podium) but
+// never end the round — only the match clock does.
+function FootballUpdater(player: Player, attacker: Player, damage: number, isDeath: boolean) {
+	(attacker as PlayerWithStats).damageDealt.Value += damage;
+
+	if (isDeath) {
+		(player as PlayerWithStats).deaths.Value += 1;
+		(attacker as PlayerWithStats).kills.Value += 1;
+	}
+}
 
 function FFAUpdater(player: Player, attacker: Player, damage: number, isDeath: boolean) {
 	(attacker as PlayerWithStats).damageDealt.Value += damage;

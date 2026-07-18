@@ -46,10 +46,12 @@ const DRIFT_SIDE_FORCE_FWD = 20; // centripetal assist per unit mass while drift
 const DRIFT_SIDE_FORCE_REV = 15; // centripetal assist per unit mass while drifting in reverse
 const DRIFT_YAW_RATE = 3; // rad/s of commanded yaw at full steer and full speed (grip turning peaks ~2.5)
 const DRIFT_YAW_TORQUE = 60; // yaw authority per unit total mass — how hard the slide rotation is enforced
-const DRIVE_WHEEL_FRICTION = 0.75; // normal wheel grip (applied at registration)
+// Wheel grip defaults (per-vehicle tunable). Normal grip raised 0.75 → 1.2:
+// cars were skidding out of grip turns at speed.
+const DRIVE_WHEEL_FRICTION = 1.2;
 const DRIFT_WHEEL_FRICTION = 0.15; // wheel friction while sliding; normal grip is restored on release
-const JUMP_FORCE_TIME = 0.18; // seconds the jump force stays on
-const JUMP_FORCE_GRAVITY_MULT = 4; // jump force as a multiple of gravity; net upward accel = (mult - 1) × g
+const JUMP_FORCE_TIME = 0.18; // seconds the jump force stays on (default; per-vehicle tunable)
+const JUMP_FORCE_GRAVITY_MULT = 4; // jump force as a multiple of gravity; net upward accel = (mult - 1) × g (default; per-vehicle tunable)
 const JUMP_DEBOUNCE_TIME = 2; // seconds after the force window before the next jump is allowed
 const JUMP_UPRIGHT_MAX_TIME = 2; // seconds the post-jump upright hold may last
 const JUMP_UPRIGHT_LAND_GRACE = 0.3; // grounded frames within this window after takeoff don't clear the hold
@@ -125,6 +127,12 @@ export interface VehicleTuning {
 	minAngularSpeed: number;
 	boostAmount: number;
 	driftingMult: number;
+	// Optional (tuning-HUD era): subclasses don't set these, so registration
+	// falls back to the module defaults above.
+	driveWheelFriction?: number;
+	driftWheelFriction?: number;
+	jumpForceTime?: number;
+	jumpGravityMult?: number;
 }
 
 // ---- synchronized state: attributes on the vehicle Base ----
@@ -178,6 +186,10 @@ export const VehicleTuningAttr = {
 	MinAngularSpeed: "TuneMinAngularSpeed",
 	BoostAmount: "TuneBoostAmount",
 	DriftingMult: "TuneDriftingMult",
+	DriveWheelFriction: "TuneDriveWheelFriction",
+	DriftWheelFriction: "TuneDriftWheelFriction",
+	JumpForceTime: "TuneJumpForceTime",
+	JumpGravityMult: "TuneJumpGravityMult",
 } as const;
 
 // Attributes on the vehicle MODEL (game state, written by the server
@@ -572,6 +584,10 @@ export function register(model: VehicleModel, tuning: VehicleTuning, owner?: Pla
 	base.SetAttribute(VehicleTuningAttr.MinAngularSpeed, tuning.minAngularSpeed);
 	base.SetAttribute(VehicleTuningAttr.BoostAmount, tuning.boostAmount);
 	base.SetAttribute(VehicleTuningAttr.DriftingMult, tuning.driftingMult);
+	base.SetAttribute(VehicleTuningAttr.DriveWheelFriction, tuning.driveWheelFriction ?? DRIVE_WHEEL_FRICTION);
+	base.SetAttribute(VehicleTuningAttr.DriftWheelFriction, tuning.driftWheelFriction ?? DRIFT_WHEEL_FRICTION);
+	base.SetAttribute(VehicleTuningAttr.JumpForceTime, tuning.jumpForceTime ?? JUMP_FORCE_TIME);
+	base.SetAttribute(VehicleTuningAttr.JumpGravityMult, tuning.jumpGravityMult ?? JUMP_FORCE_GRAVITY_MULT);
 	model.SetAttribute(VehicleModelAttr.OwnerUserId, owner ? owner.UserId : 0);
 
 	setWheelFriction(entry, false);
@@ -622,6 +638,10 @@ export function registerReplica(model: VehicleModel, owner: Player): boolean {
 		minAngularSpeed: attrNumber(base, VehicleTuningAttr.MinAngularSpeed, 0.6),
 		boostAmount: attrNumber(base, VehicleTuningAttr.BoostAmount, 100),
 		driftingMult: attrNumber(base, VehicleTuningAttr.DriftingMult, 1),
+		driveWheelFriction: attrNumber(base, VehicleTuningAttr.DriveWheelFriction, DRIVE_WHEEL_FRICTION),
+		driftWheelFriction: attrNumber(base, VehicleTuningAttr.DriftWheelFriction, DRIFT_WHEEL_FRICTION),
+		jumpForceTime: attrNumber(base, VehicleTuningAttr.JumpForceTime, JUMP_FORCE_TIME),
+		jumpGravityMult: attrNumber(base, VehicleTuningAttr.JumpGravityMult, JUMP_FORCE_GRAVITY_MULT),
 	};
 	const [ok, err] = pcall(() => {
 		const movers: MoverSet = { aerial, driftYaw, upright, flipAlign, flipLift, jumpThrust, driftThrust };
@@ -686,8 +706,9 @@ export function setBoostHeld(model: Model, held: boolean) {
 
 function tryJump(entry: SimEntry, now: number) {
 	if (now >= attrNumber(entry.base, VehicleAttr.JumpReadyAt, 0)) {
-		entry.base.SetAttribute(VehicleAttr.JumpForceUntil, now + JUMP_FORCE_TIME);
-		entry.base.SetAttribute(VehicleAttr.JumpReadyAt, now + JUMP_FORCE_TIME + JUMP_DEBOUNCE_TIME);
+		const forceTime = entry.tuning.jumpForceTime ?? JUMP_FORCE_TIME;
+		entry.base.SetAttribute(VehicleAttr.JumpForceUntil, now + forceTime);
+		entry.base.SetAttribute(VehicleAttr.JumpReadyAt, now + forceTime + JUMP_DEBOUNCE_TIME);
 		// Arm the post-jump upright hold.
 		entry.base.SetAttribute(VehicleAttr.JumpStabilizing, true);
 		entry.base.SetAttribute(VehicleAttr.JumpStabilizeStart, now);
@@ -1000,7 +1021,9 @@ function closeGroundQuery(entry: SimEntry): LuaTuple<[boolean, CFrame?]> {
 // friction must be re-asserted from the attribute. The compare keeps the
 // steady state write-free.
 function setWheelFriction(entry: SimEntry, sliding: boolean) {
-	const friction = sliding ? DRIFT_WHEEL_FRICTION : DRIVE_WHEEL_FRICTION;
+	const friction = sliding
+		? entry.tuning.driftWheelFriction ?? DRIFT_WHEEL_FRICTION
+		: entry.tuning.driveWheelFriction ?? DRIVE_WHEEL_FRICTION;
 	for (const wheel of entry.wheels) {
 		const part = wheel.FindFirstChild("Wheel") as BasePart | undefined;
 		if (!part) {
@@ -1189,6 +1212,12 @@ function stepVehicle(entry: SimEntry, dt: number) {
 		if (t.minAngularSpeed !== undefined) base.SetAttribute(VehicleTuningAttr.MinAngularSpeed, t.minAngularSpeed);
 		if (t.boostAmount !== undefined) base.SetAttribute(VehicleTuningAttr.BoostAmount, t.boostAmount);
 		if (t.driftingMult !== undefined) base.SetAttribute(VehicleTuningAttr.DriftingMult, t.driftingMult);
+		if (t.driveWheelFriction !== undefined)
+			base.SetAttribute(VehicleTuningAttr.DriveWheelFriction, t.driveWheelFriction);
+		if (t.driftWheelFriction !== undefined)
+			base.SetAttribute(VehicleTuningAttr.DriftWheelFriction, t.driftWheelFriction);
+		if (t.jumpForceTime !== undefined) base.SetAttribute(VehicleTuningAttr.JumpForceTime, t.jumpForceTime);
+		if (t.jumpGravityMult !== undefined) base.SetAttribute(VehicleTuningAttr.JumpGravityMult, t.jumpGravityMult);
 	}
 
 	// Both peers rebuild the tuning from the attributes every tick so live
@@ -1206,6 +1235,22 @@ function stepVehicle(entry: SimEntry, dt: number) {
 		minAngularSpeed: attrNumber(base, VehicleTuningAttr.MinAngularSpeed, prevTuning.minAngularSpeed),
 		boostAmount: attrNumber(base, VehicleTuningAttr.BoostAmount, prevTuning.boostAmount),
 		driftingMult: attrNumber(base, VehicleTuningAttr.DriftingMult, prevTuning.driftingMult),
+		driveWheelFriction: attrNumber(
+			base,
+			VehicleTuningAttr.DriveWheelFriction,
+			prevTuning.driveWheelFriction ?? DRIVE_WHEEL_FRICTION,
+		),
+		driftWheelFriction: attrNumber(
+			base,
+			VehicleTuningAttr.DriftWheelFriction,
+			prevTuning.driftWheelFriction ?? DRIFT_WHEEL_FRICTION,
+		),
+		jumpForceTime: attrNumber(base, VehicleTuningAttr.JumpForceTime, prevTuning.jumpForceTime ?? JUMP_FORCE_TIME),
+		jumpGravityMult: attrNumber(
+			base,
+			VehicleTuningAttr.JumpGravityMult,
+			prevTuning.jumpGravityMult ?? JUMP_FORCE_GRAVITY_MULT,
+		),
 	};
 
 	// Occupancy gate — the old drive() while-condition, evaluated per tick.
@@ -1322,7 +1367,7 @@ function stepVehicle(entry: SimEntry, dt: number) {
 	if (now < attrNumber(base, VehicleAttr.JumpForceUntil, 0)) {
 		entry.jumpThrust.Force = new Vector3(
 			0,
-			entry.totalMass * game.Workspace.Gravity * JUMP_FORCE_GRAVITY_MULT,
+			entry.totalMass * game.Workspace.Gravity * (entry.tuning.jumpGravityMult ?? JUMP_FORCE_GRAVITY_MULT),
 			0,
 		);
 	} else {

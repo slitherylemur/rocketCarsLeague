@@ -26,4 +26,20 @@ export const CAR_FIELDS: ReadonlyArray<CarFieldSpec> = [
 	{ key: "minAngularSpeed", label: "Min angular speed", attr: VehicleTuningAttr.MinAngularSpeed, min: 0.01, max: 50 },
 	{ key: "boostAmount", label: "Boost amount", attr: VehicleTuningAttr.BoostAmount, min: 0, max: 100 },
 	{ key: "driftingMult", label: "Drifting mult", attr: VehicleTuningAttr.DriftingMult, min: 0, max: 10 },
+	{
+		key: "driveWheelFriction",
+		label: "Wheel grip (normal)",
+		attr: VehicleTuningAttr.DriveWheelFriction,
+		min: 0,
+		max: 3,
+	},
+	{
+		key: "driftWheelFriction",
+		label: "Wheel grip (drift)",
+		attr: VehicleTuningAttr.DriftWheelFriction,
+		min: 0,
+		max: 3,
+	},
+	{ key: "jumpGravityMult", label: "Jump force (×gravity)", attr: VehicleTuningAttr.JumpGravityMult, min: 1, max: 20 },
+	{ key: "jumpForceTime", label: "Jump force time (s)", attr: VehicleTuningAttr.JumpForceTime, min: 0.02, max: 1 },
 ];

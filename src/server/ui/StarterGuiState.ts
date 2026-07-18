@@ -15,12 +15,19 @@ export const StarterGuiState = {
 		Information: {
 			// Original template value in the place file
 			GamemodeText: "Gamemode Name",
+			// Football hides the whole Information frame (MatchHud carries the
+			// clock); template default matches the place file.
+			Visible: true,
 		},
 		TeamScore: {
 			// Original template values in the place file
 			Visible: false,
 			RedText: "Red: 10",
 			BlueText: "Blue: 10",
+		},
+		Leaderboard: {
+			// Football hides the kill-icon row (MatchHud shows team rosters).
+			Visible: true,
 		},
 	},
 };
