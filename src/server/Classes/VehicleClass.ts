@@ -14,6 +14,7 @@ import DataStore2 from "../Modules/DataStore2";
 import DSDefaultValues from "../Modules/DataStoreDefaults";
 import spawnVehicle from "../Modules/spawnVehicle";
 import { Globals } from "../Globals";
+import { COLLISION_GROUPS } from "shared/collisionGroups";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
 import { VehicleModel, VehicleModelAttr } from "shared/vehicleSim/VehicleSim";
@@ -190,6 +191,11 @@ export class VehicleClass {
 		const overlapParams = new OverlapParams();
 		overlapParams.FilterType = Enum.RaycastFilterType.Whitelist;
 		overlapParams.FilterDescendantsInstances = [(game.Workspace as unknown as { Vehicles: Folder }).Vehicles];
+		// Hitbox parts live in the Hitbox collision group (ball contact surface,
+		// spawnVehicle), which does NOT collide with Default — the group this
+		// query would otherwise run under, silently excluding every hitbox.
+		// HitboxQuery is a query-only group that collides with Hitbox parts only.
+		overlapParams.CollisionGroup = COLLISION_GROUPS.HitboxQuery;
 		const damageConnection = RunService.Heartbeat.Connect(() => {
 			if (this.model.Parent === undefined) {
 				damageConnection.Disconnect();

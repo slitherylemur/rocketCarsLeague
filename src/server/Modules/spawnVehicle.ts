@@ -1,6 +1,7 @@
 // Original: ServerStorage/Modules/spawnVehicle (ModuleScript)
 
 import { Globals } from "../Globals";
+import { COLLISION_GROUPS } from "shared/collisionGroups";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import requireModule from "shared/requireModule";
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
@@ -128,11 +129,21 @@ function SeatPlayer(player: Player, newModel: Model) {
 // so there is no per-vehicle drive loop to start anymore.)
 
 function makeWheelsUncollidable(vehicleModel: VehicleModel) {
+	const hitboxes = vehicleModel.FindFirstChild("Hitboxes");
 	for (const part of vehicleModel.GetDescendants()) {
 		if (part.IsA("BasePart")) {
 			if (part.Parent!.Parent === vehicleModel.Wheels) {
 				//physicsService:SetPartCollisionGroup(part, "VehicleWheels")
 				part.CollisionGroup = "VehicleWheels";
+			} else if (hitboxes !== undefined && part.IsDescendantOf(hitboxes)) {
+				// Ball contact surface (initCollisionGroups.server.ts): the ball
+				// bounces off this big smooth box instead of the detailed body
+				// and wheels. CanCollide must be on for a physical contact, and
+				// the Hitbox group collides with GameBall ONLY, so this changes
+				// nothing about car-vs-car or car-vs-map behavior — and the
+				// damage GetPartsInPart (VehicleClass) ignores CanCollide.
+				part.CollisionGroup = COLLISION_GROUPS.Hitbox;
+				part.CanCollide = true;
 			} else {
 				//physicsService:SetPartCollisionGroup(part, "vehicle")
 				part.CollisionGroup = "vehicle";

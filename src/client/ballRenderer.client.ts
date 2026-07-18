@@ -9,12 +9,9 @@
 // simulated ball jumps (rollback correction or a late-arriving remote hit),
 // then re-pinning once converged. Nothing here affects the simulation.
 
-import {
-	BALL_NAME,
-	SMOOTH_ENGAGE_DISTANCE,
-	SMOOTH_RELEASE_DISTANCE,
-	SMOOTH_TIME,
-} from "shared/ballSim/BallConfig";
+// Smoothing values are read from the mutable ballTunables table EVERY frame
+// (not captured at setup) so the tuning HUD can adjust them live.
+import { BALL_NAME, ballTunables } from "shared/ballSim/BallConfig";
 
 const RunService = game.GetService("RunService");
 const TweenService = game.GetService("TweenService");
@@ -26,8 +23,8 @@ function setupBall(ball: BasePart) {
 		RunService.SetPredictionMode(ball, Enum.PredictionMode.On);
 	});
 
-	// Visual-only stand-in. Built fresh (not Clone) so the sim ball's mass
-	// core + weld don't come along.
+	// Visual-only stand-in, built fresh (not Clone) so nothing physical
+	// comes along.
 	const renderer = new Instance("Part");
 	renderer.Name = `${BALL_NAME}Renderer`;
 	renderer.Shape = Enum.PartType.Ball;
@@ -51,7 +48,7 @@ function setupBall(ball: BasePart) {
 	const renderConn = RunService.RenderStepped.Connect((dt) => {
 		const simCF = ball.CFrame;
 
-		if (!smoothing && renderer.Position.sub(simCF.Position).Magnitude > SMOOTH_ENGAGE_DISTANCE) {
+		if (!smoothing && renderer.Position.sub(simCF.Position).Magnitude > ballTunables.smoothEngageDistance) {
 			smoothing = true;
 			smoothVelocity = new Vector3();
 		}
@@ -61,13 +58,13 @@ function setupBall(ball: BasePart) {
 				renderer.Position,
 				simCF.Position,
 				smoothVelocity,
-				SMOOTH_TIME,
+				ballTunables.smoothTime,
 				math.huge,
 				dt,
 			);
 			smoothVelocity = newVelocity;
 
-			if (smoothPos.sub(simCF.Position).Magnitude <= SMOOTH_RELEASE_DISTANCE) {
+			if (smoothPos.sub(simCF.Position).Magnitude <= ballTunables.smoothReleaseDistance) {
 				smoothing = false;
 				renderer.CFrame = simCF;
 			} else {

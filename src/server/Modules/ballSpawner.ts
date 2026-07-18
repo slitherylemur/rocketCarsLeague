@@ -6,23 +6,22 @@
 // Workspace.AuthorityMode = Server there is no SetNetworkOwner — the server
 // simulates the ball and clients predict/rollback against it.
 
-import {
-	BALL_NAME,
-	BALL_SIZE,
-	BALL_MASS,
-	BALL_CORE_SIZE,
-	BALL_FRICTION,
-	BALL_ELASTICITY,
-	BALL_FRICTION_WEIGHT,
-	BALL_ELASTICITY_WEIGHT,
-} from "shared/ballSim/BallConfig";
+import { BALL_NAME, BALL_FIELDS, ballTunables, ballTuneAttr } from "shared/ballSim/BallConfig";
+import { BallAttr } from "shared/ballSim/BallSim";
+import { COLLISION_GROUPS } from "shared/collisionGroups";
 
 const RunService = game.GetService("RunService");
 
 const spawner = {} as {
 	SpawnBall: (map: Instance) => void;
 	DestroyBall: () => void;
+	/** Respawn on the map of the last SpawnBall (tuning HUD applies edits this way). */
+	RespawnBall: () => boolean;
 };
+
+// The map the ball last spawned on, so the tuning remote can respawn the
+// ball with new tunables without involving roundHandler.
+let currentMap: Instance | undefined;
 
 // Same rationale as spawnVehicle.markPredictable: client-side On alone left
 // vehicles Authoritative, so the server marks the whole assembly On at spawn.
@@ -115,6 +114,7 @@ spawner.DestroyBall = () => {
 
 spawner.SpawnBall = (map: Instance) => {
 	spawner.DestroyBall();
+	currentMap = map;
 
 	const floorCenter = findSpawnCenter(map);
 	if (floorCenter === undefined) {
@@ -122,59 +122,71 @@ spawner.SpawnBall = (map: Instance) => {
 		return;
 	}
 	// Drop in from slightly above the floor so the spawn reads as an event.
-	const spawnPos = floorCenter.add(new Vector3(0, BALL_SIZE / 2 + 10, 0));
+	const spawnPos = floorCenter.add(new Vector3(0, ballTunables.size / 2 + 10, 0));
 
-	// Massless is ignored on an assembly root, so the sphere alone can never
-	// get below density-0.01 mass (~42 at 20 studs). Instead: massless sphere
-	// welded to a tiny dense core that carries the whole BALL_MASS — the same
-	// trick as the cars (Massless bodies, mass in the wheels/seat).
+	// Custom scripted physics (BallSim.ts): the engine resolves NO contacts
+	// for the ball (CanCollide=false) and its gravity is cancelled by the
+	// AntiGravity force — the engine only integrates position from the
+	// velocity BallSim writes each sim tick.
 	const ball = new Instance("Part");
 	ball.Name = BALL_NAME;
 	ball.Shape = Enum.PartType.Ball;
-	ball.Size = new Vector3(BALL_SIZE, BALL_SIZE, BALL_SIZE);
+	ball.Size = new Vector3(ballTunables.size, ballTunables.size, ballTunables.size);
 	ball.Material = Enum.Material.SmoothPlastic;
 	ball.Color = Color3.fromRGB(255, 170, 0);
 	ball.CastShadow = true;
 	ball.Anchored = false;
-	ball.CanCollide = true;
+	ball.CanCollide = false;
+	// Invisible to every OTHER system's spatial queries (wheel ground rays,
+	// the damage overlap, camera) — BallSim's own queries exclude the ball
+	// explicitly, so nothing here needs CanQuery.
+	ball.CanQuery = false;
 	// .Touched would create a TouchTransmitter — an unpredictable class that
 	// makes the engine refuse the assembly (see spawnVehicle damage notes).
 	ball.CanTouch = false;
-	ball.Massless = true;
-	ball.CustomPhysicalProperties = new PhysicalProperties(
-		0.01,
-		BALL_FRICTION,
-		BALL_ELASTICITY,
-		BALL_FRICTION_WEIGHT,
-		BALL_ELASTICITY_WEIGHT,
-	);
+	// Group kept for the QUERY matrix: BallSim runs its world/hitbox queries
+	// under GameBall, which includes map + Hitboxes and excludes car bodies
+	// and wheels (initCollisionGroups.server.ts).
+	ball.CollisionGroup = COLLISION_GROUPS.GameBall;
 	ball.CFrame = new CFrame(spawnPos);
 
-	const coreVolume = BALL_CORE_SIZE ** 3;
-	const core = new Instance("Part");
-	core.Name = "MassCore";
-	core.Size = new Vector3(BALL_CORE_SIZE, BALL_CORE_SIZE, BALL_CORE_SIZE);
-	core.Transparency = 1;
-	core.CastShadow = false;
-	core.CanCollide = false;
-	core.CanQuery = false;
-	core.CanTouch = false;
-	core.CustomPhysicalProperties = new PhysicalProperties(BALL_MASS / coreVolume, 0.3, 0, 1, 0);
-	// Core must win assembly-root selection (Massless parts can't root an
-	// assembly that has a massed part, but be explicit).
-	core.RootPriority = 10;
-	core.CFrame = ball.CFrame;
-	core.Parent = ball;
+	// Engine-gravity canceller; BallSim keeps Force = mass × gravity per tick.
+	const attachment = new Instance("Attachment");
+	attachment.Name = "BallAttachment";
+	attachment.Parent = ball;
+	const antiGravity = new Instance("VectorForce");
+	antiGravity.Name = "AntiGravity";
+	antiGravity.Attachment0 = attachment;
+	antiGravity.ApplyAtCenterOfMass = true;
+	antiGravity.RelativeTo = Enum.ActuatorRelativeTo.World;
+	antiGravity.Force = new Vector3(0, 0, 0);
+	antiGravity.Parent = ball;
 
-	const weld = new Instance("WeldConstraint");
-	weld.Part0 = ball;
-	weld.Part1 = core;
-	weld.Parent = ball;
+	// Live tunables + sim state as attributes: replicated to every client's
+	// predicted sim and restored by rollback (BallSim reads them per tick).
+	const tunables = ballTunables as unknown as Record<string, number>;
+	for (const field of BALL_FIELDS) {
+		if (field.scope === "live") {
+			ball.SetAttribute(ballTuneAttr(field.key), tunables[field.key]);
+		}
+	}
+	ball.SetAttribute(BallAttr.SimTime, 0);
+	ball.SetAttribute(BallAttr.LastHitCar, "");
+	ball.SetAttribute(BallAttr.LastHitTime, 0);
 
 	ball.Parent = game.Workspace;
 	markPredictable(ball);
 
 	warn(`[BallSpawner] spawned ${BALL_NAME} at ${spawnPos} (assemblyMass=${math.round(ball.AssemblyMass)})`);
+};
+
+spawner.RespawnBall = () => {
+	if (currentMap === undefined || currentMap.Parent === undefined) {
+		warn("[BallSpawner] RespawnBall: no live map to respawn on");
+		return false;
+	}
+	spawner.SpawnBall(currentMap);
+	return true;
 };
 
 export = spawner;

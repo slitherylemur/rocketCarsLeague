@@ -5,44 +5,119 @@
 // part PredictionMode.On; every client predicts it so hits from the local
 // (predicted) car resolve instantly, and the engine's rollback corrects
 // mispredictions. ballRenderer.client.ts hides the simulated part and
-// smooths only the correction jumps — the "Position smoothing" technique
-// from the Roblox server-authority docs (soccer-template variation).
+// smooths only the correction jumps.
 //
-// Ball feel is pure Roblox physics — no scripted sim; these part
-// properties are the only tuning surface.
+// Ball feel is CUSTOM scripted physics (BallSim.ts, Rocket-League style) —
+// engine collisions are off (CanCollide=false); BallSim does sweep tests
+// against the map and closest-point tests against car Hitboxes and reflects
+// velocity itself. See BALL_PHYSICS.md for the design and tuning guide.
+//
+// Tunables flow: this table holds the SERVER's authoritative values (and
+// each client's smoothing values). Every "live" field is mirrored into an
+// attribute on the ball part (ballTuneAttr name) — attributes replicate and
+// roll back, so both peers' sims always read identical numbers. Editing a
+// live field via the tuning HUD needs no respawn; only `size` does.
 
 export const BALL_NAME = "GameBall";
 
-/** Diameter in studs (the part is BALL_SIZE³ with Shape = Ball). */
-export const BALL_SIZE = 20;
+/** Attribute name a live tunable is stored under on the ball part. */
+export function ballTuneAttr(key: string): string {
+	return `BT_${key}`;
+}
 
-// --- physical feel ---
-// Engine collisions decide hit force, so mass is the main dial: lower =
-// punted harder and further, higher = tankier. Cars weigh ~80 physically
-// (Massless bodies, mass in wheels/seat). The ball uses the same trick —
-// Massless sphere + welded dense core carrying all of BALL_MASS — because
-// Massless is ignored on an assembly root and the sphere alone can't get
-// below ~42 even at minimum density.
-export const BALL_MASS = 15;
-/** Edge length of the invisible 1-stud core; density = BALL_MASS / 1³. */
-export const BALL_CORE_SIZE = 1;
-// High friction + weight so ground contact grips and bleeds speed into
-// roll instead of skating.
-export const BALL_FRICTION = 1;
-export const BALL_FRICTION_WEIGHT = 10;
-/** Moderate bounce — high elasticity on a light ball made every touch a moon shot. */
-export const BALL_ELASTICITY = 0.6;
-/** High weight so the ball's bounce behavior dominates over map materials. */
-export const BALL_ELASTICITY_WEIGHT = 20;
+export interface BallTunables {
+	/** Diameter in studs. Respawn-scoped: applying a change respawns the ball. */
+	size: number;
 
-// --- client smoothing (soccer-template style) ---
-/**
- * The renderer pins exactly to the simulated ball (zero visual latency)
- * until the sim jumps at least this far in one frame gap — which only
- * happens on a rollback correction or a remote hit arriving late.
- */
-export const SMOOTH_ENGAGE_DISTANCE = 2;
-/** Once the renderer is back within this distance it re-pins exactly. */
-export const SMOOTH_RELEASE_DISTANCE = 0.5;
-/** SmoothDamp time constant in seconds; smaller = snappier catch-up. */
-export const SMOOTH_TIME = 0.15;
+	// --- flight (Rocket League reference: gravity 650uu/s² on a 91uu-radius
+	// ball ≈ 7.1 g/r; Roblox 196.2 on a 13-stud radius is 15 g/r, so ~0.5
+	// scale matches RL's floaty arc) ---
+	/** Fraction of Workspace.Gravity applied to the ball. */
+	gravityScale: number;
+	/** Per-second velocity decay in the air (RL ≈ 0.03; higher = dies down sooner). */
+	drag: number;
+	/** EXTRA per-second horizontal decay while rolling on the ground. */
+	rollFriction: number;
+	/** Below this speed while grounded the ball stops completely. */
+	restSpeed: number;
+	/** Hard speed cap, studs/s (RL caps at ~2.6× car top speed). */
+	maxSpeed: number;
+
+	// --- world bounces ---
+	/** Restitution vs map: fraction of into-surface speed kept (RL 0.6). */
+	worldBounce: number;
+	/** Fraction of along-surface speed LOST per world bounce. */
+	worldFriction: number;
+
+	// --- car hits ---
+	/** Restitution of the ball-vs-car relative velocity on a hit. */
+	carBounce: number;
+	/**
+	 * Psyonix-style extra punch: added speed = hitPower × closing speed,
+	 * along the car→ball direction. This is the main "how hard do touches
+	 * feel" dial and is NOT applied back on the car.
+	 */
+	hitPower: number;
+	/** Vertical scale on the hit direction (RL 0.35: flatter, drivable shots). */
+	hitVerticalScale: number;
+	/** Seconds before the same car can add another hitPower punch. */
+	hitCooldown: number;
+
+	// --- client smoothing (soccer-template style; per-client, not replicated) ---
+	/** Renderer pins exactly to the sim until it jumps at least this far. */
+	smoothEngageDistance: number;
+	/** Once the renderer is back within this distance it re-pins exactly. */
+	smoothReleaseDistance: number;
+	/** SmoothDamp time constant in seconds; smaller = snappier catch-up. */
+	smoothTime: number;
+}
+
+export const ballTunables: BallTunables = {
+	size: 26,
+	gravityScale: 0.55,
+	drag: 0.1,
+	rollFriction: 0.6,
+	restSpeed: 4,
+	maxSpeed: 300,
+	worldBounce: 0.6,
+	worldFriction: 0.15,
+	carBounce: 0.5,
+	hitPower: 1.2,
+	hitVerticalScale: 0.35,
+	hitCooldown: 0.15,
+	smoothEngageDistance: 2,
+	smoothReleaseDistance: 0.5,
+	smoothTime: 0.15,
+};
+
+// Field metadata shared by the tuning HUD (row labels), the server remote
+// (validation clamps + routing) and BallSim (live attr reads). Order here is
+// the display order.
+//   scope "respawn": part property — applying respawns the ball.
+//   scope "live":    read from the ball's attributes every sim tick.
+//   scope "client":  local rendering knob, applied on the editing client.
+export interface BallFieldSpec {
+	key: keyof BallTunables;
+	label: string;
+	min: number;
+	max: number;
+	scope: "respawn" | "live" | "client";
+}
+
+export const BALL_FIELDS: ReadonlyArray<BallFieldSpec> = [
+	{ key: "size", label: "Size (diameter)", min: 1, max: 100, scope: "respawn" },
+	{ key: "gravityScale", label: "Gravity scale", min: 0, max: 3, scope: "live" },
+	{ key: "drag", label: "Air drag /s", min: 0, max: 5, scope: "live" },
+	{ key: "rollFriction", label: "Roll friction /s", min: 0, max: 10, scope: "live" },
+	{ key: "restSpeed", label: "Rest speed", min: 0, max: 50, scope: "live" },
+	{ key: "maxSpeed", label: "Max speed", min: 10, max: 1000, scope: "live" },
+	{ key: "worldBounce", label: "World bounce", min: 0, max: 1.5, scope: "live" },
+	{ key: "worldFriction", label: "World friction", min: 0, max: 1, scope: "live" },
+	{ key: "carBounce", label: "Car bounce", min: 0, max: 2, scope: "live" },
+	{ key: "hitPower", label: "Hit power", min: 0, max: 10, scope: "live" },
+	{ key: "hitVerticalScale", label: "Hit vertical scale", min: 0, max: 1, scope: "live" },
+	{ key: "hitCooldown", label: "Hit cooldown (s)", min: 0, max: 2, scope: "live" },
+	{ key: "smoothEngageDistance", label: "Smooth engage dist", min: 0, max: 100, scope: "client" },
+	{ key: "smoothReleaseDistance", label: "Smooth release dist", min: 0, max: 50, scope: "client" },
+	{ key: "smoothTime", label: "Smooth time (s)", min: 0.01, max: 2, scope: "client" },
+];

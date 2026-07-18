@@ -262,6 +262,7 @@ interface SimEntry {
 	pendingJump?: boolean;
 	pendingFlip?: boolean;
 	pendingRolls?: Array<{ direction: -1 | 1; begin: boolean }>;
+	pendingTuning?: Partial<VehicleTuning>; // tuning HUD edits, applied inside the next sim step
 	inputActions?: {
 		context: InputContext;
 		throttleForward?: InputAction;
@@ -717,6 +718,24 @@ export function requestFlip(model: Model) {
 	}
 }
 
+// Tuning HUD (server only): queue tuning edits for the player's registered
+// vehicle. Applied inside the next sim step — attributes on predicted
+// instances may only be written from within BindToSimulation — and picked up
+// by both sims through the per-tick refreshTuning read.
+export function applyTuningForPlayer(player: Player, partial: Partial<VehicleTuning>): boolean {
+	for (const [, entry] of registry) {
+		if (entry.owner === player) {
+			const pending = entry.pendingTuning ?? {};
+			for (const [key, value] of pairs(partial)) {
+				pending[key] = value;
+			}
+			entry.pendingTuning = pending;
+			return true;
+		}
+	}
+	return false;
+}
+
 // The old requestFlip body, run INSIDE the sim step so the flip state
 // attributes are written where rollback can track them.
 function tryFlip(entry: SimEntry, now: number) {
@@ -1154,6 +1173,40 @@ function boostTick(entry: SimEntry, increase: boolean, now: number) {
 function stepVehicle(entry: SimEntry, dt: number) {
 	const model = entry.model;
 	const base = entry.base;
+
+	// Tuning HUD edits (server only), written into the Tune* attributes from
+	// inside the sim step so the writes are legal on a predicted instance and
+	// replicate to the predicting client.
+	if (IS_SERVER && entry.pendingTuning) {
+		const t = entry.pendingTuning;
+		entry.pendingTuning = undefined;
+		if (t.mass !== undefined) base.SetAttribute(VehicleTuningAttr.Mass, t.mass);
+		if (t.acceleration !== undefined) base.SetAttribute(VehicleTuningAttr.Acceleration, t.acceleration);
+		if (t.targetVelocity !== undefined) base.SetAttribute(VehicleAttr.TargetVelocity, t.targetVelocity);
+		if (t.minTurnRadius !== undefined) base.SetAttribute(VehicleTuningAttr.MinTurnRadius, t.minTurnRadius);
+		if (t.maxTurnRadius !== undefined) base.SetAttribute(VehicleTuningAttr.MaxTurnRadius, t.maxTurnRadius);
+		if (t.maxAngularSpeed !== undefined) base.SetAttribute(VehicleTuningAttr.MaxAngularSpeed, t.maxAngularSpeed);
+		if (t.minAngularSpeed !== undefined) base.SetAttribute(VehicleTuningAttr.MinAngularSpeed, t.minAngularSpeed);
+		if (t.boostAmount !== undefined) base.SetAttribute(VehicleTuningAttr.BoostAmount, t.boostAmount);
+		if (t.driftingMult !== undefined) base.SetAttribute(VehicleTuningAttr.DriftingMult, t.driftingMult);
+	}
+
+	// Both peers rebuild the tuning from the attributes every tick so live
+	// tuning edits reach the server sim and the predicting client alike
+	// (attributes are rollback-restored, so resimulation reads stay
+	// consistent). Falls back to the register-time values per field.
+	const prevTuning = entry.tuning;
+	entry.tuning = {
+		mass: attrNumber(base, VehicleTuningAttr.Mass, prevTuning.mass),
+		acceleration: attrNumber(base, VehicleTuningAttr.Acceleration, prevTuning.acceleration),
+		targetVelocity: attrNumber(base, VehicleAttr.TargetVelocity, prevTuning.targetVelocity),
+		minTurnRadius: attrNumber(base, VehicleTuningAttr.MinTurnRadius, prevTuning.minTurnRadius),
+		maxTurnRadius: attrNumber(base, VehicleTuningAttr.MaxTurnRadius, prevTuning.maxTurnRadius),
+		maxAngularSpeed: attrNumber(base, VehicleTuningAttr.MaxAngularSpeed, prevTuning.maxAngularSpeed),
+		minAngularSpeed: attrNumber(base, VehicleTuningAttr.MinAngularSpeed, prevTuning.minAngularSpeed),
+		boostAmount: attrNumber(base, VehicleTuningAttr.BoostAmount, prevTuning.boostAmount),
+		driftingMult: attrNumber(base, VehicleTuningAttr.DriftingMult, prevTuning.driftingMult),
+	};
 
 	// Occupancy gate — the old drive() while-condition, evaluated per tick.
 	// The Driving ATTRIBUTE is the previous step's value (rollback-safe), so
