@@ -147,7 +147,17 @@ export class VehicleClass {
 				const teamHighlight = (
 					game.GetService("ServerStorage") as unknown as { TeamHighlight: Highlight }
 				).TeamHighlight.Clone();
-				teamHighlight.OutlineColor = this.owner.TeamColor.Color;
+				// Top Table D1: the outline shows the pitch SIDE (Red/Blue),
+				// not the ladder team's list color. CB_Side is set by the
+				// match layer before SpawnVehicle runs.
+				const side = this.owner.GetAttribute("CB_Side");
+				if (side === "Blue") {
+					teamHighlight.OutlineColor = Color3.fromRGB(79, 168, 255);
+				} else if (side === "Red") {
+					teamHighlight.OutlineColor = Color3.fromRGB(255, 80, 80);
+				} else {
+					teamHighlight.OutlineColor = this.owner.TeamColor.Color;
+				}
 				teamHighlight.Parent = this.model;
 				teamHighlight.Adornee = this.model;
 			}

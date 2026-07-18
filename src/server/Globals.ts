@@ -59,6 +59,10 @@ interface GlobalsTable {
 
 	// tutorial.lua
 	CrateTutorial: (player: Player) => void;
+
+	// MatchDirector (Top Table): true during the between-rounds shop window —
+	// menu re-inits open the Cars page instead of the landing page.
+	shopPhaseActive?: boolean;
 }
 
 // Fields are populated by the modules listed above as they run — identical to

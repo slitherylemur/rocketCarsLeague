@@ -4,6 +4,7 @@ import DataStore2 from "./Modules/DataStore2";
 import DSDefaultValues from "./Modules/DataStoreDefaults";
 import crateModule from "./Modules/CrateModule";
 import { Globals } from "./Globals";
+import TeamRegistry, { RENAME_PRODUCT_ID } from "./Modules/TeamRegistry";
 import type { MultiplierEntry } from "./Modules/dataTypes";
 
 const MarketplaceService = game.GetService("MarketplaceService");
@@ -16,6 +17,15 @@ const purchaseHistoryStore = DataStoreService.GetDataStore("PurchaseHistory");
 
 // Table setup containing product IDs and functions for handling purchases
 const productFunctions = new Map<number, (receipt: ReceiptInfo, player: Player) => boolean>();
+
+// Team rename (Top Table D3): grants a rename credit; the popup keeps it
+// spendable until a clean (unmoderated) name lands.
+if (RENAME_PRODUCT_ID !== 0) {
+	productFunctions.set(RENAME_PRODUCT_ID, (receipt, player) => {
+		TeamRegistry.grantRenameCredit(player);
+		return true;
+	});
+}
 
 //2k gold
 productFunctions.set(1625756130, (receipt, player) => {

@@ -24,14 +24,19 @@ function Ingest(this: LogClient, message: unknown) {
 		message: tostring(message),
 	};
 
-	const response = HTTPService.RequestAsync({
-		Url: "https://in.logtail.com",
-		Method: "POST",
-		Headers: {
-			["Content-Type"]: "application/json",
-			["Authorization"]: "Bearer " + this.token,
-		},
-		Body: HTTPService.JSONEncode(log),
+	// Never let an ingestion failure escape into LogService. loggerScript
+	// listens to LogService, so an uncaught HTTP error would ingest itself and
+	// create an unbounded request/error loop.
+	pcall(() => {
+		HTTPService.RequestAsync({
+			Url: "https://in.logtail.com",
+			Method: "POST",
+			Headers: {
+				["Content-Type"]: "application/json",
+				["Authorization"]: "Bearer " + this.token,
+			},
+			Body: HTTPService.JSONEncode(log),
+		});
 	});
 }
 

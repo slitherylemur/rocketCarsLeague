@@ -1,66 +1,68 @@
-// Football (Rocket-League style) match controller.
+// Football match layer (Top Table Phase 3b).
 //
-// roundHandler loads a map + ball and calls beginMatch(); this module then
-// owns the match flow:
+// PitchMatch = ONE match on ONE pitch (the proven single-pitch flow from the
+// earlier footballMatch: kickoff choreography, control locks, goal watching,
+// respawn locks — now instance-scoped). The module-level coordinator pairs
+// ladder teams onto pitches by position, routes players to their pitch, runs
+// the ONE shared round clock, and ends every match at the same whistle.
 //
-//   Waiting  — cars spawn in with controls locked until each team has at
-//              least one player in a car (min 2 players total).
-//   Kickoff  — ball reset to center, cars reset to their team spawn points,
-//              3-2-1 countdown, then controls unlock ("GO!").
-//   Play     — match clock runs; goals are detected; kills auto-respawn at
-//              the team spawn with a 5 s control lock (TimerGui countdown).
-//   Goal     — short celebration pause, then back to Kickoff.
-//   Ended    — clock hit zero; most goals wins; roundHandler's end screen.
-//
-// Client HUD state travels as attributes on ReplicatedStorage (FB_*) —
-// attributes replicate automatically, so no new RemoteEvents are needed
-// (FunctionsAndEvents is a place-file folder code cannot extend).
-// matchHud.client.ts renders them.
-//
-// Control locks use the same mechanism the shared sim itself uses while
-// driving: the player's VehicleControls InputContext (vehicleInputActions).
-// The sim re-enables the context on every fresh sit edge, so locks are
-// (re)applied AFTER SpawnVehicle returns — its internal task.wait(2) puts us
-// safely after the deferred sit-edge enable.
+// Per-pitch HUD state lives as FB_* attributes ON THE PITCH FOLDER (players
+// carry CB_PitchId to find theirs); the shared clock stays global on
+// ReplicatedStorage. Control locks use the owner's VehicleControls
+// InputContext exactly as before, applied after SpawnVehicle returns.
 
 import ballSpawner from "./ballSpawner";
+import DataStore2 from "./DataStore2";
+import { findGoalPart, mapHasGoalParts } from "./goalParts";
+// SAFE value import (no runtime cycle): MatchDirector only imports
+// `type { RoundResult }` from this module, which is erased at compile time.
+import MatchDirector, { SESSION_ROUNDS } from "./MatchDirector";
+// SAFE value import: PitchManager requires goalParts, not this module.
+import PitchManager from "./PitchManager";
+import spawnVehicle from "./spawnVehicle";
+import TeamRegistry from "./TeamRegistry";
+import type { LadderTeam } from "./TeamRegistry";
 import { Globals } from "../Globals";
-import { BALL_NAME } from "shared/ballSim/BallConfig";
+import { BallAttr } from "shared/ballSim/BallSim";
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
 import { VehicleInput } from "shared/vehicleSim/VehicleSim";
+import type { Pitch } from "./PitchManager";
+
+// Re-export (goal helpers used to live here; keep the old import surface).
+export { mapHasGoalParts };
 
 const PlayerService = game.GetService("Players");
 const RunService = game.GetService("RunService");
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
-const TeamsService = game.GetService("Teams");
 
 export type TeamName = "Red" | "Blue";
 const TEAM_NAMES: TeamName[] = ["Blue", "Red"];
 
-const MATCH_TIME = 300; // seconds of Play time
+const MATCH_TIME =30;
 const KICKOFF_COUNTDOWN = 3;
-const RESPAWN_DELAY = 1.5; // death effect breathing room before the car respawns
-const RESPAWN_LOCK = 5; // seconds of locked controls after a respawn
-const GOAL_PAUSE = 2.5; // celebration freeze before the next kickoff
+const RESPAWN_DELAY = 1.5;
+const RESPAWN_LOCK = 5;
+const GOAL_PAUSE = 2.5;
 const END_ANNOUNCE_TIME = 2;
 
 const BLUE_HEX = "#4FA8FF";
 const RED_HEX = "#FF5050";
 
-// Replicated HUD attributes (on ReplicatedStorage).
 export const FootballAttr = {
 	Phase: "FB_Phase",
 	BlueScore: "FB_BlueScore",
 	RedScore: "FB_RedScore",
-	TimeLeft: "FB_TimeLeft",
+	TimeLeft: "FB_TimeLeft", // global (ReplicatedStorage) — one shared clock
 	Announce: "FB_Announce",
 } as const;
 
-type Phase = "Idle" | "Waiting" | "Kickoff" | "Play" | "Goal" | "Ended";
+// "FreePlay" (design §muckabout): ≥1 rostered player but no opponent yet —
+// everyone on the pitch drives freely, goals count on the pitch scoreboard
+// for fun, and the shared clock does NOT run off it.
+type Phase = "Idle" | "Waiting" | "FreePlay" | "Kickoff" | "Play" | "Goal" | "Ended";
 
 interface RosterEntry {
-	team: TeamName;
-	/** 0-based spawn slot inside the team's spawn folder. */
+	team: TeamName; // pitch SIDE (D1), not the ladder team
 	slot: number;
 }
 
@@ -68,176 +70,38 @@ interface TimerGuiShape extends ScreenGui {
 	TextLabel: TextLabel;
 }
 
-let phase: Phase = "Idle";
-const scores = { Red: 0, Blue: 0 };
-const roster = new Map<Player, RosterEntry>();
-/** Goal parts by the team DEFENDING them (ball in Blue's goal => Red scores). */
-const goalParts = new Map<TeamName, BasePart>();
+// ---- module-wide (round-scoped) state ------------------------------------
 
-let matchGen = 0; // bumped by beginMatch/stop — invalidates every running loop
-let flowGen = 0; // bumped whenever the kickoff/goal/waiting flow restarts
+let matchGen = 0;
 const lockGen = new Map<Player, number>();
+let matches: PitchMatch[] = [];
+const matchByTeamId = new Map<string, PitchMatch>();
 let clockStarted = false;
 let timeLeft = MATCH_TIME;
 let goalWatcher: RBXScriptConnection | undefined;
 let endCallback: (() => void) | undefined;
+// Snapshot for the end-of-round banner: stop() clears `matches`, which made
+// the old banner read 0-0 regardless of the real score.
+let lastGoldScores = { Blue: 0, Red: 0 };
+const VICTORY_SCENE_TIME = 5;
+const SUMMARY_TIME = 6;
+const COIN_FLIP_SUSPENSE = 2;
 
-// ---- replicated HUD state ------------------------------------------------
+// Round economy (design §10; replaces the retired EndScreen.giveRewards).
+const ROUND_MONEY_PARTICIPATION = 300;
+const ROUND_MONEY_WIN = 500;
+const ROUND_MONEY_DRAW = 250;
+const ROUND_MONEY_GOAL = 150;
 
-function setAttr(name: string, value: string | number) {
+// Per-round stats for the summary screen (cleared each beginRound).
+const roundGoals = new Map<Player, number>();
+const roundEarnings = new Map<Player, number>();
+
+function setGlobalAttr(name: string, value: string | number) {
 	ReplicatedStorage.SetAttribute(name, value);
 }
 
-function setPhase(newPhase: Phase) {
-	phase = newPhase;
-	setAttr(FootballAttr.Phase, newPhase);
-}
-
-function announce(text: string) {
-	setAttr(FootballAttr.Announce, text);
-}
-
-function publishScores() {
-	setAttr(FootballAttr.BlueScore, scores.Blue);
-	setAttr(FootballAttr.RedScore, scores.Red);
-}
-
-// ---- teams & spawns ------------------------------------------------------
-
-function teamInstance(team: TeamName): Team {
-	return (TeamsService as unknown as Record<TeamName, Team>)[team];
-}
-
-function rosterCount(team: TeamName): number {
-	let count = 0;
-	for (const [, entry] of roster) {
-		if (entry.team === team) {
-			count += 1;
-		}
-	}
-	return count;
-}
-
-function lowestFreeSlot(team: TeamName): number {
-	const used = new Set<number>();
-	for (const [, entry] of roster) {
-		if (entry.team === team) {
-			used.add(entry.slot);
-		}
-	}
-	let slot = 0;
-	while (used.has(slot)) {
-		slot += 1;
-	}
-	return slot;
-}
-
-function assignTeam(player: Player): RosterEntry {
-	const existing = roster.get(player);
-	if (existing) {
-		return existing;
-	}
-	const blue = rosterCount("Blue");
-	const red = rosterCount("Red");
-	let team: TeamName;
-	if (blue < red) {
-		team = "Blue";
-	} else if (red < blue) {
-		team = "Red";
-	} else {
-		team = TEAM_NAMES[math.random(1, 2) - 1];
-	}
-	const entry: RosterEntry = { team, slot: lowestFreeSlot(team) };
-	roster.set(player, entry);
-	pcall(() => {
-		player.Team = teamInstance(team);
-		player.Neutral = false;
-	});
-	warn(`[Football] ${player.Name} assigned to ${team} (slot ${entry.slot})`);
-	return entry;
-}
-
-/** Spawn parts for a team: SpawnPoints/<Team> folder contents (sorted by
- * name), falling back to every BasePart under SpawnPoints (old flat maps). */
-function teamSpawnParts(team: TeamName): BasePart[] {
-	const spawnFolder = (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints;
-	let source: Instance = spawnFolder;
-	for (const child of spawnFolder.GetChildren()) {
-		if (child.Name.lower() === team.lower()) {
-			source = child;
-			break;
-		}
-	}
-	const parts: BasePart[] = [];
-	for (const descendant of source.GetDescendants()) {
-		if (descendant.IsA("BasePart")) {
-			parts.push(descendant);
-		}
-	}
-	parts.sort((a, b) => a.Name < b.Name);
-	return parts;
-}
-
-function spawnCFrameFor(entry: RosterEntry): CFrame | undefined {
-	const parts = teamSpawnParts(entry.team);
-	if (parts.size() === 0) {
-		return undefined;
-	}
-	return parts[entry.slot % parts.size()].CFrame;
-}
-
-// ---- goal parts ----------------------------------------------------------
-
-/** BasePart in the map whose name reads like "<color> goal" (e.g.
- * BlueGoalPart / redGoalPart) — tolerant of exact naming. */
-function findGoalPart(map: Instance, colorWord: string): BasePart | undefined {
-	for (const descendant of map.GetDescendants()) {
-		if (!descendant.IsA("BasePart")) {
-			continue;
-		}
-		const name = descendant.Name.lower();
-		if (name.find("goal")[0] !== undefined && name.find(colorWord)[0] !== undefined) {
-			return descendant;
-		}
-	}
-	return undefined;
-}
-
-export function mapHasGoalParts(map: Instance): boolean {
-	return findGoalPart(map, "blue") !== undefined && findGoalPart(map, "red") !== undefined;
-}
-
-function locateGoals(map: Instance) {
-	goalParts.clear();
-	for (const team of TEAM_NAMES) {
-		const part = findGoalPart(map, team.lower());
-		if (part) {
-			// Trigger volume only: the ball's sweep raycasts hit CanQuery parts
-			// (which would bounce it off the goal mouth) and cars collide with
-			// CanCollide parts — neutralize both, detection is pure math below.
-			part.CanCollide = false;
-			part.CanQuery = false;
-			part.CanTouch = false;
-			part.Anchored = true;
-			goalParts.set(team, part);
-		} else {
-			warn(`[Football] map ${map.Name} has no ${team} goal part — goals for ${team === "Blue" ? "Red" : "Blue"} cannot be scored`);
-		}
-	}
-}
-
-function ballInPart(ball: BasePart, part: BasePart): boolean {
-	const localPos = part.CFrame.PointToObjectSpace(ball.Position);
-	const half = part.Size.div(2);
-	const r = ball.Size.X / 2;
-	return (
-		math.abs(localPos.X) <= half.X + r &&
-		math.abs(localPos.Y) <= half.Y + r &&
-		math.abs(localPos.Z) <= half.Z + r
-	);
-}
-
-// ---- control locks -------------------------------------------------------
+// ---- control locks (player-scoped, shared across pitches) ----------------
 
 function setContextEnabled(player: Player, enabled: boolean) {
 	const context = player.FindFirstChild(VehicleInput.ContextName);
@@ -283,38 +147,29 @@ function zeroVehicleInputs(player: Player) {
 	}
 }
 
-/**
- * Lock a player's driving controls. With `seconds`, TimerGui counts it down
- * and the lock self-releases; without, the lock holds until unlockPlayer
- * (kickoff/waiting flows release everyone together).
- */
-function lockPlayer(player: Player, seconds?: number, timerText?: (i: number) => string) {
+function lockPlayer(player: Player, seconds?: number) {
 	const gen = (lockGen.get(player) ?? 0) + 1;
 	lockGen.set(player, gen);
 	setContextEnabled(player, false);
 	zeroVehicleInputs(player);
 
 	if (seconds === undefined) {
-		// An indefinite lock may supersede a running countdown (e.g. a goal
-		// freeze during a respawn lock) — clear its stale TimerGui text.
 		hideTimerText(player);
+		return;
 	}
-
-	if (seconds !== undefined) {
-		const localMatchGen = matchGen;
-		task.spawn(() => {
-			for (let i = seconds; i >= 1; i--) {
-				if (lockGen.get(player) !== gen || matchGen !== localMatchGen || player.Parent === undefined) {
-					return;
-				}
-				showTimerText(player, timerText !== undefined ? timerText(i) : `You can drive in ${i}`);
-				task.wait(1);
+	const localMatchGen = matchGen;
+	task.spawn(() => {
+		for (let i = seconds; i >= 1; i--) {
+			if (lockGen.get(player) !== gen || matchGen !== localMatchGen || player.Parent === undefined) {
+				return;
 			}
-			if (lockGen.get(player) === gen && matchGen === localMatchGen && player.Parent !== undefined) {
-				unlockPlayer(player);
-			}
-		});
-	}
+			showTimerText(player, `You can drive in ${i}`);
+			task.wait(1);
+		}
+		if (lockGen.get(player) === gen && matchGen === localMatchGen && player.Parent !== undefined) {
+			unlockPlayer(player);
+		}
+	});
 }
 
 function unlockPlayer(player: Player) {
@@ -323,148 +178,404 @@ function unlockPlayer(player: Player) {
 	setContextEnabled(player, true);
 }
 
-function lockAll() {
-	for (const [player] of roster) {
-		lockPlayer(player);
-	}
+// ---- goal parts (discovery helpers live in ./goalParts) ------------------
+
+function ballInPart(ball: BasePart, part: BasePart): boolean {
+	const localPos = part.CFrame.PointToObjectSpace(ball.Position);
+	const half = part.Size.div(2);
+	const r = ball.Size.X / 2;
+	return (
+		math.abs(localPos.X) <= half.X + r &&
+		math.abs(localPos.Y) <= half.Y + r &&
+		math.abs(localPos.Z) <= half.Z + r
+	);
 }
 
-function unlockAll() {
-	for (const [player] of roster) {
-		unlockPlayer(player);
-	}
-}
+// ---- one match on one pitch ----------------------------------------------
 
-// ---- kickoff / goal / waiting flow --------------------------------------
+class PitchMatch {
+	readonly pitch: Pitch;
+	readonly muckabout: boolean;
+	phase: Phase = "Waiting";
+	readonly scores = { Red: 0, Blue: 0 };
+	readonly roster = new Map<Player, RosterEntry>();
+	readonly sideByTeamId = new Map<string, TeamName>();
+	readonly goalParts = new Map<TeamName, BasePart>();
+	flowGen = 0;
 
-function repositionVehicles() {
-	for (const [player, entry] of roster) {
-		const vehicle = Globals.vehiclesTable[player.UserId];
-		const model = vehicle && vehicle.model;
-		if (!model || model.Parent === undefined) {
-			continue;
-		}
-		const spawnCFrame = spawnCFrameFor(entry);
-		if (spawnCFrame === undefined) {
-			continue;
-		}
-		pcall(() => {
-			const size = model.GetExtentsSize();
-			model.SetPrimaryPartCFrame(spawnCFrame.add(new Vector3(0, size.Y / 2, 0)));
-			const base = model.FindFirstChild("Base");
-			if (base && base.IsA("BasePart")) {
-				base.AssemblyLinearVelocity = new Vector3(0, 0, 0);
-				base.AssemblyAngularVelocity = new Vector3(0, 0, 0);
+	constructor(pitch: Pitch) {
+		this.pitch = pitch;
+		this.muckabout = pitch.muckabout;
+		for (const team of TEAM_NAMES) {
+			const part = findGoalPart(pitch.folder, team.lower());
+			if (part) {
+				part.CanCollide = false;
+				part.CanQuery = false;
+				part.CanTouch = false;
+				part.Anchored = true;
+				this.goalParts.set(team, part);
+			} else if (!this.muckabout) {
+				warn(`[Football] ${pitch.folder.Name} has no ${team} goal part`);
 			}
-		});
+		}
+		this.publishScores();
+		this.setPhase("Waiting");
+		this.announce(this.muckabout ? "FREE PLAY — waiting for a car" : "Waiting for players...");
 	}
-}
 
-function teamsReady(): boolean {
-	return rosterCount("Blue") >= 1 && rosterCount("Red") >= 1 && roster.size() >= 2;
-}
+	setAttr(name: string, value: string | number) {
+		this.pitch.folder.SetAttribute(name, value);
+	}
 
-function startKickoff() {
-	const gen = ++flowGen;
-	const localMatchGen = matchGen;
-	setPhase("Kickoff");
-	task.spawn(() => {
-		ballSpawner.RespawnBall();
-		repositionVehicles();
-		lockAll();
-		for (let i = KICKOFF_COUNTDOWN; i >= 1; i--) {
-			if (flowGen !== gen || matchGen !== localMatchGen) {
+	setPhase(phase: Phase) {
+		this.phase = phase;
+		this.setAttr(FootballAttr.Phase, phase);
+	}
+
+	announce(text: string) {
+		this.setAttr(FootballAttr.Announce, text);
+	}
+
+	publishScores() {
+		this.setAttr(FootballAttr.BlueScore, this.scores.Blue);
+		this.setAttr(FootballAttr.RedScore, this.scores.Red);
+	}
+
+	rosterCount(side: TeamName): number {
+		let count = 0;
+		for (const [, entry] of this.roster) {
+			if (entry.team === side) {
+				count += 1;
+			}
+		}
+		return count;
+	}
+
+	lowestFreeSlot(side: TeamName): number {
+		const used = new Set<number>();
+		for (const [, entry] of this.roster) {
+			if (entry.team === side) {
+				used.add(entry.slot);
+			}
+		}
+		let slot = 0;
+		while (used.has(slot)) {
+			slot += 1;
+		}
+		return slot;
+	}
+
+	sideForLadderTeam(teamId: string): TeamName {
+		const existing = this.sideByTeamId.get(teamId);
+		if (existing) {
+			return existing;
+		}
+		let blueTaken = false;
+		let redTaken = false;
+		for (const [, side] of this.sideByTeamId) {
+			if (side === "Blue") {
+				blueTaken = true;
+			} else {
+				redTaken = true;
+			}
+		}
+		let side: TeamName;
+		if (!blueTaken) {
+			side = "Blue";
+		} else if (!redTaken) {
+			side = "Red";
+		} else {
+			side = this.rosterCount("Blue") <= this.rosterCount("Red") ? "Blue" : "Red";
+			warn(`[Football] ${this.pitch.folder.Name}: >2 ladder teams — overflow to ${side}`);
+		}
+		this.sideByTeamId.set(teamId, side);
+		return side;
+	}
+
+	assignSide(player: Player): RosterEntry {
+		const existing = this.roster.get(player);
+		if (existing) {
+			return existing;
+		}
+		const ladderTeam = TeamRegistry.getTeamOf(player);
+		const side = ladderTeam ? this.sideForLadderTeam(ladderTeam.id) : this.rosterCount("Blue") <= this.rosterCount("Red") ? "Blue" : "Red";
+		const entry: RosterEntry = { team: side, slot: this.lowestFreeSlot(side) };
+		this.roster.set(player, entry);
+		player.SetAttribute("CB_Side", side);
+		player.SetAttribute("CB_PitchId", this.pitch.folder.Name);
+		return entry;
+	}
+
+	spawnParts(side: TeamName): BasePart[] {
+		const spawnPoints = this.pitch.folder.FindFirstChild("SpawnPoints");
+		let source: Instance | undefined = spawnPoints;
+		if (spawnPoints) {
+			for (const child of spawnPoints.GetChildren()) {
+				if (child.Name.lower() === side.lower()) {
+					source = child;
+					break;
+				}
+			}
+		}
+		const parts: BasePart[] = [];
+		if (source) {
+			for (const descendant of source.GetDescendants()) {
+				if (descendant.IsA("BasePart")) {
+					parts.push(descendant);
+				}
+			}
+		}
+		parts.sort((a, b) => a.Name < b.Name);
+		return parts;
+	}
+
+	spawnCFrameFor(entry: RosterEntry): CFrame | undefined {
+		const parts = this.spawnParts(entry.team);
+		if (parts.size() === 0) {
+			return undefined;
+		}
+		return parts[entry.slot % parts.size()].CFrame;
+	}
+
+	teamsReady(): boolean {
+		if (this.muckabout) {
+			// The muckabout pitch never runs a real kickoff/match — its team
+			// free-plays until the shared whistle.
+			return false;
+		}
+		return this.rosterCount("Blue") >= 1 && this.rosterCount("Red") >= 1 && this.roster.size() >= 2;
+	}
+
+	repositionVehicles() {
+		for (const [player, entry] of this.roster) {
+			const vehicle = Globals.vehiclesTable[player.UserId];
+			const model = vehicle && vehicle.model;
+			if (!model || model.Parent === undefined) {
+				continue;
+			}
+			const spawnCFrame = this.spawnCFrameFor(entry);
+			if (spawnCFrame === undefined) {
+				continue;
+			}
+			pcall(() => {
+				const size = model.GetExtentsSize();
+				model.SetPrimaryPartCFrame(spawnCFrame.add(new Vector3(0, size.Y / 2, 0)));
+				const base = model.FindFirstChild("Base");
+				if (base && base.IsA("BasePart")) {
+					base.AssemblyLinearVelocity = new Vector3(0, 0, 0);
+					base.AssemblyAngularVelocity = new Vector3(0, 0, 0);
+				}
+			});
+		}
+	}
+
+	/** `introText` (free-play → match transition): brief announce while the
+	 * free-players are still driving, then the normal reposition + 3-2-1. */
+	startKickoff(introText?: string) {
+		const gen = ++this.flowGen;
+		const localMatchGen = matchGen;
+		this.setPhase("Kickoff");
+		task.spawn(() => {
+			if (introText !== undefined) {
+				this.announce(introText);
+				task.wait(1.2);
+				if (this.flowGen !== gen || matchGen !== localMatchGen) {
+					return;
+				}
+			}
+			ballSpawner.RespawnBall(this.pitch.folder);
+			this.repositionVehicles();
+			for (const [player] of this.roster) {
+				lockPlayer(player);
+			}
+			for (let i = KICKOFF_COUNTDOWN; i >= 1; i--) {
+				if (this.flowGen !== gen || matchGen !== localMatchGen) {
+					return;
+				}
+				this.announce(tostring(i));
+				task.wait(1);
+			}
+			if (this.flowGen !== gen || matchGen !== localMatchGen) {
 				return;
 			}
-			announce(tostring(i));
-			task.wait(1);
+			this.announce("GO!");
+			this.setPhase("Play");
+			for (const [player] of this.roster) {
+				unlockPlayer(player);
+			}
+			// teamsReady() is false for the muckabout pitch, so startKickoff only
+			// ever runs for a REAL 2-team match: this is exactly "the shared clock
+			// starts when the first real match reaches Play" (never from free play).
+			if (!clockStarted) {
+				clockStarted = true;
+				startClock();
+			}
+			task.delay(0.8, () => {
+				if (this.flowGen === gen && matchGen === localMatchGen) {
+					this.announce("");
+				}
+			});
+		});
+	}
+
+	enterWaiting() {
+		this.flowGen += 1;
+		this.setPhase("Waiting");
+		this.announce(this.muckabout ? "FREE PLAY — waiting for a car" : "Waiting for players...");
+		for (const [player] of this.roster) {
+			lockPlayer(player);
 		}
-		if (flowGen !== gen || matchGen !== localMatchGen) {
+	}
+
+	/** FAILURE 2 fix: ≥1 rostered player but no opponent — unlock everyone on
+	 * the pitch and let them knock the ball around until the opponent arrives
+	 * (or the shared whistle blows). Used by BOTH the muckabout pitch and a
+	 * real pitch whose opponent hasn't arrived yet. */
+	enterFreePlay(resetBall: boolean) {
+		this.flowGen += 1;
+		this.setPhase("FreePlay");
+		this.announce(this.muckabout ? "FREE PLAY!" : "FREE PLAY — waiting for an opponent");
+		if (resetBall) {
+			ballSpawner.RespawnBall(this.pitch.folder);
+		}
+		for (const [player] of this.roster) {
+			unlockPlayer(player);
+		}
+	}
+
+	/** Free-play goals are for fun only: the real match starts 0-0. */
+	resetScores() {
+		this.scores.Blue = 0;
+		this.scores.Red = 0;
+		this.publishScores();
+	}
+
+	creditScorer(ball: BasePart, scoringTeam: TeamName) {
+		const lastHitCar = ball.GetAttribute(BallAttr.LastHitCar);
+		if (!typeIs(lastHitCar, "string") || lastHitCar === "") {
 			return;
 		}
-		announce("GO!");
-		setPhase("Play");
-		unlockAll();
-		if (!clockStarted) {
-			clockStarted = true;
-			startClock();
+		for (const player of PlayerService.GetPlayers()) {
+			const vehicle = Globals.vehiclesTable[player.UserId];
+			if (vehicle && vehicle.model && vehicle.model.Name === lastHitCar) {
+				if (this.roster.get(player)?.team === scoringTeam && !this.muckabout) {
+					TeamRegistry.addGoal(player);
+					roundGoals.set(player, (roundGoals.get(player) ?? 0) + 1);
+				}
+				return;
+			}
 		}
-		task.delay(0.8, () => {
-			if (flowGen === gen && matchGen === localMatchGen) {
-				announce("");
+	}
+
+	onGoal(defendingTeam: TeamName, ball: BasePart) {
+		// Free-play goals show on the pitch scoreboard for fun but earn no
+		// ladder stats/money (and the scores reset when the real match starts).
+		const freePlayGoal = this.phase === "FreePlay";
+		const scoringTeam: TeamName = defendingTeam === "Blue" ? "Red" : "Blue";
+		this.scores[scoringTeam] += 1;
+		this.publishScores();
+		if (!freePlayGoal) {
+			this.creditScorer(ball, scoringTeam);
+		}
+		const gen = ++this.flowGen;
+		const localMatchGen = matchGen;
+		this.setPhase("Goal");
+		const hex = scoringTeam === "Blue" ? BLUE_HEX : RED_HEX;
+		this.announce(`<font color="${hex}">${scoringTeam.upper()} TEAM SCORES!</font>`);
+		task.spawn(() => {
+			task.wait(GOAL_PAUSE);
+			if (this.flowGen !== gen || matchGen !== localMatchGen) {
+				return;
+			}
+			this.announce("");
+			if (timeLeft <= 0 && clockStarted) {
+				this.endMatch();
+			} else if (this.teamsReady()) {
+				this.startKickoff();
+			} else if (this.roster.size() > 0) {
+				this.enterFreePlay(true);
+			} else {
+				this.enterWaiting();
 			}
 		});
-	});
-}
+	}
 
-function enterWaiting() {
-	flowGen += 1;
-	setPhase("Waiting");
-	announce("Waiting for players...");
-	lockAll();
-}
-
-function onGoal(defendingTeam: TeamName) {
-	const scoringTeam: TeamName = defendingTeam === "Blue" ? "Red" : "Blue";
-	scores[scoringTeam] += 1;
-	publishScores();
-	const gen = ++flowGen;
-	const localMatchGen = matchGen;
-	setPhase("Goal");
-	const hex = scoringTeam === "Blue" ? BLUE_HEX : RED_HEX;
-	announce(`<font color="${hex}">${scoringTeam.upper()} TEAM SCORES!</font>`);
-	warn(`[Football] GOAL — ${scoringTeam} scores (Blue ${scores.Blue} : ${scores.Red} Red)`);
-	task.spawn(() => {
-		task.wait(GOAL_PAUSE);
-		if (flowGen !== gen || matchGen !== localMatchGen) {
+	endMatch() {
+		if (this.phase === "Ended") {
 			return;
 		}
-		announce("");
-		if (timeLeft <= 0) {
-			endMatch();
-		} else if (teamsReady()) {
-			startKickoff();
-		} else {
-			enterWaiting();
+		this.flowGen += 1;
+		this.setPhase("Ended");
+		for (const [player] of this.roster) {
+			lockPlayer(player);
 		}
-	});
+		// Winner text is announced by playVictoryScene AFTER the camera is on
+		// the goal shot (per design) — here it's just the whistle. Pitches that
+		// never got a second team (muckabout / pending) just hear "TIME!".
+		this.announce(this.muckabout || this.sideByTeamId.size() < 2 ? "TIME!" : "FULL TIME!");
+	}
+
+	checkBall(ball: BasePart) {
+		for (const [team, part] of this.goalParts) {
+			if (part.Parent === undefined) {
+				continue;
+			}
+			if (ballInPart(ball, part)) {
+				this.onGoal(team, ball);
+				break;
+			}
+		}
+	}
 }
+
+// ---- shared clock ---------------------------------------------------------
 
 function startClock() {
 	const localMatchGen = matchGen;
+	warn(`[Football] shared clock started (${timeLeft}s)`);
+	setGlobalAttr(FootballAttr.TimeLeft, timeLeft);
 	task.spawn(() => {
 		while (matchGen === localMatchGen && timeLeft > 0) {
 			task.wait(1);
 			if (matchGen !== localMatchGen) {
 				return;
 			}
-			if (phase === "Play") {
+			// Tick while any pitch is actually playing. Kickoff countdowns and
+			// goal pauses hold the clock ONLY if nothing else is mid-play; once
+			// started the clock must reach 0 even if every real match fell back
+			// to free play (a leaver must never wedge the round).
+			let anyPlaying = false;
+			let anyTransient = false;
+			for (const match of matches) {
+				if (match.phase === "Play") {
+					anyPlaying = true;
+				} else if (match.phase === "Kickoff" || match.phase === "Goal") {
+					anyTransient = true;
+				}
+			}
+			if (anyPlaying || !anyTransient) {
 				timeLeft -= 1;
-				setAttr(FootballAttr.TimeLeft, timeLeft);
+				setGlobalAttr(FootballAttr.TimeLeft, timeLeft);
 				if (timeLeft <= 0) {
-					endMatch();
+					warn("[Football] clock expired — ending every match at the shared whistle");
+					endRoundForAll();
 				}
 			}
 		}
 	});
 }
 
-function endMatch() {
-	if (phase === "Ended") {
-		return;
-	}
-	flowGen += 1;
+function endRoundForAll() {
 	const localMatchGen = matchGen;
-	setPhase("Ended");
-	lockAll();
-	if (scores.Blue > scores.Red) {
-		announce(`<font color="${BLUE_HEX}">BLUE TEAM WINS!</font>`);
-	} else if (scores.Red > scores.Blue) {
-		announce(`<font color="${RED_HEX}">RED TEAM WINS!</font>`);
-	} else {
-		announce("TIE GAME!");
+	for (const match of matches) {
+		match.endMatch();
 	}
-	warn(`[Football] match over — Blue ${scores.Blue} : ${scores.Red} Red`);
+	const gold = matches[0];
+	if (gold) {
+		lastGoldScores = { Blue: gold.scores.Blue, Red: gold.scores.Red };
+	}
+	awardRoundMoney();
+	warn(`[Football] round over — gold pitch Blue ${matches[0] ? matches[0].scores.Blue : 0} : ${matches[0] ? matches[0].scores.Red : 0} Red`);
 	task.spawn(() => {
 		task.wait(END_ANNOUNCE_TIME);
 		if (matchGen !== localMatchGen) {
@@ -477,112 +588,513 @@ function endMatch() {
 	});
 }
 
-// ---- public API ----------------------------------------------------------
+// Round payout at the whistle: participation + result bonus + goal bonuses,
+// through the same multiplier pipeline as kill/damage money.
+function awardRoundMoney() {
+	for (const match of matches) {
+		const diff = match.scores.Blue - match.scores.Red;
+		for (const [player, entry] of match.roster) {
+			let amount = ROUND_MONEY_PARTICIPATION;
+			// Result/goal bonuses only for real 2-team matches — free-play-only
+			// pitches (muckabout, opponent never arrived) pay participation.
+			if (!match.muckabout && match.sideByTeamId.size() >= 2) {
+				if (diff === 0) {
+					amount += ROUND_MONEY_DRAW;
+				} else if ((diff > 0) === (entry.team === "Blue")) {
+					amount += ROUND_MONEY_WIN;
+				}
+				amount += (roundGoals.get(player) ?? 0) * ROUND_MONEY_GOAL;
+			}
+			const [ok, calcOrErr] = pcall(() => {
+				const calculated = Globals.calculateMultMoney(player, amount);
+				DataStore2("money", player).Increment(calculated, 0);
+				return calculated;
+			});
+			roundEarnings.set(player, ok ? (calcOrErr as number) : amount);
+		}
+	}
+}
+
+interface SummaryGuiShape extends ScreenGui {
+	Columns: Frame;
+}
+
+const SUMMARY_FONT = new Font("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Heavy, Enum.FontStyle.Normal);
+
+function buildSummaryColumn(parent: Frame, forPlayer: Player, subject: Player, layoutOrder: number) {
+	const isSelf = forPlayer === subject;
+	const column = new Instance("Frame");
+	column.Name = "Column";
+	column.LayoutOrder = layoutOrder;
+	column.BackgroundColor3 = Color3.fromRGB(25, 32, 40);
+	column.BackgroundTransparency = 0.15;
+	column.Size = isSelf ? new UDim2(0.24, 0, 0.7, 0) : new UDim2(0.17, 0, 0.55, 0);
+	const corner = new Instance("UICorner");
+	corner.CornerRadius = new UDim(0.06, 0);
+	corner.Parent = column;
+	const layout = new Instance("UIListLayout");
+	layout.FillDirection = Enum.FillDirection.Vertical;
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center;
+	layout.VerticalAlignment = Enum.VerticalAlignment.Center;
+	layout.Padding = new UDim(0.03, 0);
+	layout.SortOrder = Enum.SortOrder.LayoutOrder;
+	layout.Parent = column;
+
+	const kills = subject.FindFirstChild("kills");
+	const rows: Array<[string, string, Color3]> = [
+		["Name", isSelf ? "YOU" : subject.Name, new Color3(1, 1, 1)],
+		["Goals", `Goals: ${roundGoals.get(subject) ?? 0}`, Color3.fromRGB(255, 220, 120)],
+		["Kills", `Kills: ${kills && kills.IsA("NumberValue") ? kills.Value : 0}`, Color3.fromRGB(255, 140, 120)],
+		["Money", `+$${roundEarnings.get(subject) ?? 0}`, Color3.fromRGB(140, 255, 160)],
+	];
+	for (let i = 0; i < rows.size(); i++) {
+		const label = new Instance("TextLabel");
+		label.Name = rows[i][0];
+		label.LayoutOrder = i;
+		label.BackgroundTransparency = 1;
+		label.FontFace = SUMMARY_FONT;
+		label.TextScaled = true;
+		label.TextColor3 = rows[i][2];
+		label.Text = rows[i][1];
+		label.Size = new UDim2(0.9, 0, i === 0 ? 0.2 : 0.14, 0);
+		label.Parent = column;
+	}
+	column.Parent = parent;
+}
+
+// ---- coordinator (public API — same surface the callers already use) -----
+
+function matchOf(player: Player): PitchMatch | undefined {
+	const team = TeamRegistry.getTeamOf(player);
+	if (!team) {
+		return undefined;
+	}
+	const existing = matchByTeamId.get(team.id);
+	if (existing) {
+		return existing;
+	}
+	return assignTeamToPitch(team);
+}
+
+/** FAILURE 1 fix: clone a brand-new pitch mid-round onto the next slot along
+ * the line, spawn its ball and stand up a PitchMatch for it. The shared goal
+ * watcher and clock loops iterate `matches`, so pushing IS registration; the
+ * new match ends at the same shared whistle as everyone else. */
+function createMidRoundPitch(): PitchMatch | undefined {
+	const pitch = PitchManager.addPitch();
+	if (!pitch) {
+		return undefined;
+	}
+	ballSpawner.SpawnBall(pitch.folder);
+	const match = new PitchMatch(pitch);
+	matches.push(match);
+	warn(`[Football] mid-round pitch ${pitch.folder.Name} is live (${matches.size()} pitch(es) total)`);
+	return match;
+}
+
+/** Mid-round team placement (pending-pool design): a new team may join a REAL
+ * pitch that still has a free TEAM slot (a pending team is free-playing there
+ * waiting for an opponent) — never an occupied pitch and never the muckabout
+ * pitch. If no slot is free, a fresh pitch is cloned and the team free-plays
+ * on it until the next pending team pairs up. */
+function assignTeamToPitch(team: LadderTeam): PitchMatch | undefined {
+	if (matches.size() === 0) {
+		return undefined;
+	}
+	let target: PitchMatch | undefined;
+	for (const match of matches) {
+		if (!match.muckabout && match.sideByTeamId.size() < 2) {
+			target = match;
+			break;
+		}
+	}
+	if (!target) {
+		target = createMidRoundPitch();
+	}
+	if (!target) {
+		// Could not clone a pitch (missing map variants) — last-resort overflow
+		// keeps the team playable instead of stranded.
+		target = matches[matches.size() - 1];
+		warn(`[Football] could not add a pitch for ${team.name} — overflowing onto ${target.pitch.folder.Name}`);
+	}
+	matchByTeamId.set(team.id, target);
+	target.sideForLadderTeam(team.id);
+	warn(`[Football] team ${team.name} → ${target.pitch.folder.Name}`);
+	return target;
+}
+
+export interface RoundResult {
+	teamId: string;
+	pitchIndex: number;
+	outcome: "win" | "loss" | "draw" | "muck";
+}
 
 const footballMatch = {
 	mapHasGoalParts,
 
-	getScores() {
-		return { Blue: scores.Blue, Red: scores.Red };
+	/** Per-team outcomes of the (just-ended) round — read BEFORE stop().
+	 * Draws are reported as draws; the MatchDirector coin-flips them. */
+	getRoundResults(): RoundResult[] {
+		const out: RoundResult[] = [];
+		for (const match of matches) {
+			// A pitch that never got its second team (muckabout, or a pending
+			// team's free-play pitch) had no real match: outcome "muck" — the
+			// team moves with the pack instead of winning against nobody.
+			if (match.muckabout || match.sideByTeamId.size() < 2) {
+				for (const [teamId] of match.sideByTeamId) {
+					out.push({ teamId, pitchIndex: match.pitch.index, outcome: "muck" });
+				}
+				continue;
+			}
+			const diff = match.scores.Blue - match.scores.Red;
+			for (const [teamId, side] of match.sideByTeamId) {
+				const outcome: RoundResult["outcome"] =
+					diff === 0 ? "draw" : (diff > 0) === (side === "Blue") ? "win" : "loss";
+				out.push({ teamId, pitchIndex: match.pitch.index, outcome });
+			}
+		}
+		return out;
 	},
 
-	/** Kill every running loop and clear replicated state (endRound calls this
-	 * before the victory stage; beginMatch calls it defensively). */
+	/** Gold-pitch scores (live, or the end-of-round snapshot after stop()). */
+	getScores() {
+		const gold = matches[0];
+		return gold ? { Blue: gold.scores.Blue, Red: gold.scores.Red } : lastGoldScores;
+	},
+
+	/**
+	 * Victory scene (design §9, replaces the old podium for football): per
+	 * pitch, the winning team's cars teleport to the VictoryLineup parts —
+	 * or spread in front of the goal they defended — while clients aim their
+	 * camera at the pitch's VictoryCamera (matchHud reacts to Phase=Ended).
+	 * Blocks ~5 s; the winner announce is already on screen.
+	 *
+	 * `flipWinners` (Phase 4b, from MatchDirector.applyMovement) maps a DRAWN
+	 * pitch's index to the ladder team its coin flip promoted: those pitches
+	 * get the "COIN FLIP..." → "<SIDE> MOVES UP!" presentation (matching the
+	 * ACTUAL flip) and the same goal-shot camera as a win, aimed at the flip
+	 * winner's goal. No lineup for ties.
+	 */
+	playVictoryScene(flipWinners?: Map<number, string>) {
+		for (const match of matches) {
+			// No winner presentation for free-play-only pitches (muckabout /
+			// opponent never arrived) — there was no match to win.
+			if (match.muckabout || match.roster.size() === 0 || match.sideByTeamId.size() < 2) {
+				continue;
+			}
+			const diff = match.scores.Blue - match.scores.Red;
+			const winner: TeamName | undefined = diff === 0 ? undefined : diff > 0 ? "Blue" : "Red";
+			// Translate the flip-winning ladder team back to this pitch's SIDE.
+			let flipSide: TeamName | undefined;
+			if (winner === undefined && flipWinners) {
+				const flipTeamId = flipWinners.get(match.pitch.index);
+				if (flipTeamId !== undefined) {
+					flipSide = match.sideByTeamId.get(flipTeamId);
+				}
+			}
+
+			if (winner) {
+				// Winning cars onto the VictoryLineup/<side> parts (Red/Blue
+				// subfolders), fallback: spread across the goal mouth.
+				const lineup: BasePart[] = [];
+				const lineupFolder = match.pitch.folder.FindFirstChild("VictoryLineup");
+				let lineupSource: Instance | undefined = lineupFolder;
+				const sideFolder = lineupFolder && lineupFolder.FindFirstChild(winner);
+				if (sideFolder) {
+					lineupSource = sideFolder;
+				}
+				if (lineupSource) {
+					for (const descendant of lineupSource.GetDescendants()) {
+						if (descendant.IsA("BasePart")) {
+							lineup.push(descendant);
+						}
+					}
+				}
+				lineup.sort((a, b) => a.Name < b.Name);
+				const goal = match.goalParts.get(winner);
+				let placed = 0;
+				for (const [player, entry] of match.roster) {
+					if (entry.team !== winner) {
+						continue;
+					}
+					const vehicle = Globals.vehiclesTable[player.UserId];
+					const model = vehicle && vehicle.model;
+					if (!model || model.Parent === undefined) {
+						continue;
+					}
+					let target: CFrame | undefined;
+					if (lineup.size() > 0) {
+						target = lineup[placed % lineup.size()].CFrame;
+					} else if (goal) {
+						target = goal.CFrame.mul(new CFrame((placed - 1) * 14, 2, -18));
+					}
+					if (target) {
+						pcall(() => {
+							const size = model.GetExtentsSize();
+							model.SetPrimaryPartCFrame(target!.add(new Vector3(0, size.Y / 2, 0)));
+							const base = model.FindFirstChild("Base");
+							if (base && base.IsA("BasePart")) {
+								base.AssemblyLinearVelocity = new Vector3(0, 0, 0);
+								base.AssemblyAngularVelocity = new Vector3(0, 0, 0);
+							}
+						});
+					}
+					placed += 1;
+				}
+			}
+
+			// Use the exact authored shot for the winning side. CFrame is a
+			// supported attribute type, so the client reproduces the part's
+			// complete position and rotation without recalculating either.
+			const camSide: TeamName = winner ?? flipSide ?? "Blue";
+			const cameraWinParts = match.pitch.folder.FindFirstChild("CameraWinParts", true);
+			const cameraPart = cameraWinParts && cameraWinParts.FindFirstChild(camSide);
+			if (cameraPart && cameraPart.IsA("BasePart")) {
+				match.pitch.folder.SetAttribute("FB_VictoryCamCFrame", cameraPart.CFrame);
+			} else {
+				match.pitch.folder.SetAttribute("FB_VictoryCamCFrame", undefined);
+				warn(`[Football] ${match.pitch.folder.Name} is missing CameraWinParts/${camSide}`);
+			}
+
+			// Camera first, THEN the winner text.
+			task.wait(0.2);
+			if (winner === "Blue") {
+				match.announce(`<font color="${BLUE_HEX}">BLUE TEAM WINS!</font>`);
+			} else if (winner === "Red") {
+				match.announce(`<font color="${RED_HEX}">RED TEAM WINS!</font>`);
+			} else if (flipSide !== undefined) {
+				// Coin-flip presentation (Phase 4b): suspense, then the ACTUAL
+				// result the MatchDirector already flipped.
+				match.announce("COIN FLIP...");
+				const localMatchGen = matchGen;
+				const side = flipSide;
+				task.delay(COIN_FLIP_SUSPENSE, () => {
+					if (matchGen !== localMatchGen) {
+						return;
+					}
+					const hex = side === "Blue" ? BLUE_HEX : RED_HEX;
+					match.announce(`<font color="${hex}">${side.upper()} MOVES UP!</font>`);
+				});
+			} else {
+				match.announce("TIE GAME!");
+			}
+		}
+		task.wait(VICTORY_SCENE_TIME);
+	},
+
+	/** Full-screen per-player round summary (design §9): a stats column per
+	 * LADDER TEAMMATE of the viewer (never the opponents) — yours centered and
+	 * bigger. Blocks ~6 s. */
+	showRoundSummary() {
+		for (const match of matches) {
+			for (const [player] of match.roster) {
+				pcall(() => {
+					const playerGui = player.FindFirstChild("PlayerGui");
+					const gui = playerGui && playerGui.FindFirstChild("RoundSummary");
+					if (!gui || !gui.IsA("ScreenGui") || !gui.FindFirstChild("Columns")) {
+						return;
+					}
+					const summary = gui as SummaryGuiShape;
+					for (const child of summary.Columns.GetChildren()) {
+						if (child.IsA("Frame")) {
+							child.Destroy();
+						}
+					}
+					// Only the viewer's own ladder team makes the board: same
+					// LadderTeam members, restricted to this match's roster so
+					// the stats maps actually cover them.
+					const ladderTeam = TeamRegistry.getTeamOf(player);
+					const teammates: Player[] = [];
+					if (ladderTeam) {
+						for (const member of ladderTeam.members) {
+							if (match.roster.has(member)) {
+								teammates.push(member);
+							}
+						}
+					}
+					if (teammates.size() === 0) {
+						teammates.push(player); // teamless viewer: just their own column
+					}
+					// Own column centered: teammates fill orders around the middle.
+					const middle = math.floor(teammates.size() / 2);
+					let order = 0;
+					for (const subject of teammates) {
+						if (subject === player) {
+							continue;
+						}
+						if (order === middle) {
+							order += 1; // reserve the middle slot
+						}
+						buildSummaryColumn(summary.Columns, player, subject, order);
+						order += 1;
+					}
+					buildSummaryColumn(summary.Columns, player, player, middle);
+					summary.Enabled = true;
+				});
+			}
+		}
+		task.wait(SUMMARY_TIME);
+		for (const player of PlayerService.GetPlayers()) {
+			pcall(() => {
+				const playerGui = player.FindFirstChild("PlayerGui");
+				const gui = playerGui && playerGui.FindFirstChild("RoundSummary");
+				if (gui && gui.IsA("ScreenGui")) {
+					gui.Enabled = false;
+				}
+			});
+		}
+	},
+
 	stop() {
 		matchGen += 1;
-		flowGen += 1;
 		if (goalWatcher) {
 			goalWatcher.Disconnect();
 			goalWatcher = undefined;
 		}
-		for (const [player] of roster) {
-			lockGen.set(player, (lockGen.get(player) ?? 0) + 1);
-			hideTimerText(player);
+		for (const match of matches) {
+			match.flowGen += 1;
+			for (const [player] of match.roster) {
+				lockGen.set(player, (lockGen.get(player) ?? 0) + 1);
+				hideTimerText(player);
+				player.SetAttribute("CB_Side", undefined);
+				player.SetAttribute("CB_PitchId", undefined);
+				// Round-end vehicle cleanup (the retired EndScreen used to do
+				// this): cars must not outlive their pitch.
+				pcall(() => {
+					const character = player.Character;
+					const humanoid = character && character.FindFirstChildOfClass("Humanoid");
+					if (humanoid) {
+						humanoid.Health = 0;
+					}
+					spawnVehicle.KillVehicle(player);
+				});
+			}
 		}
-		roster.clear();
-		goalParts.clear();
+		matches = [];
+		matchByTeamId.clear();
 		clockStarted = false;
 		endCallback = undefined;
-		setPhase("Idle");
-		announce("");
+		setGlobalAttr(FootballAttr.TimeLeft, MATCH_TIME);
 	},
 
-	/** Start a fresh match on the freshly loaded map (roundHandler.startRound). */
-	beginMatch(map: Instance, onMatchEnd: () => void) {
+	/** Start a round across the freshly built pitches (roundHandler). Teams
+	 * are paired onto real pitches by ladder position; the leftover goes to
+	 * the muckabout pitch. */
+	beginRound(pitches: Pitch[], onRoundEnd: () => void) {
 		footballMatch.stop();
 		matchGen += 1;
-		endCallback = onMatchEnd;
-		scores.Red = 0;
-		scores.Blue = 0;
+		endCallback = onRoundEnd;
+		roundGoals.clear();
+		roundEarnings.clear();
 		timeLeft = MATCH_TIME;
-		publishScores();
-		setAttr(FootballAttr.TimeLeft, timeLeft);
-		locateGoals(map);
-		enterWaiting();
+		setGlobalAttr(FootballAttr.TimeLeft, timeLeft);
+		// Session round counter for the HUD ("Round N/6" under the clock).
+		// applyMovement has already run for the previous round, so the round
+		// being built is roundNumber + 1.
+		setGlobalAttr("CB_Round", MatchDirector.getRoundNumber() + 1);
+		setGlobalAttr("CB_SessionRounds", SESSION_ROUNDS);
+
+		matches = pitches.map((pitch) => new PitchMatch(pitch));
+
+		const teams = TeamRegistry.getTeams();
+		const realMatches = matches.filter((m) => !m.muckabout);
+		const muckMatch = matches.find((m) => m.muckabout);
+		for (let i = 0; i < teams.size(); i++) {
+			const pairIndex = math.floor(i / 2);
+			let target: PitchMatch | undefined = realMatches[pairIndex];
+			if (target === undefined) {
+				const isOddLeftover = i === teams.size() - 1 && teams.size() % 2 === 1;
+				if (isOddLeftover && muckMatch) {
+					target = muckMatch;
+				} else {
+					// loadMap under-built for the CURRENT team count (e.g. teams
+					// formed during the interlude): top the line up with a fresh
+					// pitch instead of overflowing onto an occupied one.
+					const created = createMidRoundPitch();
+					if (created) {
+						realMatches.push(created);
+						target = created;
+					}
+				}
+			}
+			if (target === undefined) {
+				target = muckMatch ?? realMatches[realMatches.size() - 1];
+				if (target) {
+					warn(`[Football] no pitch available for ${teams[i].name} — overflowing onto ${target.pitch.folder.Name}`);
+				}
+			}
+			if (target) {
+				matchByTeamId.set(teams[i].id, target);
+				target.sideForLadderTeam(teams[i].id);
+			}
+		}
 
 		const localMatchGen = matchGen;
 		goalWatcher = RunService.Heartbeat.Connect(() => {
-			if (matchGen !== localMatchGen || phase !== "Play") {
+			if (matchGen !== localMatchGen) {
 				return;
 			}
-			const ball = game.Workspace.FindFirstChild(BALL_NAME);
-			if (!ball || !ball.IsA("BasePart")) {
-				return;
-			}
-			for (const [team, part] of goalParts) {
-				if (part.Parent === undefined) {
+			for (const match of matches) {
+				// FreePlay counts too: fun goals show on the scoreboard.
+				if (match.phase !== "Play" && match.phase !== "FreePlay") {
 					continue;
 				}
-				if (ballInPart(ball, part)) {
-					onGoal(team);
-					break;
+				const ball = ballSpawner.GetBall(match.pitch.folder);
+				if (ball && ball.Parent !== undefined) {
+					match.checkBall(ball);
 				}
 			}
 		});
-		warn(`[Football] match ready on ${map.Name} — waiting for one car per team`);
+		warn(`[Football] round ready: ${matches.size()} pitch(es), ${teams.size()} team(s)`);
 	},
 
-	/** Team spawn point for a player, assigning them to a team on first use.
-	 * undefined => caller falls back to the legacy random spawn. */
 	getSpawnCFrame(player: Player): CFrame | undefined {
-		if (phase === "Idle") {
+		const match = matchOf(player);
+		if (!match) {
 			return undefined;
 		}
-		return spawnCFrameFor(assignTeam(player));
+		return match.spawnCFrameFor(match.assignSide(player));
 	},
 
-	/** Called after SpawnVehicle finished seating the player (SpawnInPlayer).
-	 * Applies the phase-appropriate control lock and may start the kickoff. */
 	onPlayerSpawned(player: Player) {
-		if (phase === "Idle" || phase === "Ended") {
+		const match = matchOf(player);
+		if (!match || match.phase === "Ended") {
 			return;
 		}
-		assignTeam(player);
-		if (phase === "Play") {
+		match.assignSide(player);
+		if (match.phase === "Play") {
 			lockPlayer(player, RESPAWN_LOCK);
-		} else {
-			// Waiting/Kickoff/Goal: hold the lock; the global announce (MatchHud)
-			// tells the player why. Kickoff's GO! releases everyone together.
-			lockPlayer(player);
+			return;
 		}
-		if (phase === "Waiting" && teamsReady()) {
-			startKickoff();
+		if (match.phase === "Kickoff" || match.phase === "Goal") {
+			// startKickoff's GO / the goal-pause resolution unlocks the roster.
+			lockPlayer(player);
+			return;
+		}
+		// Waiting / FreePlay: either this spawn completes the pairing (kickoff)
+		// or the pitch (re-)enters free play with everyone unlocked.
+		if (match.teamsReady()) {
+			warn(`[Football] opponent arrived on ${match.pitch.folder.Name} — kickoff`);
+			match.resetScores();
+			match.startKickoff(match.phase === "FreePlay" ? "OPPONENT ARRIVED!" : undefined);
+		} else {
+			match.enterFreePlay(false);
 		}
 	},
 
-	/** Death during a match: auto-respawn at the team spawn after a beat.
-	 * Returns false when the caller should use the legacy spectate flow. */
 	onPlayerDied(player: Player): boolean {
-		if (phase === "Idle" || phase === "Ended" || !roster.has(player)) {
+		const match = matchOf(player);
+		if (!match || match.phase === "Ended" || !match.roster.has(player)) {
 			return false;
 		}
 		const localMatchGen = matchGen;
 		task.spawn(() => {
 			task.wait(RESPAWN_DELAY);
-			if (matchGen !== localMatchGen || player.Parent === undefined || !roster.has(player)) {
+			if (matchGen !== localMatchGen || player.Parent === undefined) {
 				return;
 			}
-			if (phase === "Idle" || phase === "Ended") {
+			const stillMatch = matchOf(player);
+			if (!stillMatch || stillMatch.phase === "Ended") {
 				return;
 			}
 			const [ok, err] = pcall(() => Globals.SpawnInPlayer(player));
@@ -595,14 +1107,20 @@ const footballMatch = {
 };
 
 PlayerService.PlayerRemoving.Connect((player) => {
-	if (!roster.has(player)) {
-		return;
-	}
-	roster.delete(player);
 	lockGen.delete(player);
-	if ((phase === "Play" || phase === "Kickoff" || phase === "Goal") && !teamsReady()) {
-		warn(`[Football] ${player.Name} left — pausing for players`);
-		enterWaiting();
+	for (const match of matches) {
+		if (match.roster.has(player)) {
+			match.roster.delete(player);
+			if ((match.phase === "Play" || match.phase === "Kickoff" || match.phase === "Goal") && !match.teamsReady()) {
+				if (match.roster.size() > 0) {
+					warn(`[Football] ${player.Name} left — ${match.pitch.folder.Name} falls back to free play`);
+					match.enterFreePlay(false);
+				} else {
+					warn(`[Football] ${player.Name} left — ${match.pitch.folder.Name} waiting for players`);
+					match.enterWaiting();
+				}
+			}
+		}
 	}
 });
 

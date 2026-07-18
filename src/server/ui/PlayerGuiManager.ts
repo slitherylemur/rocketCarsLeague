@@ -33,6 +33,10 @@ import { CrateMenuGui } from "./components/CrateMenuGui";
 import { MultipliersGui } from "./components/MultipliersGui";
 import { TimerGui } from "./components/TimerGui";
 import { MatchHudGui } from "./components/MatchHudGui";
+import { LandingGui } from "./components/LandingGui";
+import { CreateTeamGui, InvitePopupGui, RenamePopupGui } from "./components/CarBallMenusGui";
+import { RoundSummaryGui } from "./components/RoundSummaryGui";
+import { LadderMapGui } from "./components/LadderMapGui";
 import { PlayerMoneyGainedPopupsGui } from "./components/PlayerMoneyGainedPopupsGui";
 import { DataLossGui } from "./components/DataLossGui";
 import { NEXT_SELECTION_WIRINGS } from "./components/guiMetadata";
@@ -69,6 +73,16 @@ function buildTree(): React.Element {
 		React.createElement(TimerGui, { key: "TimerGui" }),
 		// Football match HUD (new, not from the original place file).
 		React.createElement(MatchHudGui, { key: "MatchHud" }),
+		// Car Ball landing page (Top Table Phase 1).
+		React.createElement(LandingGui, { key: "Landing" }),
+		// Top Table Phase 2 menus.
+		React.createElement(CreateTeamGui, { key: "CreateTeam" }),
+		React.createElement(InvitePopupGui, { key: "InvitePopup" }),
+		React.createElement(RenamePopupGui, { key: "RenamePopup" }),
+		React.createElement(RoundSummaryGui, { key: "RoundSummary" }),
+		// Ladder map between victory scene and summary (Top Table Phase 4b);
+		// doubles as the session-end champions screen (Phase 5).
+		React.createElement(LadderMapGui, { key: "LadderMap" }),
 		// Steer NumberValue — a plain (non-UI) StarterGui child, cloned along
 		// with everything else in the original. Value was 0 in the place file.
 		React.createElement("NumberValue", { Name: "Steer", Value: 0, key: "Steer" } as never),

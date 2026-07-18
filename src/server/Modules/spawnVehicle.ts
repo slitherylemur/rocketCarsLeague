@@ -379,9 +379,11 @@ function KeyHandler(player: Player, actionName: unknown, inputState: unknown, in
 }
 
 Players.PlayerAdded.Connect((player) => {
-	player.CharacterRemoving.Connect((character) => {
-		const characterPlayer = game.GetService("Players").GetPlayerFromCharacter(character)!;
-		spawnVehicleModule.KillVehicle(characterPlayer);
+	player.CharacterRemoving.Connect(() => {
+		// Use the closure player: GetPlayerFromCharacter returns nil for a
+		// character that already unparented mid-respawn, and KillVehicle
+		// indexing nil.UserId errored on every menu-return loop.
+		spawnVehicleModule.KillVehicle(player);
 	});
 });
 

@@ -15,6 +15,7 @@ import codesModule from "./Modules/CodesModule";
 import ContentModule from "./Modules/Content";
 import { Globals } from "./Globals";
 import footballMatch from "./Modules/footballMatch";
+import TeamRegistry, { CarBallRemotes, RENAME_PRODUCT_ID } from "./Modules/TeamRegistry";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import { PlayerGuiManager } from "./ui/PlayerGuiManager";
 import VehicleInputActions from "./Modules/vehicleInputActions";
@@ -563,6 +564,384 @@ function OpenInventory(player: Player) {
 	inventory.Visible = true;
 }
 
+interface LandingGuiShape extends ScreenGui {
+	Panel: Frame & { JoinTeam: TextButton; CreateTeam: TextButton; Cars: TextButton };
+}
+
+/** Landing page (Top Table §5): title + Join Team / Create Team / Cars, car
+ * in view via the menu camera. Buttons are wired server-side like every other
+ * menu screen. */
+function showLanding(player: Player) {
+	if (!uiConnections.get(player)) {
+		uiConnections.set(player, new Map());
+	}
+	for (const [, connection] of pairs(uiConnections.get(player)!)) {
+		connection.Disconnect();
+	}
+
+	const gui = playerGuiOf(player);
+	const landing = player.WaitForChild("PlayerGui").WaitForChild("Landing") as LandingGuiShape;
+	gui.Garage.Enabled = false;
+	landing.Enabled = true;
+
+	// Aim the menu camera at the garage car. setTab.Inventory used to do this
+	// as a side effect of OpenInventory on join; the landing page must send a
+	// camera CFrame itself or the client camera has nothing to point at
+	// (the menuCamera "CoordinateFrame expected, got nil" crash).
+	const playerGarage = Globals.findPlayerGarage(player);
+	const bodyCamera = playerGarage && playerGarage.Cameras.FindFirstChild("Body");
+	if (bodyCamera && bodyCamera.IsA("BasePart")) {
+		FunctionsAndEvents.SetMenuCameraCFrame.FireClient(player, bodyCamera.CFrame);
+	} else {
+		warn(`[Landing] no Body camera in garage for ${player.Name} — menu camera not aimed`);
+	}
+
+	// Display car on the launch screen (setTab.Inventory used to spawn it as
+	// a side effect; the landing page shows the equipped car itself).
+	if (playerGarage) {
+		task.spawn(() => {
+			pcall(() => {
+				spawnVehicle.SpawnVehicle(
+					player,
+					false,
+					DataUtilities.getPlayerEquippedVehicle(player),
+					playerGarage.spawnPlate.CFrame,
+					true,
+				);
+			});
+		});
+	}
+
+	uiConnections.get(player)!.set(
+		"landingJoin",
+		landing.Panel.JoinTeam.MouseButton1Click.Connect(() => {
+			TeamRegistry.joinRandom(player);
+			landing.Enabled = false;
+			spawnIntoMatch(player);
+		}),
+	);
+	uiConnections.get(player)!.set(
+		"landingCreate",
+		landing.Panel.CreateTeam.MouseButton1Click.Connect(() => {
+			// Creates the (locked) team immediately, then opens the team page
+			// for invites/settings — Play there spawns in.
+			if (!TeamRegistry.getTeamOf(player)) {
+				TeamRegistry.createTeam(player, false);
+			}
+			landing.Enabled = false;
+			showTeamPage(player);
+		}),
+	);
+	uiConnections.get(player)!.set(
+		"landingCars",
+		landing.Panel.Cars.MouseButton1Click.Connect(() => {
+			landing.Enabled = false;
+			gui.Garage.Enabled = true;
+			const [ok, err] = pcall(() => OpenInventory(player));
+			if (!ok) {
+				warn(`[Landing] OpenInventory error: ${err}`);
+			}
+			ensureGarageMenuButtons(player);
+		}),
+	);
+}
+
+function spawnIntoMatch(player: Player) {
+	task.spawn(() => {
+		const [ok, result] = pcall(() => Globals.SpawnInPlayer(player));
+		if (!ok || result !== true) {
+			warn(`[Landing] SpawnInPlayer failed (ok=${ok}) — returning to menu`);
+			ResetAndInitialisePlayerMenuUI(player);
+		}
+	});
+}
+
+// ---- Top Table Phase 2: team page, invites, rename ------------------------
+
+interface CreateTeamGuiShape extends ScreenGui {
+	Panel: Frame & {
+		TeamName: TextLabel;
+		PlayerList: ScrollingFrame;
+		InviteFriends: TextButton;
+		AllowRandoms: TextButton & { SwitchTrack: Frame & { SwitchKnob: Frame } };
+		Rename: TextButton;
+		Play: TextButton;
+		Back: TextButton;
+	};
+}
+interface InvitePopupShape extends ScreenGui {
+	Panel: Frame & { Message: TextLabel; Accept: TextButton; Decline: TextButton };
+}
+interface RenamePopupShape extends ScreenGui {
+	Panel: Frame & { NameBox: TextBox; Status: TextLabel; Confirm: TextButton; Close: TextButton };
+}
+
+const MENU_FONT = new Font("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Heavy, Enum.FontStyle.Normal);
+
+function refreshTeamPage(player: Player) {
+	const page = player.WaitForChild("PlayerGui").FindFirstChild("CreateTeam") as CreateTeamGuiShape | undefined;
+	const team = TeamRegistry.getTeamOf(player);
+	if (!page || !team) {
+		return;
+	}
+	page.Panel.TeamName.Text = team.name.upper();
+	page.Panel.AllowRandoms.Text = "ALLOW RANDOM PLAYERS";
+	page.Panel.AllowRandoms.SwitchTrack.BackgroundColor3 = team.open ? Color3.fromRGB(0, 190, 100) : Color3.fromRGB(75, 84, 98);
+	page.Panel.AllowRandoms.SwitchTrack.SwitchKnob.Position = UDim2.fromScale(team.open ? 0.73 : 0.27, 0.5);
+
+	for (const child of page.Panel.PlayerList.GetChildren()) {
+		if (child.IsA("TextButton")) {
+			child.Destroy();
+		}
+	}
+	for (const other of Players.GetPlayers()) {
+		if (other === player || TeamRegistry.getTeamOf(other) === team) {
+			continue;
+		}
+		const row = new Instance("TextButton");
+		row.Name = "InviteRow";
+		row.Size = new UDim2(1, -16, 0, 42);
+		row.BackgroundColor3 = Color3.fromRGB(42, 61, 84);
+		row.BorderSizePixel = 0;
+		row.TextColor3 = new Color3(1, 1, 1);
+		row.TextScaled = true;
+		row.FontFace = MENU_FONT;
+		row.Text = `INVITE ${other.Name}`;
+		const rowCorner = new Instance("UICorner");
+		rowCorner.CornerRadius = new UDim(0, 8);
+		rowCorner.Parent = row;
+		const rowStroke = new Instance("UIStroke");
+		rowStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border;
+		rowStroke.Color = Color3.fromRGB(105, 135, 175);
+		rowStroke.Transparency = 0.55;
+		rowStroke.Parent = row;
+		row.MouseButton1Click.Connect(() => {
+			row.Text = "INVITED";
+			sendInvitePopup(other, player);
+		});
+		row.Parent = page.Panel.PlayerList;
+	}
+}
+
+function showTeamPage(player: Player) {
+	if (!uiConnections.get(player)) {
+		uiConnections.set(player, new Map());
+	}
+	for (const [, connection] of pairs(uiConnections.get(player)!)) {
+		connection.Disconnect();
+	}
+	const page = player.WaitForChild("PlayerGui").WaitForChild("CreateTeam") as CreateTeamGuiShape;
+	page.Enabled = true;
+	refreshTeamPage(player);
+
+	const wire = (key: string, buttonInstance: TextButton, handler: () => void) => {
+		uiConnections.get(player)!.set(key, buttonInstance.MouseButton1Click.Connect(handler));
+	};
+	wire("teamAllow", page.Panel.AllowRandoms, () => {
+		const team = TeamRegistry.getTeamOf(player);
+		if (team) {
+			team.open = !team.open;
+			refreshTeamPage(player);
+		}
+	});
+	wire("teamInviteFriends", page.Panel.InviteFriends, () => {
+		// Roblox's native invite prompt must run client-side.
+		CarBallRemotes.PromptGameInvite.FireClient(player);
+	});
+	wire("teamRename", page.Panel.Rename, () => {
+		handleRenameRequest(player);
+	});
+	wire("teamPlay", page.Panel.Play, () => {
+		page.Enabled = false;
+		spawnIntoMatch(player);
+	});
+	wire("teamBack", page.Panel.Back, () => {
+		page.Enabled = false;
+		showLanding(player);
+	});
+}
+
+const inviteGen = new Map<Player, number>();
+
+function sendInvitePopup(target: Player, from: Player) {
+	const team = TeamRegistry.getTeamOf(from);
+	if (!team || team.members.size() >= 3) {
+		return;
+	}
+	const popup = target.FindFirstChild("PlayerGui")?.FindFirstChild("InvitePopup") as InvitePopupShape | undefined;
+	if (!popup) {
+		return;
+	}
+	const gen = (inviteGen.get(target) ?? 0) + 1;
+	inviteGen.set(target, gen);
+	popup.Panel.Message.Text = `${from.Name} invited you to ${team.name}`;
+	popup.Enabled = true;
+
+	const connections: RBXScriptConnection[] = [];
+	const finish = () => {
+		popup.Enabled = false;
+		for (const connection of connections) {
+			connection.Disconnect();
+		}
+	};
+	connections.push(
+		popup.Panel.Accept.MouseButton1Click.Connect(() => {
+			if (inviteGen.get(target) !== gen) {
+				return;
+			}
+			finish();
+			if (!TeamRegistry.addToTeam(target, team)) {
+				warn(`[Invite] ${target.Name} accepted but ${team.name} is full/gone`);
+			} else if (target.FindFirstChild("PlayerGui")?.FindFirstChild("CreateTeam")) {
+				refreshTeamPage(target);
+			}
+		}),
+	);
+	connections.push(
+		popup.Panel.Decline.MouseButton1Click.Connect(() => {
+			if (inviteGen.get(target) !== gen) {
+				return;
+			}
+			finish();
+		}),
+	);
+	task.delay(30, () => {
+		if (inviteGen.get(target) === gen) {
+			finish();
+		}
+	});
+}
+
+function showRenamePopup(player: Player, statusText?: string) {
+	const popup = player.WaitForChild("PlayerGui").FindFirstChild("RenamePopup") as RenamePopupShape | undefined;
+	if (!popup) {
+		return;
+	}
+	popup.Panel.Status.Text = statusText ?? "";
+	popup.Enabled = true;
+	if (!popup.GetAttribute("CloseWired")) {
+		popup.SetAttribute("CloseWired", true);
+		popup.Panel.Close.MouseButton1Click.Connect(() => {
+			popup.Enabled = false;
+		});
+	}
+}
+
+function handleRenameRequest(player: Player) {
+	if (TeamRegistry.getRenameCredits(player) > 0) {
+		showRenamePopup(player);
+		return;
+	}
+	if (RENAME_PRODUCT_ID === 0) {
+		// Product not created in the dashboard yet — free credit so the flow
+		// stays testable in Studio.
+		warn("[Rename] RENAME_PRODUCT_ID not set — granting a free test credit");
+		TeamRegistry.grantRenameCredit(player);
+		return; // the credit-attribute watcher opens the popup
+	}
+	MarketplaceService.PromptProductPurchase(player, RENAME_PRODUCT_ID);
+}
+
+// Typed rename submissions (client fires with the TextBox contents).
+CarBallRemotes.SubmitTeamName.OnServerEvent.Connect((player, raw) => {
+	if (!typeIs(raw, "string")) {
+		return;
+	}
+	const result = TeamRegistry.tryRename(player, raw);
+	const popup = player.FindFirstChild("PlayerGui")?.FindFirstChild("RenamePopup") as RenamePopupShape | undefined;
+	if (!popup) {
+		return;
+	}
+	if (result === "ok") {
+		popup.Enabled = false;
+		refreshTeamPage(player);
+	} else if (result === "moderated") {
+		popup.Panel.Status.Text = "That name was moderated — try another";
+	} else if (result === "nocredit") {
+		popup.Enabled = false;
+	} else {
+		popup.Panel.Status.Text = "Something went wrong — try again";
+	}
+});
+
+/** Back-to-menu + rename buttons on the Cars page (the rename product must be
+ * reachable for random-team players too — they visit this page every shop
+ * phase). Created imperatively per mount. */
+function ensureGarageMenuButtons(player: Player) {
+	const garage = playerGuiOf(player).Garage;
+	if (garage.FindFirstChild("BackToMenu", true)) {
+		return;
+	}
+	const inventory = garage.Inventory;
+	const shopButton = inventory.ShopButton;
+	shopButton.Position = new UDim2(0.395, 0, shopButton.Position.Y.Scale, shopButton.Position.Y.Offset);
+	const shopOutline = new Instance("UIStroke");
+	shopOutline.Name = "MenuOutline";
+	shopOutline.ApplyStrokeMode = Enum.ApplyStrokeMode.Border;
+	shopOutline.Color = Color3.fromRGB(120, 70, 0);
+	shopOutline.Thickness = 2;
+	shopOutline.Parent = shopButton;
+	const shopShadow = new Instance("UIShadow");
+	shopShadow.Name = "MenuShadow";
+	shopShadow.BlurRadius = new UDim(0, 8);
+	shopShadow.Color = new Color3(0, 0, 0);
+	shopShadow.Offset = UDim2.fromOffset(0, 5);
+	shopShadow.Transparency = 0.5;
+	shopShadow.Parent = shopButton;
+
+	const backButton = new Instance("TextButton");
+	backButton.Name = "BackToMenu";
+	backButton.AnchorPoint = new Vector2(1, 0.5);
+	backButton.AutoButtonColor = true;
+	backButton.BackgroundColor3 = Color3.fromRGB(205, 55, 55);
+	backButton.BorderSizePixel = 0;
+	backButton.FontFace = MENU_FONT;
+	backButton.Position = new UDim2(0.193, 0, 0.932, 0);
+	backButton.Size = new UDim2(0.11, 0, 0.134, 0);
+	backButton.Text = "BACK";
+	backButton.TextColor3 = new Color3(1, 1, 1);
+	backButton.TextScaled = true;
+	backButton.ZIndex = shopButton.ZIndex;
+	const backCorner = new Instance("UICorner");
+	backCorner.CornerRadius = new UDim(0.1, 0);
+	backCorner.Parent = backButton;
+	const backOutline = new Instance("UIStroke");
+	backOutline.ApplyStrokeMode = Enum.ApplyStrokeMode.Border;
+	backOutline.Color = Color3.fromRGB(95, 15, 15);
+	backOutline.Thickness = 2;
+	backOutline.Parent = backButton;
+	const backShadow = new Instance("UIShadow");
+	backShadow.BlurRadius = new UDim(0, 8);
+	backShadow.Color = new Color3(0, 0, 0);
+	backShadow.Offset = UDim2.fromOffset(0, 5);
+	backShadow.Transparency = 0.5;
+	backShadow.Parent = backButton;
+	backButton.MouseButton1Click.Connect(() => {
+		const [ok, err] = pcall(() => showLanding(player));
+		if (!ok) {
+			warn(`[Garage] back to menu failed: ${err}`);
+		}
+	});
+	backButton.Parent = inventory;
+
+	const makeButton = (name: string, text: string, y: number, color: Color3, onClick: () => void) => {
+		const buttonInstance = new Instance("TextButton");
+		buttonInstance.Name = name;
+		buttonInstance.Text = text;
+		buttonInstance.FontFace = MENU_FONT;
+		buttonInstance.TextScaled = true;
+		buttonInstance.TextColor3 = new Color3(1, 1, 1);
+		buttonInstance.BackgroundColor3 = color;
+		buttonInstance.Position = new UDim2(0.01, 0, y, 0);
+		buttonInstance.Size = new UDim2(0.09, 0, 0.05, 0);
+		buttonInstance.MouseButton1Click.Connect(onClick);
+		buttonInstance.Parent = garage;
+	};
+	makeButton("RenameTeam", "RENAME TEAM", 0.01, Color3.fromRGB(150, 70, 200), () => {
+		handleRenameRequest(player);
+	});
+}
+
 Globals.showMultiplier = (player: Player) => {
 	const playerMultDS = DataStore2("multipliers", player);
 	const MultTable = playerMultDS.Get(DSDefaultValues.multipliers) as MultiplierEntry[];
@@ -619,34 +998,28 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 	const playerMoney = DataStore2("money", player);
 	setPlayerCash(player, playerMoney.Get(DataStoreDefaults.money) as number);
 
-	// SpawnPoints may now hold Red/Blue team subfolders (football maps) —
-	// collect BaseParts at any depth for the counts/fallback.
-	const spawnParts: BasePart[] = [];
-	for (const descendant of (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints.GetDescendants()) {
-		if (descendant.IsA("BasePart")) {
-			spawnParts.push(descendant);
-		}
-	}
-	const mapsInWorld = (game.Workspace as unknown as { Map: Folder }).Map.GetChildren();
-	let mapNames = "";
-	for (const m of mapsInWorld) {
-		mapNames = mapNames === "" ? m.Name : `${mapNames},${m.Name}`;
-	}
-	warn(`[SpawnInPlayer] maps=${mapsInWorld.size()} [${mapNames}] spawnParts=${spawnParts.size()}`);
-	if (spawnParts.size() === 0) {
-		warn(`[SpawnInPlayer] ABORT no SpawnPoints — cannot spawn vehicle`);
-		return false;
-	}
-
-	// Football: the match controller assigns a team and hands out that team's
-	// spawn point (players re-use their slot on every respawn).
+	// Football (Phase 3b): every spawner needs a ladder team first (joinRandom
+	// is a no-op if teamed — covers the garage Spawn button path); the match
+	// layer routes the team to its pitch and hands out that pitch's spawn
+	// point. Spawn points live INSIDE pitch folders now; the flat
+	// Workspace.SpawnPoints folder is only a legacy fallback.
 	let spawnCFrame: CFrame | undefined;
 	if (Globals.gamemode === "Football") {
+		TeamRegistry.joinRandom(player);
 		spawnCFrame = footballMatch.getSpawnCFrame(player);
 	}
 	if (spawnCFrame === undefined) {
-		const rand = math.random(1, spawnParts.size());
-		spawnCFrame = spawnParts[rand - 1].CFrame;
+		const spawnParts: BasePart[] = [];
+		for (const descendant of (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints.GetDescendants()) {
+			if (descendant.IsA("BasePart")) {
+				spawnParts.push(descendant);
+			}
+		}
+		if (spawnParts.size() === 0) {
+			warn(`[SpawnInPlayer] ABORT no pitch spawn point and no legacy SpawnPoints — cannot spawn vehicle`);
+			return false;
+		}
+		spawnCFrame = spawnParts[math.random(1, spawnParts.size()) - 1].CFrame;
 	}
 	spawnVehicle.SpawnVehicle(player, true, DataUtilities.getPlayerEquippedVehicle(player), spawnCFrame);
 
@@ -707,34 +1080,28 @@ function initialisePlayerUi(player: Player) {
 		selectedFunctions.openCashPurchaceMenu(player);
 	});
 
-	garageUi.Inventory.SpawnButton.Button.Visible = true;
-
-	const bindSpawnButton = () => {
-		let spawnConnect: RBXScriptConnection;
-		spawnConnect = garageUi.Inventory.SpawnButton.Button.MouseButton1Click.Connect(() => {
-			spawnConnect.Disconnect();
-			const [ok, result] = pcall(() => Globals.SpawnInPlayer(player));
-			if (!ok || result !== true) {
-				if (!ok) {
-					warn(`[SpawnButton] SpawnInPlayer error: ${result}`);
-				} else {
-					warn(`[SpawnButton] SpawnInPlayer aborted — returning player to menu`);
-				}
-				// SpawnInPlayer already destroyed+remounted PlayerGui, so the
-				// captured garageUi is stale — a full menu re-init rebuilds the
-				// UI and binds a fresh spawn button instead of erroring on the
-				// dead instance.
-				ResetAndInitialisePlayerMenuUI(player);
-			}
-		});
-	};
-	bindSpawnButton();
-
-	const [invOk, invErr] = pcall(() => {
-		OpenInventory(player);
+	// Top Table: play starts automatically (landing buttons / shop countdown)
+	// — the garage Spawn button is retired.
+	pcall(() => {
+		garageUi.Inventory.SpawnButton.Visible = false;
+		garageUi.Inventory.SpawnButton.Button.Visible = false;
 	});
-	if (!invOk) {
-		warn(`[initialisePlayerUi] OpenInventory error: ${invErr}`);
+
+	// Landing page first (Top Table §5) — except during the between-rounds
+	// shop window, when everyone lands straight on the CARS page with the
+	// restart countdown already ticking.
+	garageUi.Enabled = false;
+	const [landOk, landErr] = pcall(() => {
+		if (Globals.shopPhaseActive === true) {
+			garageUi.Enabled = true;
+			OpenInventory(player);
+			ensureGarageMenuButtons(player);
+		} else {
+			showLanding(player);
+		}
+	});
+	if (!landOk) {
+		warn(`[initialisePlayerUi] menu init error: ${landErr}`);
 	}
 	playerGarage = undefined;
 	//wait(3)
@@ -842,6 +1209,32 @@ game.GetService("Players").PlayerAdded.Connect((player) => {
 
 	createValues(player);
 	initialisePlayerUi(player);
+
+	// Rename purchase completions open the naming popup (credits arrive
+	// asynchronously via purchaseHandler's receipt processor).
+	player.GetAttributeChangedSignal("CB_RenameCredits").Connect(() => {
+		const credits = player.GetAttribute("CB_RenameCredits");
+		if (typeIs(credits, "number") && credits > 0) {
+			showRenamePopup(player);
+		}
+	});
+
+	// Game-invited friends: offer the referrer's team on arrival (join data
+	// carries ReferredByPlayerId for game invites; absent in Studio tests).
+	task.spawn(() => {
+		const [ok, joinData] = pcall(() => player.GetJoinData());
+		if (!ok) {
+			return;
+		}
+		const referrerId = (joinData as { ReferredByPlayerId?: number }).ReferredByPlayerId;
+		if (referrerId !== undefined && referrerId !== 0) {
+			const referrer = Players.GetPlayerByUserId(referrerId);
+			if (referrer && TeamRegistry.getTeamOf(referrer)) {
+				task.wait(3); // let the landing page mount first
+				sendInvitePopup(player, referrer);
+			}
+		}
+	});
 
 	const playerMoney = DataStore2("money", player);
 

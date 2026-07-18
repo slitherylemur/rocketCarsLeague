@@ -12,7 +12,7 @@
 
 const Players = game.GetService("Players");
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
-const TeamsService = game.GetService("Teams");
+const RunService = game.GetService("RunService");
 const LocalPlayer = Players.LocalPlayer;
 
 // Mirror of FootballAttr in src/server/Modules/footballMatch.ts (shared
@@ -22,6 +22,10 @@ const ATTR_BLUE = "FB_BlueScore";
 const ATTR_RED = "FB_RedScore";
 const ATTR_TIME = "FB_TimeLeft";
 const ATTR_ANNOUNCE = "FB_Announce";
+const ATTR_VCAM_CFRAME = "FB_VictoryCamCFrame";
+// Session round counter (Phase 5) — footballMatch.beginRound sets both.
+const ATTR_ROUND = "CB_Round";
+const ATTR_ROUND_MAX = "CB_SessionRounds";
 
 const BLUE_HEX = "#4FA8FF";
 const RED_HEX = "#FF5050";
@@ -36,7 +40,7 @@ interface MatchHudShape extends ScreenGui {
 	TopBar: Frame & {
 		BlueTeam: Frame;
 		RedTeam: Frame;
-		Center: Frame & { Score: TextLabel; Clock: TextLabel };
+		Center: Frame & { Score: TextLabel; Clock: TextLabel; Round: TextLabel };
 	};
 	Announce: TextLabel;
 }
@@ -50,13 +54,25 @@ function currentHud(): MatchHudShape | undefined {
 	return undefined;
 }
 
-function attrNumber(name: string): number {
-	const value = ReplicatedStorage.GetAttribute(name);
+// Phase 3b: score/phase/announce live on the LOCAL PLAYER'S PITCH folder
+// (CB_PitchId attribute names it under Workspace.Map); the shared clock stays
+// global on ReplicatedStorage.
+function currentPitch(): Instance | undefined {
+	const pitchId = LocalPlayer.GetAttribute("CB_PitchId");
+	if (!typeIs(pitchId, "string")) {
+		return undefined;
+	}
+	const mapFolder = game.Workspace.FindFirstChild("Map");
+	return mapFolder ? mapFolder.FindFirstChild(pitchId) : undefined;
+}
+
+function attrNumberOn(source: Instance | undefined, name: string): number {
+	const value = source ? source.GetAttribute(name) : undefined;
 	return typeIs(value, "number") ? value : 0;
 }
 
-function attrString(name: string): string {
-	const value = ReplicatedStorage.GetAttribute(name);
+function attrStringOn(source: Instance | undefined, name: string): string {
+	const value = source ? source.GetAttribute(name) : undefined;
 	return typeIs(value, "string") ? value : "";
 }
 
@@ -65,7 +81,8 @@ function refreshScore() {
 	if (!hud) {
 		return;
 	}
-	hud.TopBar.Center.Score.Text = `<font color="${BLUE_HEX}">${attrNumber(ATTR_BLUE)}</font> - <font color="${RED_HEX}">${attrNumber(ATTR_RED)}</font>`;
+	const pitch = currentPitch();
+	hud.TopBar.Center.Score.Text = `<font color="${BLUE_HEX}">${attrNumberOn(pitch, ATTR_BLUE)}</font> - <font color="${RED_HEX}">${attrNumberOn(pitch, ATTR_RED)}</font>`;
 }
 
 function refreshClock() {
@@ -73,10 +90,20 @@ function refreshClock() {
 	if (!hud) {
 		return;
 	}
-	const timeLeft = math.max(0, attrNumber(ATTR_TIME));
+	const timeLeft = math.max(0, attrNumberOn(ReplicatedStorage, ATTR_TIME));
 	const minutes = math.floor(timeLeft / 60);
 	const seconds = timeLeft - minutes * 60;
 	hud.TopBar.Center.Clock.Text = string.format("%d:%02d", minutes, seconds);
+}
+
+function refreshRound() {
+	const hud = currentHud();
+	if (!hud) {
+		return;
+	}
+	const round = attrNumberOn(ReplicatedStorage, ATTR_ROUND);
+	const roundMax = attrNumberOn(ReplicatedStorage, ATTR_ROUND_MAX);
+	hud.TopBar.Center.Round.Text = round > 0 && roundMax > 0 ? `Round ${round}/${roundMax}` : "";
 }
 
 function refreshAnnounce() {
@@ -84,7 +111,7 @@ function refreshAnnounce() {
 	if (!hud) {
 		return;
 	}
-	const text = attrString(ATTR_ANNOUNCE);
+	const text = attrStringOn(currentPitch(), ATTR_ANNOUNCE);
 	hud.Announce.Text = text;
 	hud.Announce.Visible = text !== "";
 }
@@ -117,15 +144,31 @@ function fetchThumbnail(player: Player) {
 	});
 }
 
-function rebuildRow(row: Frame, team: Team) {
+// Sides are per-match dressing set by the server as a CB_Side player
+// attribute (ladder teams own player.Team, so the old Red/Blue Roblox Teams
+// no longer hold members). CB_Side alone is not unique: every simultaneous
+// pitch has a Blue and Red side, so the pitch assignment must match too.
+function playersOnSide(side: string): Player[] {
+	const out: Player[] = [];
+	const pitchId = LocalPlayer.GetAttribute("CB_PitchId");
+	if (!typeIs(pitchId, "string")) {
+		return out;
+	}
+	for (const player of Players.GetPlayers()) {
+		if (player.GetAttribute("CB_PitchId") === pitchId && player.GetAttribute("CB_Side") === side) {
+			out.push(player);
+		}
+	}
+	out.sort((a, b) => a.Name < b.Name);
+	return out;
+}
+
+function rebuildRow(row: Frame, members: Player[], color: Color3) {
 	for (const child of row.GetChildren()) {
 		if (child.Name === "PlayerIcon") {
 			child.Destroy();
 		}
 	}
-
-	const members = team.GetPlayers();
-	members.sort((a, b) => a.Name < b.Name);
 
 	let shown = 0;
 	for (const member of members) {
@@ -137,7 +180,7 @@ function rebuildRow(row: Frame, team: Team) {
 			ReplicatedStorage as unknown as { Ui: { PlayerIcon: PlayerIconUi } }
 		).Ui.PlayerIcon.Clone();
 		icon.LayoutOrder = shown;
-		icon.BackgroundColor3 = team.TeamColor.Color;
+		icon.BackgroundColor3 = color;
 		icon.Value.Visible = false; // kill count slot from the deathmatch row
 		const thumb = playerThumbnail(member);
 		if (thumb !== undefined) {
@@ -154,30 +197,117 @@ function rebuildTeamRows() {
 	if (!hud) {
 		return;
 	}
-	const Teams = TeamsService as unknown as { Red: Team; Blue: Team };
-	rebuildRow(hud.TopBar.BlueTeam, Teams.Blue);
-	rebuildRow(hud.TopBar.RedTeam, Teams.Red);
+	rebuildRow(hud.TopBar.BlueTeam, playersOnSide("Blue"), Color3.fromRGB(79, 168, 255));
+	rebuildRow(hud.TopBar.RedTeam, playersOnSide("Red"), Color3.fromRGB(255, 80, 80));
+}
+
+// Victory scene camera: when our pitch's match ends, aim at its
+// VictoryCamera shot (winners are posed in front of their goal). The server
+// sets FB_Phase="Ended" FIRST and the cam attributes only ~0.2s later, so this
+// also runs from the FB_VictoryCam* attribute signals (bindPitch). While the
+// scene lasts, other camera owners (default/driving camera on respawn) can
+// flip CameraType back — so once the shot is known it is re-asserted every
+// RenderStepped until the phase leaves "Ended" or the pitch goes away. The
+// menu camera takes over when the shop phase remounts the UI (CB_PitchId is
+// cleared by footballMatch.stop(), which ends the loop).
+let victoryCamConnection: RBXScriptConnection | undefined;
+
+function stopVictoryCamera() {
+	if (victoryCamConnection) {
+		victoryCamConnection.Disconnect();
+		victoryCamConnection = undefined;
+	}
+}
+
+function applyVictoryCamera(pitch: Instance): boolean {
+	const camera = game.Workspace.CurrentCamera;
+	if (!camera) {
+		return false;
+	}
+	// The server selects CameraWinParts/Red or CameraWinParts/Blue and
+	// publishes that authored part's exact CFrame. Falls back to the legacy
+	// VictoryCamera part if the authored side part is missing.
+	const camCFrame = pitch.GetAttribute(ATTR_VCAM_CFRAME);
+	if (typeIs(camCFrame, "CFrame")) {
+		camera.CameraType = Enum.CameraType.Scriptable;
+		camera.CFrame = camCFrame;
+		return true;
+	}
+	const cameraPart = pitch.FindFirstChild("VictoryCamera");
+	if (cameraPart && cameraPart.IsA("BasePart")) {
+		camera.CameraType = Enum.CameraType.Scriptable;
+		camera.CFrame = cameraPart.CFrame;
+		return true;
+	}
+	return false;
+}
+
+function handleVictoryCamera() {
+	const pitch = currentPitch();
+	if (!pitch || attrStringOn(pitch, ATTR_PHASE) !== "Ended") {
+		stopVictoryCamera();
+		return;
+	}
+	if (!applyVictoryCamera(pitch)) {
+		// Cam attributes haven't replicated yet — the FB_VictoryCam* signals
+		// (bindPitch) re-run this the moment they arrive.
+		return;
+	}
+	if (!victoryCamConnection) {
+		victoryCamConnection = RunService.RenderStepped.Connect(() => {
+			const current = currentPitch();
+			if (!current || attrStringOn(current, ATTR_PHASE) !== "Ended" || !applyVictoryCamera(current)) {
+				stopVictoryCamera();
+			}
+		});
+	}
 }
 
 function refreshAll() {
 	refreshScore();
 	refreshClock();
+	refreshRound();
 	refreshAnnounce();
 	rebuildTeamRows();
+	handleVictoryCamera();
 }
 
 // ---- wiring --------------------------------------------------------------
 
-ReplicatedStorage.GetAttributeChangedSignal(ATTR_BLUE).Connect(refreshScore);
-ReplicatedStorage.GetAttributeChangedSignal(ATTR_RED).Connect(refreshScore);
 ReplicatedStorage.GetAttributeChangedSignal(ATTR_TIME).Connect(refreshClock);
-ReplicatedStorage.GetAttributeChangedSignal(ATTR_ANNOUNCE).Connect(refreshAnnounce);
-ReplicatedStorage.GetAttributeChangedSignal(ATTR_PHASE).Connect(refreshAll);
+ReplicatedStorage.GetAttributeChangedSignal(ATTR_ROUND).Connect(refreshRound);
 
-const Teams = TeamsService as unknown as { Red: Team; Blue: Team };
-for (const team of [Teams.Red, Teams.Blue]) {
-	team.PlayerAdded.Connect(() => task.defer(rebuildTeamRows));
-	team.PlayerRemoved.Connect(() => task.defer(rebuildTeamRows));
+// Per-pitch state signals: rebind whenever our pitch assignment changes.
+let pitchConnections: RBXScriptConnection[] = [];
+function bindPitch() {
+	for (const connection of pitchConnections) {
+		connection.Disconnect();
+	}
+	pitchConnections = [];
+	const pitch = currentPitch();
+	if (pitch) {
+		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_BLUE).Connect(refreshScore));
+		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_RED).Connect(refreshScore));
+		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_ANNOUNCE).Connect(refreshAnnounce));
+		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_PHASE).Connect(refreshAll));
+		// The victory camera arrives AFTER Phase="Ended" — react when it does.
+		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_VCAM_CFRAME).Connect(handleVictoryCamera));
+	}
+	refreshAll();
+}
+LocalPlayer.GetAttributeChangedSignal("CB_PitchId").Connect(bindPitch);
+bindPitch();
+
+function watchSide(player: Player) {
+	player.GetAttributeChangedSignal("CB_Side").Connect(() => task.defer(rebuildTeamRows));
+	player.GetAttributeChangedSignal("CB_PitchId").Connect(() => task.defer(rebuildTeamRows));
+}
+Players.PlayerAdded.Connect((player) => {
+	watchSide(player);
+	task.defer(rebuildTeamRows);
+});
+for (const player of Players.GetPlayers()) {
+	watchSide(player);
 }
 Players.PlayerRemoving.Connect(() => task.defer(rebuildTeamRows));
 

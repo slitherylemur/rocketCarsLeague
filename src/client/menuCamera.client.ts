@@ -57,6 +57,11 @@ function changeCframePos(cframe: CFrame, pos: Vector3): CFrame {
 let rotationDifference = 0;
 let lastCameraRotation = 0;
 function UpdateCamera() {
+	// Camera target not received yet (e.g. mouse input on the landing page
+	// before SetMenuCameraCFrame arrives) — nothing to aim at.
+	if (cameraCFrame === undefined || playerGarage === undefined) {
+		return;
+	}
 	SetCameraMode();
 	const cameraRotationCFrame = CFrame.Angles(0, cameraRotation.X, 0).mul(CFrame.Angles(cameraRotation.Y, 0, 0));
 

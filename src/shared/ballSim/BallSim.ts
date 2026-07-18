@@ -62,7 +62,9 @@ for (const field of BALL_FIELDS) {
 	}
 }
 
-let currentBall: BasePart | undefined;
+// Multi-pitch (Top Table): one ball per pitch, all named BALL_NAME as
+// Workspace children — every one is adopted and stepped.
+const balls = new Set<BasePart>();
 let errorLogged = false;
 // Server-only: tuning HUD edits, written into the BT_* attributes from
 // inside the next sim step (attribute writes on predicted instances are only
@@ -174,15 +176,6 @@ function boxContact(ball: BasePart, part: BasePart, center: Vector3, radius: num
 }
 
 function stepBall(ball: BasePart, dt: number) {
-	// Tuning HUD edits (server only) — the sanctioned in-sim attribute write.
-	if (IS_SERVER && pendingTunables !== undefined) {
-		const pending = pendingTunables;
-		pendingTunables = undefined;
-		for (const [key, value] of pending) {
-			ball.SetAttribute(ballTuneAttr(key), value);
-		}
-	}
-
 	const now = attrNumber(ball, BallAttr.SimTime, 0) + dt;
 	ball.SetAttribute(BallAttr.SimTime, now);
 
@@ -335,20 +328,36 @@ function stepBall(ball: BasePart, dt: number) {
 // ---- lifecycle (mirrors VehicleSim.initialize) ----
 
 function tick(dt: number) {
-	const ball = currentBall;
-	if (ball === undefined || ball.Parent === undefined) {
-		return;
+	// Tuning HUD edits (server only) — the sanctioned in-sim attribute write,
+	// applied to EVERY live ball so all pitches share the same numbers.
+	if (IS_SERVER && pendingTunables !== undefined) {
+		const pending = pendingTunables;
+		pendingTunables = undefined;
+		for (const ball of balls) {
+			if (ball.Parent !== undefined) {
+				for (const [key, value] of pending) {
+					ball.SetAttribute(ballTuneAttr(key), value);
+				}
+			}
+		}
 	}
-	const [ok, err] = pcall(() => stepBall(ball, dt));
-	if (!ok && !errorLogged) {
-		errorLogged = true;
-		warn(`[BallSim] ${err}`);
+
+	for (const ball of balls) {
+		if (ball.Parent === undefined) {
+			balls.delete(ball);
+			continue;
+		}
+		const [ok, err] = pcall(() => stepBall(ball, dt));
+		if (!ok && !errorLogged) {
+			errorLogged = true;
+			warn(`[BallSim] ${err}`);
+		}
 	}
 }
 
 function adoptBall(child: Instance) {
 	if (child.Name === BALL_NAME && child.IsA("BasePart")) {
-		currentBall = child;
+		balls.add(child);
 		errorLogged = false;
 	}
 }

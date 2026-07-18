@@ -6,11 +6,15 @@ import DSDefaultValues from "./DataStoreDefaults";
 import spawnVehicle from "./spawnVehicle";
 import ballSpawner from "./ballSpawner";
 import footballMatch from "./footballMatch";
-import MapLightings from "../MapLightings";
+import PitchManager from "./PitchManager";
+import TeamRegistry from "./TeamRegistry";
+import MatchDirector from "./MatchDirector";
+import type { MovementReport } from "./MatchDirector";
 import requireModule from "shared/requireModule";
 import { Globals } from "../Globals";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import { StarterGuiState } from "../ui/StarterGuiState";
+import LadderMapScreen from "../ui/LadderMapScreen";
 import type { MultiplierEntry } from "./dataTypes";
 import type { VehicleSubClassModule } from "../Classes/VehicleSubClass/subClassTypes";
 
@@ -67,12 +71,6 @@ const handler = {} as {
 	endRound: () => void;
 };
 
-// Read at call time (loadMap), not module load: an empty/late-populated
-// ServerStorage.Maps then produces a clear warning + retry instead of a
-// module-level snapshot that can never recover.
-function getMaps(): Instance[] {
-	return (ServerStorage as unknown as { Maps: Folder }).Maps.GetChildren();
-}
 
 Globals.gamemode = "FFA";
 Globals.roundTime = 0;
@@ -93,6 +91,11 @@ Globals.DAMAGE_MONEY_MULT = 0.2;
 const FIRST_PLACE_MONEY = 1000;
 const SECOND_PLACE_MONEY = 400;
 const THIRD_PLACE_MONEY = 200;
+
+// Phase 5 sessions: champion payout per gold-table member + the longer
+// session-end shop phase (regular rounds keep MatchDirector's default 30 s).
+const CHAMPION_MONEY = 1500;
+const SESSION_END_SHOP_TIME = 60;
 
 const lastKiller = new Map<Player, Player>();
 Globals.killstreak = new Map<Player, number>();
@@ -189,7 +192,11 @@ handler.startRound = () => {
 	// FFA/TDM machinery below is kept intact for a future mode selector.
 	Globals.gamemode = "Football";
 
-	unassignTeams();
+	// Football: player.Team is the LADDER team (TeamRegistry) and survives
+	// across rounds — unassigning belongs to the deathmatch modes only.
+	if (Globals.gamemode !== "Football") {
+		unassignTeams();
+	}
 
 	for (const player of PlayerService.GetPlayers()) {
 		pcall(() => {
@@ -207,8 +214,8 @@ handler.startRound = () => {
 	// Original: game.StarterGui.Game.Information.Gamemode.Text = ... (template
 	// mutation so future clones inherit it) — template state module instead.
 	StarterGuiState.Game.Information.GamemodeText = gamemodeName(Globals.gamemode)!;
-	const map = loadMap();
-	if (map === undefined) {
+	const pitches = loadMap();
+	if (pitches.size() === 0) {
 		// ServerStorage.Maps is empty (see loadMap warn) — retry until maps
 		// exist rather than crashing the round system.
 		task.delay(10, () => handler.startRound());
@@ -226,20 +233,105 @@ handler.startRound = () => {
 	}
 
 	if (Globals.gamemode === "Football") {
-		startFootball(map);
+		startFootball(pitches);
 	}
 };
 
 handler.endRound = () => {
 	stopRoundTimer();
-	// Kill the football flow loops/locks before the victory stage (scores stay
-	// readable for the winning banner; beginMatch resets them next round).
+	if (Globals.gamemode === "Football") {
+		// EVERY interlude step is pcall-guarded with its own warn: a broken
+		// screen must never stop the round loop — startRound + startShopPhase +
+		// sendToMenu MUST always run or the whole server wedges in the menu.
+		// Ladder movement first — winners up, losers down, draws coin-flipped
+		// — so startRound() pairs the NEW table order onto the rebuilt pitches.
+		warn("[Round] ladder movement");
+		let movement: MovementReport | undefined;
+		const [moveOk, moveErr] = pcall(() => {
+			movement = MatchDirector.applyMovement(footballMatch.getRoundResults());
+		});
+		if (!moveOk) {
+			warn(`[Round] ladder movement FAILED: ${moveErr}`);
+		}
+		// Winners posed on the lineup, camera on the goal shot, winner text /
+		// coin-flip presentation on drawn pitches (~5 s), then the ladder map
+		// (~7 s), then the full-screen stats summary (~6 s). The legacy
+		// podium/EndScreen is NOT used for football.
+		warn("[Round] victory scene");
+		const [sceneOk, sceneErr] = pcall(() =>
+			footballMatch.playVictoryScene(movement !== undefined ? movement.flipWinners : undefined),
+		);
+		if (!sceneOk) {
+			warn(`[Round] victory scene FAILED: ${sceneErr}`);
+		}
+		warn("[Round] ladder map");
+		if (movement !== undefined) {
+			const entries = movement.entries;
+			const [mapOk, mapErr] = pcall(() => LadderMapScreen.showLadderMap(entries));
+			if (!mapOk) {
+				warn(`[Round] ladder map FAILED: ${mapErr}`);
+			}
+		}
+		warn("[Round] round summary");
+		const [summaryOk, summaryErr] = pcall(() => footballMatch.showRoundSummary());
+		if (!summaryOk) {
+			warn(`[Round] round summary FAILED: ${summaryErr}`);
+		}
+		// Session end (Phase 5, after round SESSION_ROUNDS): champions screen +
+		// payout, then shuffle/reset — BEFORE startRound so the new (shuffled)
+		// table order pairs onto the rebuilt pitches.
+		const sessionEnd = MatchDirector.isSessionEnd();
+		if (sessionEnd) {
+			warn("[Round] session end — champions screen");
+			const [championsOk, championsErr] = pcall(() => runSessionEnd());
+			if (!championsOk) {
+				warn(`[Round] champions screen FAILED: ${championsErr}`);
+			}
+		}
+		const [stopOk, stopErr] = pcall(() => footballMatch.stop());
+		if (!stopOk) {
+			warn(`[Round] football stop FAILED: ${stopErr}`);
+		}
+		warn("[Round] building next round");
+		const [startOk, startErr] = pcall(() => handler.startRound());
+		if (!startOk) {
+			warn(`[Round] startRound FAILED: ${startErr}`);
+		}
+		// Shop phase flag BEFORE the menu remount so players land on the CARS
+		// page with the restart countdown, not the landing page.
+		warn(`[Round] shop phase (${sessionEnd ? SESSION_END_SHOP_TIME : 30}s)`);
+		MatchDirector.startShopPhase(sessionEnd ? SESSION_END_SHOP_TIME : undefined);
+		sendToMenu();
+		return;
+	}
 	footballMatch.stop();
 	EndScreen();
 
 	handler.startRound();
 	sendToMenu();
 };
+
+/** Phase 5 session end: award the gold-table (position 0) team, show the
+ * full-screen CHAMPIONS screen (~8 s), then shuffle + reset via the
+ * MatchDirector. Runs BEFORE startRound rebuilds the pitches. */
+function runSessionEnd() {
+	const champion = TeamRegistry.getTeams()[0];
+	if (champion !== undefined && champion.position === 0) {
+		// Same payout pipeline as footballMatch.awardRoundMoney.
+		for (const member of champion.members) {
+			pcall(() => {
+				const amount = Globals.calculateMultMoney(member, CHAMPION_MONEY);
+				DataStore2("money", member).Increment(amount, 0);
+			});
+		}
+		LadderMapScreen.showChampions(
+			champion.name,
+			champion.members.map((member) => member.Name),
+			CHAMPION_MONEY,
+		);
+	}
+	MatchDirector.endSession();
+}
 
 // function updateTimes()
 // 	for i, player in pairs(PlayerService:GetPlayers()) do
@@ -252,85 +344,27 @@ handler.endRound = () => {
 // 	end
 // end
 
-function loadMap(): MapModel | undefined {
-	const mapFolder = (game.Workspace as unknown as { Map: Folder }).Map;
-	const spawnFolder = (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints;
-
-	// Always clear first. The place file (and a previous startRound without a
-	// matching endRound) can leave maps/spawn points in Workspace — stacking a
-	// second map + mixing SpawnPoints causes "two maps" and ~50% bad car spawns.
-	mapFolder.ClearAllChildren();
-	spawnFolder.ClearAllChildren();
-
-	const maps = getMaps();
-	if (maps.size() === 0) {
+function loadMap(): import("./PitchManager").Pitch[] {
+	// PitchManager owns cloning + placement (Phase 3b): pitch count follows
+	// the live team count (min 1 so the first joiners have somewhere to go);
+	// odd team counts get the muckabout pitch. SpawnPoints stay INSIDE each
+	// pitch folder now — PitchMatch reads its own.
+	const teamCount = TeamRegistry.getTeams().size();
+	const realPitches = math.max(1, math.floor(teamCount / 2));
+	const withMuckabout = teamCount > 1 && teamCount % 2 === 1;
+	const built = PitchManager.buildPitches(realPitches, withMuckabout);
+	if (built.size() === 0) {
 		warn(
-			"[loadMap] ServerStorage.Maps is EMPTY — every playable map must be a child of ServerStorage.Maps " +
-				"(a Folder holding the map parts, its SpawnPoints folder and, for football, the Blue/Red goal parts). " +
-				"Workspace.Map is CLEARED and re-cloned from there each round, so a map placed directly in Workspace is wiped. No map loaded.",
+			"[loadMap] no pitch could be built — ServerStorage.Maps needs the pitch variant folders " +
+				"(GoldPitch/GreenPitch/MudPitch: map parts + SpawnPoints/Red|Blue + Blue/Red goal parts). No map loaded.",
 		);
-		return undefined;
+		return [];
 	}
-
-	// Football needs a pitch: only maps carrying both goal parts qualify
-	// (currently the stadium). Fall back to the full pool rather than wedging
-	// the rotation if none match.
-	let candidates = maps;
-	if (Globals.gamemode === "Football") {
-		const withGoals = maps.filter((m) => footballMatch.mapHasGoalParts(m));
-		if (withGoals.size() > 0) {
-			candidates = withGoals;
-		} else {
-			warn("[loadMap] no map has Blue+Red goal parts — football will run goalless");
-		}
+	// Balls raycast against their pitch for the floor, so spawn after parenting.
+	for (const pitch of built) {
+		ballSpawner.SpawnBall(pitch.folder);
 	}
-
-	const rand = math.random(1, candidates.size());
-	const map = candidates[rand - 1].Clone() as MapModel;
-
-	for (const v of map.SpawnPoints.GetChildren()) {
-		v.Parent = spawnFolder;
-	}
-
-	game.Workspace.Terrain.Clear();
-	if ((ServerStorage as unknown as { MapTerrains: Folder }).MapTerrains.FindFirstChild(map.Name)) {
-		game.Workspace.Terrain.PasteRegion(
-			(ServerStorage as unknown as { MapTerrains: Folder }).MapTerrains.FindFirstChild(
-				map.Name,
-			) as TerrainRegion,
-			game.Workspace.Terrain.MaxExtents.Min,
-			true,
-		);
-	}
-	loadLighting(map.Name);
-	map.Parent = mapFolder;
-	// Ball raycasts against the map for its floor, so spawn after parenting.
-	ballSpawner.SpawnBall(map);
-	warn(
-		`[loadMap] loaded ${map.Name}; mapsInWorkspace=${mapFolder.GetChildren().size()} spawnPoints=${spawnFolder.GetChildren().size()}`,
-	);
-	return map;
-}
-
-function loadLighting(mapName: string) {
-	// Original: local lightingModule = game.ServerStorage.MapLightings:FindFirstChild(mapName)
-	// followed by require(lightingModule) — a missing module made require() error;
-	// the non-null assertion preserves the hard error on a missing entry.
-	const lightingModule = MapLightings[mapName]!;
-	for (const [paramName, value] of pairs(lightingModule.values)) {
-		(game.GetService("Lighting") as unknown as Record<string, unknown>)[paramName as string] = value;
-	}
-	game.GetService("Lighting").ClearAllChildren();
-	game.Workspace.Terrain.ClearAllChildren();
-	// Original cloned the lighting ModuleScript's non-ValueBase children —
-	// createChildren() recreates those exact instances (Clouds go to Terrain).
-	for (const child of lightingModule.createChildren()) {
-		if (child.isClouds) {
-			child.instance.Parent = game.Workspace.Terrain;
-		} else {
-			child.instance.Parent = game.GetService("Lighting");
-		}
-	}
+	return built;
 }
 
 function sendToMenu() {
@@ -623,7 +657,7 @@ function startTDM() {
 	startRoundTimer(Globals.TDM_GAME_TIME);
 }
 
-function startFootball(map: MapModel) {
+function startFootball(pitches: import("./PitchManager").Pitch[]) {
 	const Teams = game.GetService("Teams") as unknown as { Red: TeamWithKills; Blue: TeamWithKills };
 	Teams.Red.Kills.Value = 0;
 	Teams.Blue.Kills.Value = 0;
@@ -634,9 +668,9 @@ function startFootball(map: MapModel) {
 	StarterGuiState.Game.TeamScore.Visible = false;
 	StarterGuiState.Game.Information.Visible = false;
 	StarterGuiState.Game.Leaderboard.Visible = false;
-	// No startRoundTimer: the football match runs its own clock and calls
-	// endRound itself when it expires.
-	footballMatch.beginMatch(map, () => {
+	// No startRoundTimer: the football layer runs the shared round clock and
+	// calls endRound itself when it expires.
+	footballMatch.beginRound(pitches, () => {
 		handler.endRound();
 	});
 }

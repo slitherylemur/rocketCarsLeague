@@ -1,0 +1,269 @@
+// MatchDirector (Top Table Phase 4 core): ladder movement between rounds and
+// the 30-second shop phase that auto-spawns everyone into the next round.
+// The visual interlude (victory cameras, ladder map UI, rewards panel, coin
+// flip animation) layers on top of this in Phase 4b.
+
+import TeamRegistry from "./TeamRegistry";
+import { Globals } from "../Globals";
+import type { RoundResult } from "./footballMatch";
+
+const Players = game.GetService("Players");
+
+const SHOP_TIME = 30;
+/** Rounds per session (Phase 5): after this many, champions + shuffle. */
+export const SESSION_ROUNDS = 6;
+
+let roundNumber = 0;
+let shopGen = 0;
+
+/** One team's ladder movement this round — feeds the LadderMap screen. */
+export interface MovementEntry {
+	teamId: string;
+	name: string;
+	color: Color3;
+	fromPosition: number;
+	toPosition: number;
+	outcome: "win" | "loss" | "draw" | "muck" | "idle";
+	/** True for the team that sits out on the muckabout pitch NEXT round. */
+	nextMuckabout: boolean;
+}
+
+export interface MovementReport {
+	entries: MovementEntry[];
+	/** pitchIndex → teamId that won that drawn pitch's coin flip. */
+	flipWinners: Map<number, string>;
+}
+
+function showTimer(player: Player, text: string) {
+	pcall(() => {
+		const playerGui = player.FindFirstChild("PlayerGui");
+		const timerGui = playerGui && playerGui.FindFirstChild("TimerGui");
+		if (timerGui && timerGui.IsA("ScreenGui")) {
+			const label = timerGui.FindFirstChild("TextLabel");
+			if (label && label.IsA("TextLabel")) {
+				label.Text = text;
+			}
+			timerGui.Enabled = true;
+		}
+	});
+}
+
+/** True only for a car spawned INTO THE MATCH (parented under
+ * Workspace.Vehicles). The garage/menu display car ALSO occupies
+ * Globals.vehiclesTable (SpawnVehicle registers every spawn, clientSided
+ * included) — treating it as "already driving" was FAILURE 3's root cause:
+ * the shop-phase menu remount gives everyone a display car, which hid the
+ * countdown for all players and left the auto-spawn list empty, so no one
+ * ever entered the rebuilt round. */
+function hasMatchVehicle(player: Player): boolean {
+	const vehicle = Globals.vehiclesTable[player.UserId];
+	const model = vehicle && vehicle.model;
+	if (!model || model.Parent === undefined) {
+		return false;
+	}
+	const vehiclesFolder = game.Workspace.FindFirstChild("Vehicles");
+	return vehiclesFolder !== undefined && model.IsDescendantOf(vehiclesFolder);
+}
+
+function hideTimer(player: Player) {
+	pcall(() => {
+		const playerGui = player.FindFirstChild("PlayerGui");
+		const timerGui = playerGui && playerGui.FindFirstChild("TimerGui");
+		if (timerGui && timerGui.IsA("ScreenGui")) {
+			timerGui.Enabled = false;
+		}
+	});
+}
+
+const MatchDirector = {
+	getRoundNumber(): number {
+		return roundNumber;
+	},
+
+	/**
+	 * Classic top table via sort keys: winner of pitch t sorts above the
+	 * loser from pitch t-1 (key t-0.6 vs t-1+0.6), draws are coin-flipped,
+	 * the muckabout team moves with the pack (key = its pitch index), and
+	 * anyone unseen sorts to the bottom. The bottom team becomes the next
+	 * muckabout candidate; an immediate repeat swaps with the team above.
+	 */
+	applyMovement(results: RoundResult[]): MovementReport {
+		roundNumber += 1;
+
+		// Coin flip: within each drawn pitch, randomly promote one team.
+		const flipWinners = new Map<number, string>();
+		const drawsByPitch = new Map<number, RoundResult[]>();
+		for (const result of results) {
+			if (result.outcome === "draw") {
+				const list = drawsByPitch.get(result.pitchIndex) ?? [];
+				list.push(result);
+				drawsByPitch.set(result.pitchIndex, list);
+			}
+		}
+		for (const [pitchIndex, drawn] of drawsByPitch) {
+			if (drawn.size() >= 2) {
+				const winnerIndex = math.random(1, drawn.size()) - 1;
+				for (let i = 0; i < drawn.size(); i++) {
+					drawn[i].outcome = i === winnerIndex ? "win" : "loss";
+				}
+				flipWinners.set(pitchIndex, drawn[winnerIndex].teamId);
+				warn(`[Director] coin flip on pitch ${drawn[0].pitchIndex}: ${drawn[winnerIndex].teamId} moves up`);
+			}
+		}
+
+		// Post-flip outcome per team (draw only survives a 1-team drawn pitch).
+		const outcomeById = new Map<string, MovementEntry["outcome"]>();
+		for (const result of results) {
+			outcomeById.set(result.teamId, result.outcome);
+		}
+
+		const keys = new Map<string, number>();
+		for (const result of results) {
+			const delta = result.outcome === "win" ? -0.6 : result.outcome === "loss" ? 0.6 : 0;
+			keys.set(result.teamId, result.pitchIndex + delta);
+		}
+
+		const teams = TeamRegistry.getTeams(); // sorted by previous position
+		const fromPositions = new Map<string, number>();
+		for (const team of teams) {
+			fromPositions.set(team.id, team.position);
+		}
+		teams.sort((a, b) => {
+			const keyA = keys.get(a.id) ?? math.huge;
+			const keyB = keys.get(b.id) ?? math.huge;
+			if (keyA === keyB) {
+				return a.position < b.position; // stable on previous position
+			}
+			return keyA < keyB;
+		});
+
+		// Anti-repeat muckabout: with an odd count the bottom team sits out —
+		// never twice in a row while a swap is possible.
+		if (teams.size() % 2 === 1 && teams.size() >= 3) {
+			const bottom = teams[teams.size() - 1];
+			if (bottom.lastMuckRound === roundNumber - 1) {
+				teams[teams.size() - 1] = teams[teams.size() - 2];
+				teams[teams.size() - 2] = bottom;
+			}
+			teams[teams.size() - 1].lastMuckRound = roundNumber;
+		}
+
+		for (let i = 0; i < teams.size(); i++) {
+			teams[i].position = i;
+		}
+		TeamRegistry.updateLeaderboardNames();
+		for (const team of teams) {
+			warn(`[Director] table ${team.position + 1}: ${team.name}`);
+		}
+
+		// Movement payload for the LadderMap screen (Phase 4b).
+		const muckaboutIndex = teams.size() % 2 === 1 && teams.size() >= 3 ? teams.size() - 1 : -1;
+		const entries: MovementEntry[] = [];
+		for (let i = 0; i < teams.size(); i++) {
+			const team = teams[i];
+			entries.push({
+				teamId: team.id,
+				name: team.name,
+				color: team.robloxTeam.TeamColor.Color,
+				fromPosition: fromPositions.get(team.id) ?? team.position,
+				toPosition: team.position,
+				outcome: outcomeById.get(team.id) ?? "idle",
+				nextMuckabout: i === muckaboutIndex,
+			});
+		}
+		return { entries, flipWinners };
+	},
+
+	/** True once applyMovement for the session's last round has run. */
+	isSessionEnd(): boolean {
+		return roundNumber >= SESSION_ROUNDS;
+	},
+
+	/**
+	 * Session over (Phase 5): Fisher-Yates shuffle the ladder, reset the
+	 * session leaderstats and the round counter. The champions screen + payout
+	 * happen in roundHandler BEFORE this (it reads the pre-shuffle position 0).
+	 */
+	endSession() {
+		const teams = TeamRegistry.getTeams();
+		for (let i = teams.size() - 1; i >= 1; i--) {
+			const j = math.random(1, i + 1) - 1;
+			const swap = teams[i];
+			teams[i] = teams[j];
+			teams[j] = swap;
+		}
+		for (let i = 0; i < teams.size(); i++) {
+			teams[i].position = i;
+			teams[i].lastMuckRound = undefined;
+		}
+		TeamRegistry.updateLeaderboardNames();
+		for (const player of Players.GetPlayers()) {
+			pcall(() => {
+				const stats = player.FindFirstChild("leaderstats");
+				const goals = stats && stats.FindFirstChild("Goals");
+				if (goals && goals.IsA("IntValue")) {
+					goals.Value = 0;
+				}
+				const kills = stats && stats.FindFirstChild("Kills");
+				if (kills && kills.IsA("IntValue")) {
+					kills.Value = 0;
+				}
+			});
+		}
+		roundNumber = 0;
+		warn(`[Director] session over — ladder shuffled (${teams.size()} team(s)), session stats reset`);
+	},
+
+	/** 30 s (or `seconds` — the session-end shop runs 60) in the menu/shop,
+	 * countdown on every screen, then everyone with a team auto-spawns into
+	 * the (already rebuilt) round. */
+	startShopPhase(seconds?: number) {
+		const duration = seconds ?? SHOP_TIME;
+		const gen = ++shopGen;
+		Globals.shopPhaseActive = true;
+		warn(`[Director] shop phase started (${duration}s)`);
+		task.spawn(() => {
+			for (let i = duration; i >= 1; i--) {
+				if (shopGen !== gen) {
+					return;
+				}
+				for (const player of Players.GetPlayers()) {
+					// Players who spawned in early (landing buttons still work
+					// during the shop) already drive — leave their HUD alone.
+					// NOT a plain vehiclesTable check: the menu display car
+					// registers there too (see hasMatchVehicle).
+					if (!hasMatchVehicle(player)) {
+						showTimer(player, `NEXT ROUND ${i}S`);
+					}
+				}
+				task.wait(1);
+			}
+			if (shopGen !== gen) {
+				return;
+			}
+			Globals.shopPhaseActive = false;
+			const toSpawn: Player[] = [];
+			for (const player of Players.GetPlayers()) {
+				hideTimer(player);
+				if (TeamRegistry.getTeamOf(player) && !hasMatchVehicle(player)) {
+					toSpawn.push(player);
+				}
+			}
+			warn(`[Director] shop over — auto-spawning ${toSpawn.size()} player(s)`);
+			for (const player of toSpawn) {
+				task.spawn(() => {
+					const [ok, err] = pcall(() => Globals.SpawnInPlayer(player));
+					if (!ok) {
+						warn(`[Director] auto-spawn of ${player.Name} failed: ${err}`);
+					}
+				});
+			}
+		});
+	},
+
+	cancelShopPhase() {
+		shopGen += 1;
+	},
+};
+
+export default MatchDirector;

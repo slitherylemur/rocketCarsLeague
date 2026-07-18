@@ -7,7 +7,9 @@ const LocalPlayer = PlayerService.LocalPlayer;
 let roundTime = 0;
 
 game.GetService("StarterGui").SetCoreGuiEnabled(Enum.CoreGuiType.Chat, false);
-game.GetService("StarterGui").SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false);
+// Top Table: the default player list IS the team display (ladder teams are
+// real Roblox Teams + Goals/Kills leaderstats), so it stays on.
+game.GetService("StarterGui").SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, true);
 
 interface PlayerIconUi extends Frame {
 	Value: TextLabel;

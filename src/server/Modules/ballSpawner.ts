@@ -14,14 +14,19 @@ const RunService = game.GetService("RunService");
 
 const spawner = {} as {
 	SpawnBall: (map: Instance) => void;
-	DestroyBall: () => void;
-	/** Respawn on the map of the last SpawnBall (tuning HUD applies edits this way). */
-	RespawnBall: () => boolean;
+	DestroyBall: (map?: Instance) => void;
+	/** Respawn a map's ball (defaults to the last SpawnBall map — the tuning
+	 * HUD and the single-pitch kickoff use that form). */
+	RespawnBall: (map?: Instance) => boolean;
+	/** The live ball belonging to a map/pitch. */
+	GetBall: (map: Instance) => BasePart | undefined;
 };
 
 // The map the ball last spawned on, so the tuning remote can respawn the
 // ball with new tunables without involving roundHandler.
 let currentMap: Instance | undefined;
+// Multi-pitch: one live ball per map/pitch.
+const ballByMap = new Map<Instance, BasePart>();
 
 // Same rationale as spawnVehicle.markPredictable: client-side On alone left
 // vehicles Authoritative, so the server marks the whole assembly On at spawn.
@@ -58,7 +63,9 @@ function findGroundPart(map: Instance): BasePart | undefined {
 
 // Fallback for maps without a ground part: axis-aligned bounds over every
 // BasePart in the folder (Folders have no GetBoundingBox).
-function computePartBounds(map: Instance): LuaTuple<[Vector3, Vector3]> | undefined {
+// Plain object return (NOT $tuple): a LuaTuple stored before destructuring
+// only captures its first value — same fix as PitchManager.computeBounds.
+function computePartBounds(map: Instance): { min: Vector3; max: Vector3 } | undefined {
 	let minBound: Vector3 | undefined;
 	let maxBound: Vector3 | undefined;
 	for (const descendant of map.GetDescendants()) {
@@ -74,7 +81,7 @@ function computePartBounds(map: Instance): LuaTuple<[Vector3, Vector3]> | undefi
 	if (minBound === undefined || maxBound === undefined) {
 		return undefined;
 	}
-	return $tuple(minBound, maxBound);
+	return { min: minBound, max: maxBound };
 }
 
 // Center of the map floor: the ground part's top surface if present,
@@ -89,7 +96,8 @@ function findSpawnCenter(map: Instance): Vector3 | undefined {
 	if (bounds === undefined) {
 		return undefined;
 	}
-	const [minBound, maxBound] = bounds;
+	const minBound = bounds.min;
+	const maxBound = bounds.max;
 	const center = minBound.add(maxBound).div(2);
 
 	const params = new RaycastParams();
@@ -105,15 +113,30 @@ function findSpawnCenter(map: Instance): Vector3 | undefined {
 	return new Vector3(center.X, floorY, center.Z);
 }
 
-spawner.DestroyBall = () => {
-	const existing = game.Workspace.FindFirstChild(BALL_NAME);
-	if (existing) {
-		existing.Destroy();
+spawner.DestroyBall = (map?: Instance) => {
+	if (map) {
+		const existing = ballByMap.get(map);
+		if (existing) {
+			existing.Destroy();
+			ballByMap.delete(map);
+		}
+		return;
 	}
+	for (const [, ball] of ballByMap) {
+		ball.Destroy();
+	}
+	ballByMap.clear();
 };
 
 spawner.SpawnBall = (map: Instance) => {
-	spawner.DestroyBall();
+	spawner.DestroyBall(map);
+	// Prune balls whose pitch was torn down (round reload).
+	for (const [ownerMap, ball] of ballByMap) {
+		if (ownerMap.Parent === undefined) {
+			ball.Destroy();
+			ballByMap.delete(ownerMap);
+		}
+	}
 	currentMap = map;
 
 	const floorCenter = findSpawnCenter(map);
@@ -173,19 +196,27 @@ spawner.SpawnBall = (map: Instance) => {
 	ball.SetAttribute(BallAttr.SimTime, 0);
 	ball.SetAttribute(BallAttr.LastHitCar, "");
 	ball.SetAttribute(BallAttr.LastHitTime, 0);
+	// Clients use this to select their own ball in the multi-pitch arena.
+	ball.SetAttribute("CB_PitchId", map.Name);
 
 	ball.Parent = game.Workspace;
+	ballByMap.set(map, ball);
 	markPredictable(ball);
 
 	warn(`[BallSpawner] spawned ${BALL_NAME} at ${spawnPos} (assemblyMass=${math.round(ball.AssemblyMass)})`);
 };
 
-spawner.RespawnBall = () => {
-	if (currentMap === undefined || currentMap.Parent === undefined) {
+spawner.GetBall = (map: Instance) => {
+	return ballByMap.get(map);
+};
+
+spawner.RespawnBall = (map?: Instance) => {
+	const target = map ?? currentMap;
+	if (target === undefined || target.Parent === undefined) {
 		warn("[BallSpawner] RespawnBall: no live map to respawn on");
 		return false;
 	}
-	spawner.SpawnBall(currentMap);
+	spawner.SpawnBall(target);
 	return true;
 };
 
