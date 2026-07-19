@@ -37,8 +37,28 @@ import { COLLISION_GROUPS } from "shared/collisionGroups";
 
 const RunService = game.GetService("RunService");
 const Players = game.GetService("Players");
+const SoundService = game.GetService("SoundService");
+const Debris = game.GetService("Debris");
 
 const IS_SERVER = RunService.IsServer();
+
+// Kept as an unparented template and cloned per hit so rapid touches can
+// overlap instead of restarting one shared Sound instance.
+const hitSoundTemplate = new Instance("Sound");
+hitSoundTemplate.Name = "BallHitSound";
+hitSoundTemplate.SoundId = "rbxassetid://4458219865";
+hitSoundTemplate.Volume = 0.35;
+
+function playLocalHitSound(carModel: Model) {
+	if (IS_SERVER || carModel.GetAttribute("OwnerUserId") !== Players.LocalPlayer.UserId) {
+		return;
+	}
+
+	const sound = hitSoundTemplate.Clone();
+	sound.Parent = SoundService;
+	sound.Play();
+	Debris.AddItem(sound, 10);
+}
 
 export const BallAttr = {
 	SimTime: "BallSimTime",
@@ -287,6 +307,7 @@ function stepBall(ball: BasePart, dt: number) {
 				v = v.add(dir.mul(hitPower * closing));
 				ball.SetAttribute(BallAttr.LastHitCar, contact.carModel.Name);
 				ball.SetAttribute(BallAttr.LastHitTime, now);
+				playLocalHitSound(contact.carModel);
 			}
 		}
 

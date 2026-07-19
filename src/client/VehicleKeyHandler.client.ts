@@ -77,6 +77,47 @@ function setPredictionDeep(root: Instance, mode: Enum.PredictionMode) {
 }
 
 // ---------------------------------------------------------------------------
+// Horn: local-first playback
+// ---------------------------------------------------------------------------
+// The legacy remote path (press → FireServer → server Play() → replicate back)
+// costs a full round trip before the owner hears anything. Instead the owner
+// plays a LOCAL clone instantly on the keypress and locally mutes the
+// server-replicated hornSound (property writes on the client don't replicate,
+// so everyone else still hears the server's spatial playback).
+
+const LOCAL_HORN_NAME = "LocalHorn";
+
+function playLocalHorn() {
+	const vehicle = managedVehicle;
+	if (!vehicle) {
+		return;
+	}
+	const base = vehicle.FindFirstChild("Base");
+	const hornSound = base && base.FindFirstChild("hornSound");
+	if (!base || !hornSound || !hornSound.IsA("Sound") || hornSound.SoundId === "") {
+		return; // no preloaded id (old save / race) — the server path still honks
+	}
+	let localHorn = base.FindFirstChild(LOCAL_HORN_NAME) as Sound | undefined;
+	if (!localHorn) {
+		localHorn = hornSound.Clone(); // clone BEFORE muting so the volume carries over
+		localHorn.Name = LOCAL_HORN_NAME;
+		localHorn.Parent = base;
+	}
+	hornSound.Volume = 0;
+	localHorn.SoundId = hornSound.SoundId; // tracks live horn re-equips
+	localHorn.TimePosition = 0;
+	localHorn.Play();
+}
+
+const handleHornAction = (actionName: string, inputState: Enum.UserInputState, inputObject?: InputObject) => {
+	if (inputState === Enum.UserInputState.Begin) {
+		playLocalHorn();
+	}
+	// Server still plays for everyone else (and any client without the id yet).
+	handleAction(actionName, inputState, inputObject);
+};
+
+// ---------------------------------------------------------------------------
 // Mobile: joystick → ThrottleTouch/SteerTouch, buttons → Touch bindings
 // ---------------------------------------------------------------------------
 
@@ -273,6 +314,13 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 		if (vehicleModel && vehicleModel.FindFirstChild("Base")) {
 			managedVehicle = vehicleModel;
 			managedCharacter = Player.Character;
+			// Warm the horn asset so the first local-first honk is instant.
+			task.spawn(() => {
+				const hornSound = vehicleModel.FindFirstChild("Base")!.FindFirstChild("hornSound");
+				if (hornSound && hornSound.IsA("Sound") && hornSound.SoundId !== "") {
+					pcall(() => game.GetService("ContentProvider").PreloadAsync([hornSound]));
+				}
+			});
 			setPredictionDeep(vehicleModel, Enum.PredictionMode.On);
 			if (managedCharacter) {
 				setPredictionDeep(managedCharacter, Enum.PredictionMode.On);
@@ -291,10 +339,11 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 			});
 		}
 
-		// Horn stays on the legacy remote (cosmetic, not part of the sim).
+		// Horn stays on the legacy remote (cosmetic, not part of the sim), but
+		// plays locally first — the remote only serves the other clients.
 		ContextActionService.BindAction(
 			"HonkHorn",
-			handleAction as never,
+			handleHornAction as never,
 			false,
 			GetKeyBinding.InvokeServer("Horn") as Enum.KeyCode,
 			Enum.KeyCode.ButtonY,

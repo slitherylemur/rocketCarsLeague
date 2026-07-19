@@ -13,6 +13,8 @@
 const Players = game.GetService("Players");
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
 const RunService = game.GetService("RunService");
+const SoundService = game.GetService("SoundService");
+const Debris = game.GetService("Debris");
 const LocalPlayer = Players.LocalPlayer;
 
 // Mirror of FootballAttr in src/server/Modules/footballMatch.ts (shared
@@ -23,6 +25,7 @@ const ATTR_RED = "FB_RedScore";
 const ATTR_TIME = "FB_TimeLeft";
 const ATTR_ANNOUNCE = "FB_Announce";
 const ATTR_VCAM_CFRAME = "FB_VictoryCamCFrame";
+const ATTR_GAME_END_CUE = "FB_GameEndCue";
 // Session round counter (Phase 5) — footballMatch.beginRound sets both.
 const ATTR_ROUND = "CB_Round";
 const ATTR_ROUND_MAX = "CB_SessionRounds";
@@ -30,6 +33,25 @@ const ATTR_ROUND_MAX = "CB_SessionRounds";
 const BLUE_HEX = "#4FA8FF";
 const RED_HEX = "#FF5050";
 const MAX_ICONS = 3;
+
+function soundTemplate(name: string, soundId: string, volume: number): Sound {
+	const sound = new Instance("Sound");
+	sound.Name = name;
+	sound.SoundId = soundId;
+	sound.Volume = volume;
+	return sound;
+}
+
+const gameEndSound = soundTemplate("GameEndSound", "rbxassetid://9119561696", 0.55);
+const scoreCrowdSound = soundTemplate("ScoreCrowdSound", "rbxassetid://124820656606411", 0.55);
+const victoryCrowdSound = soundTemplate("VictoryCrowdSound", "rbxassetid://124820656606411", 0.22);
+
+function playSound(template: Sound) {
+	const sound = template.Clone();
+	sound.Parent = SoundService;
+	sound.Play();
+	Debris.AddItem(sound, 15);
+}
 
 interface PlayerIconUi extends Frame {
 	Value: TextLabel;
@@ -281,6 +303,7 @@ function refreshAll() {
 
 ReplicatedStorage.GetAttributeChangedSignal(ATTR_TIME).Connect(refreshClock);
 ReplicatedStorage.GetAttributeChangedSignal(ATTR_ROUND).Connect(refreshRound);
+ReplicatedStorage.GetAttributeChangedSignal(ATTR_GAME_END_CUE).Connect(() => playSound(gameEndSound));
 
 // Per-pitch state signals: rebind whenever our pitch assignment changes.
 let pitchConnections: RBXScriptConnection[] = [];
@@ -291,12 +314,31 @@ function bindPitch() {
 	pitchConnections = [];
 	const pitch = currentPitch();
 	if (pitch) {
-		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_BLUE).Connect(refreshScore));
-		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_RED).Connect(refreshScore));
+		let lastBlue = attrNumberOn(pitch, ATTR_BLUE);
+		let lastRed = attrNumberOn(pitch, ATTR_RED);
+		const scoreChanged = () => {
+			const blue = attrNumberOn(pitch, ATTR_BLUE);
+			const red = attrNumberOn(pitch, ATTR_RED);
+			if (blue > lastBlue || red > lastRed) {
+				playSound(scoreCrowdSound);
+			}
+			lastBlue = blue;
+			lastRed = red;
+			refreshScore();
+		};
+		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_BLUE).Connect(scoreChanged));
+		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_RED).Connect(scoreChanged));
 		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_ANNOUNCE).Connect(refreshAnnounce));
 		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_PHASE).Connect(refreshAll));
 		// The victory camera arrives AFTER Phase="Ended" — react when it does.
-		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_VCAM_CFRAME).Connect(handleVictoryCamera));
+		pitchConnections.push(
+			pitch.GetAttributeChangedSignal(ATTR_VCAM_CFRAME).Connect(() => {
+				handleVictoryCamera();
+				if (attrStringOn(pitch, ATTR_PHASE) === "Ended" && typeIs(pitch.GetAttribute(ATTR_VCAM_CFRAME), "CFrame")) {
+					playSound(victoryCrowdSound);
+				}
+			}),
+		);
 	}
 	refreshAll();
 }

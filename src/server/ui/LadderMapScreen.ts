@@ -30,6 +30,7 @@ const GREEN_TINT = Color3.fromRGB(61, 139, 87); // #3D8B57
 const BLUE_SIDE = Color3.fromRGB(79, 168, 255);
 const RED_SIDE = Color3.fromRGB(255, 80, 80);
 const TITLE_GOLD = Color3.fromRGB(255, 200, 60);
+const PITCH_IMAGE = "rbxassetid://82665164784111";
 
 const TITLE_FONT = new Font(
 	"rbxasset://fonts/families/FredokaOne.json",
@@ -107,7 +108,7 @@ function computeLayout(teamCount: number): LadderLayout {
 	// Cards + 0.35-card gaps fit in 0.86 of the screen; H = 1.5×W scale reads
 	// as a squarish, slightly landscape pitch on a 16:9 screen.
 	const cardW = math.min(0.18, 0.86 / (1.35 * slotCount - 0.35));
-	const cardH = cardW * 1.5;
+	const cardH = cardW * 1.35;
 	const chipY = CARD_Y + cardH / 2 + 0.055;
 	const arrowY = chipY - 0.075;
 	const focusY = (CARD_Y - cardH / 2 + chipY + 0.05) / 2;
@@ -140,12 +141,15 @@ function buildCard(
 	titleText: string,
 	withSideStrips: boolean,
 ) {
-	const card = new Instance("Frame");
+	const card = new Instance("ImageLabel");
 	card.Name = `Card${index}`;
 	card.AnchorPoint = new Vector2(0.5, 0.5);
 	card.Position = new UDim2(cardCenterX(layout, index), 0, CARD_Y, 0);
 	card.Size = new UDim2(layout.cardW, 0, layout.cardH, 0);
 	card.ZIndex = 2;
+	card.BorderSizePixel = 0;
+	card.Image = PITCH_IMAGE;
+	card.ImageColor3 = new Color3(1, 1, 1);
 	if (tint) {
 		card.BackgroundColor3 = tint;
 		card.BackgroundTransparency = 0.12;
@@ -159,10 +163,6 @@ function buildCard(
 		stroke.Thickness = 2;
 		stroke.Parent = card;
 	}
-	const corner = new Instance("UICorner");
-	corner.CornerRadius = new UDim(0.06, 0);
-	corner.Parent = card;
-
 	if (withSideStrips) {
 		// Thin pitch-side strips: blue left edge, red right edge (inset a
 		// little vertically so they don't poke out of the rounded corners).
@@ -198,15 +198,23 @@ function buildCard(
 	card.Parent = board;
 }
 
+function ordinal(position: number): string {
+	const lastTwo = position % 100;
+	if (lastTwo >= 11 && lastTwo <= 13) {
+		return `${position}th`;
+	}
+	const last = position % 10;
+	return `${position}${last === 1 ? "st" : last === 2 ? "nd" : last === 3 ? "rd" : "th"}`;
+}
+
 function buildCards(board: Frame, layout: LadderLayout) {
 	for (let t = 0; t < layout.realTables; t++) {
 		const isBottom = t === layout.realTables - 1 && layout.realTables > 1;
 		const tint = t === 0 ? GOLD_TINT : isBottom ? MUD_TINT : GREEN_TINT;
-		const titleText = t === 0 ? "Table 1 — Gold" : isBottom ? `Table ${t + 1} — Mud` : `Table ${t + 1}`;
-		buildCard(board, layout, t, tint, titleText, true);
+		buildCard(board, layout, t, tint, ordinal(t + 1), true);
 	}
 	if (layout.hasMuckabout) {
-		buildCard(board, layout, layout.realTables, undefined, "Muckabout", false);
+		buildCard(board, layout, layout.realTables, undefined, ordinal(layout.realTables + 1), false);
 	}
 }
 
@@ -292,7 +300,7 @@ const LadderMapScreen = {
 					return;
 				}
 				const viewerTeamId = player.GetAttribute("CB_TeamId");
-				gui.Title.Text = "THE LADDER";
+				gui.Title.Text = "LEAGUE";
 				gui.Title.TextColor3 = TITLE_GOLD;
 				clearRows(gui.Rows);
 				const board = gui.Board;

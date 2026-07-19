@@ -349,6 +349,12 @@ export class VehicleClass {
 		).CarHorns.FindFirstChild(hornSound) as Sound | undefined;
 		if (sound) {
 			this.hornSoundId = sound.SoundId;
+			// Assign the SoundId now, not at first honk: clients download the
+			// asset ahead of time, and the owner's local-first horn playback
+			// (VehicleKeyHandler) clones a ready-to-play sound.
+			if (this.model && this.model.FindFirstChild("Base")) {
+				this.model.Base.hornSound.SoundId = this.hornSoundId;
+			}
 		}
 	}
 

@@ -621,6 +621,8 @@ function endRoundForAll() {
 	for (const match of matches) {
 		match.endMatch();
 	}
+	const previousCue = ReplicatedStorage.GetAttribute("FB_GameEndCue");
+	setGlobalAttr("FB_GameEndCue", (typeIs(previousCue, "number") ? previousCue : 0) + 1);
 	const gold = matches[0];
 	if (gold) {
 		lastGoldScores = { Blue: gold.scores.Blue, Red: gold.scores.Red };
