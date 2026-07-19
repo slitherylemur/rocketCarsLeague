@@ -15,6 +15,7 @@ const ReplicatedStorage = game.GetService("ReplicatedStorage");
 const RunService = game.GetService("RunService");
 const SoundService = game.GetService("SoundService");
 const Debris = game.GetService("Debris");
+const ContentProvider = game.GetService("ContentProvider");
 const LocalPlayer = Players.LocalPlayer;
 
 // Mirror of FootballAttr in src/server/Modules/footballMatch.ts (shared
@@ -45,6 +46,11 @@ function soundTemplate(name: string, soundId: string, volume: number): Sound {
 const gameEndSound = soundTemplate("GameEndSound", "rbxassetid://9119561696", 0.55);
 const scoreCrowdSound = soundTemplate("ScoreCrowdSound", "rbxassetid://124820656606411", 0.55);
 const victoryCrowdSound = soundTemplate("VictoryCrowdSound", "rbxassetid://124820656606411", 0.22);
+const kickoffSound = soundTemplate("KickoffSound", "rbxassetid://6238869231", 0.55);
+
+task.spawn(() =>
+	pcall(() => ContentProvider.PreloadAsync([gameEndSound, scoreCrowdSound, victoryCrowdSound, kickoffSound])),
+);
 
 function playSound(template: Sound) {
 	const sound = template.Clone();
@@ -328,7 +334,14 @@ function bindPitch() {
 		};
 		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_BLUE).Connect(scoreChanged));
 		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_RED).Connect(scoreChanged));
-		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_ANNOUNCE).Connect(refreshAnnounce));
+		pitchConnections.push(
+			pitch.GetAttributeChangedSignal(ATTR_ANNOUNCE).Connect(() => {
+				refreshAnnounce();
+				if (attrStringOn(pitch, ATTR_ANNOUNCE) === "3") {
+					playSound(kickoffSound);
+				}
+			}),
+		);
 		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_PHASE).Connect(refreshAll));
 		// The victory camera arrives AFTER Phase="Ended" — react when it does.
 		pitchConnections.push(
