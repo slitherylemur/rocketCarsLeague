@@ -43,7 +43,10 @@ const IS_SERVER = RunService.IsServer();
 export const BallAttr = {
 	SimTime: "BallSimTime",
 	LastHitCar: "BallLastHitCar", // model name of the last car whose hitPower punch applied
-	LastHitTime: "BallLastHitTime", // sim time of that punch (cooldown gate)
+	LastHitTime: "BallLastHitTime", // sim time of that punch (cooldown gate + client hit-sound stamp)
+	LastHitSpeed: "BallLastHitSpeed", // closing speed of that punch (client hit-sound volume)
+	LastBounceTime: "BallLastBounceTime", // sim time of the last world bounce (client bounce-sound stamp)
+	LastBounceSpeed: "BallLastBounceSpeed", // into-surface speed of that bounce (client bounce-sound volume)
 } as const;
 
 // How far below the surface-touch distance the ground probe reaches: keeps
@@ -239,6 +242,10 @@ function stepBall(ball: BasePart, dt: number) {
 				// Advance to the contact point so we never tunnel.
 				position = position.add(travel.Unit.mul(math.max(sweep.Distance - SKIN, 0)));
 				positionChanged = true;
+				// Bounce stamp for the client's impact sounds (ballRenderer):
+				// attributes, so the stamp predicts and rolls back with the sim.
+				ball.SetAttribute(BallAttr.LastBounceTime, now);
+				ball.SetAttribute(BallAttr.LastBounceSpeed, -vn);
 			} else if (vn < 0) {
 				// Grazing/rolling contact: just slide (cancel the into-surface part).
 				v = v.sub(n.mul(vn));
@@ -287,6 +294,7 @@ function stepBall(ball: BasePart, dt: number) {
 				v = v.add(dir.mul(hitPower * closing));
 				ball.SetAttribute(BallAttr.LastHitCar, contact.carModel.Name);
 				ball.SetAttribute(BallAttr.LastHitTime, now);
+				ball.SetAttribute(BallAttr.LastHitSpeed, closing);
 			}
 		}
 

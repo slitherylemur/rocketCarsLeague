@@ -35,17 +35,27 @@ const DRIVE_FORCE_MULT = 1.25; // overall engine force, forward and reverse
 const BOOST_FORCE_MULT = 3; // boost punch on the ground (baseline 3)
 const BOOST_AIR_FORCE_MULT = 4.5; // boost authority in the air — nose-up boosting sustains airtime
 const BOOST_TARGET_MULT = 1.6; // boost top speed as a fraction of targetVelocity
-// Drift = powerslide (Rocket League style): wheels lose lateral grip so momentum
-// keeps traveling while the body rotates, a yaw mover turns the nose into the
-// corner faster than grip steering could, and a small side thrust keeps the
-// slide cornering instead of washing wide. Releasing Space restores grip and
-// the forward drive bites along the new facing.
+// Drift = handbrake turn: wheels lose lateral grip so momentum keeps traveling
+// while a yaw mover whips the nose into the corner far faster than grip
+// steering allows, the engine is mostly cut and a drag force scrubs speed
+// (shedding speed itself tightens the arc — radius = v / yaw rate), and a side
+// thrust keeps the slide carving instead of washing wide. Releasing Space
+// restores grip and the forward drive bites along the new facing.
 const DRIFT_MAX_SIDE_SPEED = 0.45; // cap on sideways drift speed (× targetVelocity); uncapped it outran boost
 const DRIFT_MIN_PROP_VEL = 0.15; // below this fraction of top speed drift disengages (no stationary launches)
-const DRIFT_SIDE_FORCE_FWD = 20; // centripetal assist per unit mass while drifting forward
+const DRIFT_SIDE_FORCE_FWD = 30; // centripetal assist per unit mass while drifting forward
 const DRIFT_SIDE_FORCE_REV = 15; // centripetal assist per unit mass while drifting in reverse
-const DRIFT_YAW_RATE = 3; // rad/s of commanded yaw at full steer and full speed (grip turning peaks ~2.5)
-const DRIFT_YAW_TORQUE = 60; // yaw authority per unit total mass — how hard the slide rotation is enforced
+const DRIFT_YAW_RATE = 5.5; // rad/s of commanded yaw at full steer and full speed (grip turning peaks ~2.5)
+const DRIFT_YAW_TORQUE = 90; // yaw authority per unit total mass — how hard the slide rotation is enforced
+const DRIFT_ENGINE_FORCE_MULT = 0.25; // engine force while sliding — a handbrake brakes; boost punches through
+const DRIFT_SPEED_SCRUB = 0.35; // handbrake drag per unit mass per stud/s of travel speed while sliding
+// Grip-mode yaw servo: while grounded and not sliding, the drift yaw mover is
+// repurposed to hold the assembly's yaw rate at the kinematic rate the
+// steering implies (steer × v / turnRadius). Below that rate it assists the
+// tyres into the turn; above it (rear stepping out over a kerb, a bump, a hit)
+// it pulls the car straight — spin-outs are clamped away instead of caught late.
+const GRIP_YAW_TORQUE = 50; // yaw authority per unit total mass for the grip servo
+const TURN_RADIUS_MULT = 0.85; // global tightening of the Ackermann turn circle (1 = a5318d46 baseline)
 // Wheel grip defaults (per-vehicle tunable). Normal grip raised 0.75 → 1.2:
 // cars were skidding out of grip turns at speed.
 const DRIVE_WHEEL_FRICTION = 1.2;
@@ -1111,12 +1121,17 @@ function drift(entry: SimEntry, steerFloat: number) {
 	} else {
 		sideForce = -steerFloat * entry.tuning.mass * DRIFT_SIDE_FORCE_REV * entry.tuning.driftingMult;
 	}
-	const sideVelocity = entry.base.CFrame.VectorToObjectSpace(baseVelocity(entry)).X;
+	const localVel = entry.base.CFrame.VectorToObjectSpace(baseVelocity(entry));
+	const sideVelocity = localVel.X;
 	const maxSideSpeed = DRIFT_MAX_SIDE_SPEED * entry.tuning.targetVelocity;
 	if ((sideForce > 0 && sideVelocity > maxSideSpeed) || (sideForce < 0 && sideVelocity < -maxSideSpeed)) {
 		sideForce = 0;
 	}
-	entry.driftThrust.Force = new Vector3(sideForce, 0, 0);
+	// Handbrake drag: scrub speed along the direction of travel while sliding
+	// (forward is -Z, so opposing localVel.Z is the brake). DRIFT_MIN_PROP_VEL
+	// disengages the slide before the scrub can drag the car to a stop.
+	const scrubForce = -localVel.Z * entry.totalMass * DRIFT_SPEED_SCRUB;
+	entry.driftThrust.Force = new Vector3(sideForce, 0, scrubForce);
 }
 
 function undrift(entry: SimEntry) {
@@ -1160,6 +1175,18 @@ function turnWheels(entry: SimEntry, throttle: number, steerFloat: number, onGro
 			0,
 			fr.AngularSpeed - entry.tuning.minAngularSpeed,
 		);
+	}
+
+	turnRadius *= TURN_RADIUS_MULT;
+
+	// Grip yaw servo (see GRIP_YAW_TORQUE). drift() owns the yaw mover while a
+	// slide is engaged; undrift() above already zeroed it, so airborne ticks
+	// stay servo-free and the aerial yaw control keeps sole authority.
+	if (onGround && !attrBool(entry.base, VehicleAttr.DriftEngaged)) {
+		const dir = entry.velocity >= 0 ? 1 : -1;
+		const kinematicYaw = (math.abs(entry.velocity) / turnRadius) * steerFloat * dir;
+		entry.driftYaw.MaxTorque = entry.totalMass * GRIP_YAW_TORQUE;
+		entry.driftYaw.AngularVelocity = new Vector3(0, -kinematicYaw, 0);
 	}
 
 	//ANTI ACKERMAN
@@ -1513,6 +1540,13 @@ function stepVehicle(entry: SimEntry, dt: number) {
 		}
 	} else if (!grounded) {
 		force = 0;
+	}
+
+	// Handbrake: while the wheels are sliding the engine barely drives, so the
+	// car sheds speed into the turn. Boost below overrides the cut on purpose —
+	// boosted power-slide exits stay possible.
+	if (attrBool(base, VehicleAttr.DriftEngaged)) {
+		force *= DRIFT_ENGINE_FORCE_MULT;
 	}
 
 	const boostHeld = attrBool(base, VehicleAttr.BoostHeld);

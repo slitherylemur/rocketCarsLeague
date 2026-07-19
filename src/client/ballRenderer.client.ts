@@ -12,6 +12,7 @@
 // Smoothing values are read from the mutable ballTunables table EVERY frame
 // (not captured at setup) so the tuning HUD can adjust them live.
 import { BALL_NAME, ballTunables } from "shared/ballSim/BallConfig";
+import { BallAttr } from "shared/ballSim/BallSim";
 
 const RunService = game.GetService("RunService");
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
@@ -31,7 +32,35 @@ const goalSoundTemplate = new Instance("Sound");
 goalSoundTemplate.Name = "GoalSound";
 goalSoundTemplate.SoundId = "rbxassetid://79833203443837";
 goalSoundTemplate.Volume = 0.6;
-task.spawn(() => pcall(() => ContentProvider.PreloadAsync([goalSoundTemplate])));
+// Keep the source parented and finish loading it before goal listeners are
+// installed. The previous background preload could still be fetching on an
+// early goal, making the clone begin noticeably after the particles.
+goalSoundTemplate.Parent = SoundService;
+pcall(() => ContentProvider.PreloadAsync([goalSoundTemplate]));
+
+// Ball impact sounds — client-predicted cosmetics. BallSim (which the local
+// client runs predictively) stamps every world bounce / car punch into Ball*
+// attributes; the per-ball watcher in setupBall plays these positional sounds
+// from the renderer part the frame a stamp advances, so the local player's
+// own touches sound the instant they resolve, with no server round-trip.
+// One engine-built-in thud (guaranteed to load) covers both events at
+// different pitches; swap IMPACT_SOUND_ID for an uploaded asset to retheme.
+const IMPACT_SOUND_ID = "rbxasset://sounds/action_jump_land.mp3";
+
+function impactSoundTemplate(name: string, volume: number): Sound {
+	const sound = new Instance("Sound");
+	sound.Name = name;
+	sound.SoundId = IMPACT_SOUND_ID;
+	sound.Volume = volume;
+	sound.RollOffMode = Enum.RollOffMode.InverseTapered;
+	sound.RollOffMinDistance = 25;
+	sound.RollOffMaxDistance = 400;
+	sound.Parent = SoundService;
+	return sound;
+}
+const carHitSoundTemplate = impactSoundTemplate("BallCarHitSound", 0.8);
+const bounceSoundTemplate = impactSoundTemplate("BallBounceSound", 0.45);
+pcall(() => ContentProvider.PreloadAsync([carHitSoundTemplate, bounceSoundTemplate]));
 
 interface BallVisual {
 	instance: BasePart | Model;
@@ -123,6 +152,52 @@ function setupBall(ball: BasePart) {
 	// soccer-ball asset is rendered.
 	renderer.Transparency = 1;
 	const ballVisual = createBallVisual(ball.Size, renderer.CFrame);
+
+	// Impact sound watcher. Plays when a BallSim stamp advances past the last
+	// one heard: comparing sim time keeps resimulated ticks from replaying an
+	// impact, and a mispredicted impact that later rolls back has already
+	// sounded — the accepted trade for zero-latency feedback. The shared
+	// real-time gate collapses a hit-plus-bounce pinch (or correction jitter)
+	// into a single sound.
+	const readStamp = (name: string): number => {
+		const value = ball.GetAttribute(name);
+		return typeIs(value, "number") ? value : 0;
+	};
+	let heardHitStamp = readStamp(BallAttr.LastHitTime);
+	let heardBounceStamp = readStamp(BallAttr.LastBounceTime);
+	let soundGateUntil = 0;
+	const playImpact = (
+		template: Sound,
+		speed: number,
+		minAudibleSpeed: number,
+		fullVolumeSpeed: number,
+		pitchMin: number,
+		pitchMax: number,
+	) => {
+		if (speed < minAudibleSpeed || os.clock() < soundGateUntil) {
+			return;
+		}
+		soundGateUntil = os.clock() + 0.08;
+		const sound = template.Clone();
+		sound.Volume = template.Volume * math.clamp(speed / fullVolumeSpeed, 0.2, 1);
+		sound.PlaybackSpeed = pitchMin + math.random() * (pitchMax - pitchMin);
+		sound.Parent = renderer;
+		sound.Play();
+		Debris.AddItem(sound, 3);
+	};
+	const pollImpactSounds = () => {
+		const hitStamp = readStamp(BallAttr.LastHitTime);
+		if (hitStamp > heardHitStamp + 1e-3) {
+			playImpact(carHitSoundTemplate, readStamp(BallAttr.LastHitSpeed), 5, 100, 0.75, 0.95);
+		}
+		heardHitStamp = math.max(heardHitStamp, hitStamp);
+
+		const bounceStamp = readStamp(BallAttr.LastBounceTime);
+		if (bounceStamp > heardBounceStamp + 1e-3) {
+			playImpact(bounceSoundTemplate, readStamp(BallAttr.LastBounceSpeed), 8, 100, 1.05, 1.3);
+		}
+		heardBounceStamp = math.max(heardBounceStamp, bounceStamp);
+	};
 
 	// Goal burst is authored beneath GoalEffects on the cloned rendered mesh.
 	// Watch this ball's own pitch scoreboard so simultaneous pitches only fire
@@ -233,6 +308,7 @@ function setupBall(ball: BasePart) {
 		}
 
 		ballVisual?.setCFrame(renderer.CFrame);
+		pollImpactSounds();
 	});
 
 	let cleaned = false;
