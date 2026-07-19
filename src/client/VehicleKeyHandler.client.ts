@@ -156,11 +156,100 @@ function wireTouchButtons() {
 	hook(VehicleInput.Jump, mobileInterface.Jump);
 }
 
+// ---------------------------------------------------------------------------
+// Stale-input protection
+// ---------------------------------------------------------------------------
+// IAS action state LATCHES across context disables: while VehicleControls is
+// Disabled the engine stops delivering key transitions to the actions, so a
+// key that was down when the context got disabled (round end destroys the car
+// mid-drive, or a footballMatch control lock) stays `true` forever — the next
+// round's car throttles forward on its own, and a latched SteerLeft cancels
+// every D press. Whenever Enabled flips we Fire() every action back to the
+// truth: neutral on disable, the real hardware state on enable (so a key
+// genuinely still held at round start keeps working).
+
+const BOOL_ACTION_NAMES = [
+	VehicleInput.ThrottleForward,
+	VehicleInput.ThrottleBackward,
+	VehicleInput.SteerRight,
+	VehicleInput.SteerLeft,
+	VehicleInput.Drift,
+	VehicleInput.Boost,
+	VehicleInput.Jump,
+	VehicleInput.RollLeft,
+	VehicleInput.RollRight,
+];
+
+function keyCodeDown(keyCode: Enum.KeyCode): boolean {
+	if (keyCode === Enum.KeyCode.Unknown) {
+		return false;
+	}
+	const name = keyCode.Name;
+	if (name.sub(1, 6) === "Button" || name.sub(1, 4) === "DPad" || name.sub(1, 10) === "Thumbstick") {
+		return UserInputService.IsGamepadButtonDown(Enum.UserInputType.Gamepad1, keyCode);
+	}
+	return UserInputService.IsKeyDown(keyCode);
+}
+
+function actionHardwareHeld(action: InputAction): boolean {
+	for (const child of action.GetChildren()) {
+		if (child.IsA("InputBinding") && keyCodeDown(child.KeyCode)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function syncActionStates(context: InputContext, toHardware: boolean) {
+	const fire = (name: string, value: boolean | number | Vector2) => {
+		const action = context.FindFirstChild(name);
+		if (action && action.IsA("InputAction")) {
+			action.Fire(value);
+		}
+	};
+
+	for (const name of BOOL_ACTION_NAMES) {
+		const action = context.FindFirstChild(name);
+		if (action && action.IsA("InputAction")) {
+			action.Fire(toHardware && actionHardwareHeld(action));
+		}
+	}
+
+	// Analog axes: neutral unless a connected gamepad says otherwise.
+	let axisThrottle = 0;
+	let stick = new Vector2(0, 0);
+	if (toHardware && UserInputService.GetGamepadConnected(Enum.UserInputType.Gamepad1)) {
+		pcall(() => {
+			for (const state of UserInputService.GetGamepadState(Enum.UserInputType.Gamepad1)) {
+				if (state.KeyCode === Enum.KeyCode.Thumbstick1) {
+					stick = new Vector2(state.Position.X, state.Position.Y);
+				} else if (state.KeyCode === Enum.KeyCode.ButtonR2) {
+					axisThrottle += state.Position.Z;
+				} else if (state.KeyCode === Enum.KeyCode.ButtonL2) {
+					axisThrottle -= state.Position.Z;
+				}
+			}
+		});
+	}
+	fire(VehicleInput.ThrottleAxis, axisThrottle);
+	fire(VehicleInput.SteerStick, stick);
+	// The mobile joystick sampler re-fires these from MoveDirection once its
+	// deltas exceed the threshold — resetting its cache keeps it honest.
+	fire(VehicleInput.ThrottleTouch, 0);
+	fire(VehicleInput.SteerTouch, 0);
+	analogSteer = 0;
+	analogThrottle = 0;
+}
+
 task.spawn(() => {
 	vehicleContext = Player.WaitForChild(VehicleInput.ContextName, 60) as InputContext | undefined;
 	if (!vehicleContext) {
 		warn("[VehicleKeyHandler] no VehicleControls InputContext arrived — vehicle inputs will be dead");
+		return;
 	}
+	const context = vehicleContext;
+	context.GetPropertyChangedSignal("Enabled").Connect(() => syncActionStates(context, context.Enabled));
+	syncActionStates(context, context.Enabled);
 });
 
 // ---------------------------------------------------------------------------

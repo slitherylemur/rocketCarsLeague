@@ -1182,7 +1182,46 @@ function ResetAndInitialisePlayerMenuUI(player: Player) {
 
 Globals.PlayerJoinedTimes = {};
 
-game.GetService("Players").PlayerAdded.Connect((player) => {
+function createValues(player: Player) {
+	const kills = new Instance("NumberValue");
+	const deaths = new Instance("NumberValue");
+	const damageDealt = new Instance("NumberValue");
+	const survivalTime = new Instance("NumberValue");
+	const spawned = new Instance("NumberValue");
+
+	kills.Name = "kills";
+	deaths.Name = "deaths";
+	damageDealt.Name = "damageDealt";
+	survivalTime.Name = "survivalTime";
+	spawned.Name = "spawned";
+
+	kills.Value = 0;
+	deaths.Value = 0;
+	damageDealt.Value = 0;
+	survivalTime.Value = -1;
+	spawned.Value = 0;
+
+	kills.Parent = player;
+	deaths.Parent = player;
+	damageDealt.Parent = player;
+	survivalTime.Parent = player;
+	spawned.Parent = player;
+}
+
+const initializedPlayers = new Set<Player>();
+
+function initializePlayer(player: Player) {
+	// Team Test can create players before this script finishes requiring its
+	// dependencies. In that case PlayerAdded has already fired and Roblox may
+	// also have auto-loaded a character before CharacterAutoLoads was disabled.
+	if (initializedPlayers.has(player)) return;
+	initializedPlayers.add(player);
+
+	const existingCharacter = player.Character;
+	if (existingCharacter) {
+		existingCharacter.Destroy();
+	}
+
 	//task.wait(0.2)
 	Globals.PlayerJoinedTimes[player.UserId] = os.time();
 
@@ -1249,7 +1288,15 @@ game.GetService("Players").PlayerAdded.Connect((player) => {
 	// 		end)
 	// 	end
 	// end)
-});
+}
+
+Players.PlayerAdded.Connect(initializePlayer);
+
+// PlayerAdded is not retroactive. This is required by Studio Team Test, where
+// clients can join while the server is still evaluating this script's imports.
+for (const player of Players.GetPlayers()) {
+	task.spawn(() => initializePlayer(player));
+}
 
 FunctionsAndEvents.GamePadButtonXDown.OnServerEvent.Connect((player) => {
 	const gui = playerGuiOf(player);
@@ -1348,32 +1395,6 @@ FunctionsAndEvents.GamePadButtonR2Down.OnServerEvent.Connect((player) => {
 ).Events.InitialisePlayerMenuUi.Event.Connect((...args: unknown[]) => {
 	ResetAndInitialisePlayerMenuUI(args[0] as Player);
 });
-
-function createValues(player: Player) {
-	const kills = new Instance("NumberValue");
-	const deaths = new Instance("NumberValue");
-	const damageDealt = new Instance("NumberValue");
-	const survivalTime = new Instance("NumberValue");
-	const spawned = new Instance("NumberValue");
-
-	kills.Name = "kills";
-	deaths.Name = "deaths";
-	damageDealt.Name = "damageDealt";
-	survivalTime.Name = "survivalTime";
-	spawned.Name = "spawned";
-
-	kills.Value = 0;
-	deaths.Value = 0;
-	damageDealt.Value = 0;
-	survivalTime.Value = -1;
-	spawned.Value = 0;
-
-	kills.Parent = player;
-	deaths.Parent = player;
-	damageDealt.Parent = player;
-	survivalTime.Parent = player;
-	spawned.Parent = player;
-}
 
 game.GetService("Players").PlayerRemoving.Connect((player) => {
 	Globals.clearPlayerGarage(player);

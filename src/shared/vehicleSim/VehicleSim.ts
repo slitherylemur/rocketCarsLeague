@@ -897,6 +897,13 @@ function readPlayerInputs(entry: SimEntry, now: number) {
 	if (!actions) {
 		return; // no context (yet) — attributes keep their last values
 	}
+	if (!actions.context.Enabled) {
+		// Disabled context (control lock / between drives): the engine stops
+		// delivering key transitions, so GetState() is frozen at whatever was
+		// held at disable time. Reading it would re-poison the zeroed input
+		// attributes with stale keys — keep the last written values instead.
+		return;
+	}
 	const base = entry.base;
 
 	// Movement floats: per-key held-state combined like the old client code —

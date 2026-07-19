@@ -39,7 +39,7 @@ const ReplicatedStorage = game.GetService("ReplicatedStorage");
 export type TeamName = "Red" | "Blue";
 const TEAM_NAMES: TeamName[] = ["Blue", "Red"];
 
-const MATCH_TIME =30;
+const MATCH_TIME = 3 * 60;
 const KICKOFF_COUNTDOWN = 3;
 const RESPAWN_DELAY = 1.5;
 const RESPAWN_LOCK = 5;
@@ -108,6 +108,10 @@ const roundChampions = new Set<Player>();
 
 function setGlobalAttr(name: string, value: string | number) {
 	ReplicatedStorage.SetAttribute(name, value);
+}
+
+function escapeRichText(text: string): string {
+	return text.gsub("&", "&amp;")[0].gsub("<", "&lt;")[0].gsub(">", "&gt;")[0].gsub('"', "&quot;")[0];
 }
 
 // ---- control locks (player-scoped, shared across pitches) ----------------
@@ -302,6 +306,20 @@ class PitchMatch {
 		return side;
 	}
 
+	ladderTeamNameForSide(side: TeamName): string | undefined {
+		for (const [teamId, assignedSide] of this.sideByTeamId) {
+			if (assignedSide !== side) {
+				continue;
+			}
+			for (const team of TeamRegistry.getTeams()) {
+				if (team.id === teamId) {
+					return team.name;
+				}
+			}
+		}
+		return undefined;
+	}
+
 	assignSide(player: Player): RosterEntry {
 		const existing = this.roster.get(player);
 		if (existing) {
@@ -481,38 +499,40 @@ class PitchMatch {
 		this.publishScores();
 	}
 
-	creditScorer(ball: BasePart, scoringTeam: TeamName) {
+	creditScorer(ball: BasePart, scoringTeam: TeamName): Player | undefined {
 		const lastHitCar = ball.GetAttribute(BallAttr.LastHitCar);
 		if (!typeIs(lastHitCar, "string") || lastHitCar === "") {
-			return;
+			return undefined;
 		}
 		for (const player of PlayerService.GetPlayers()) {
 			const vehicle = Globals.vehiclesTable[player.UserId];
 			if (vehicle && vehicle.model && vehicle.model.Name === lastHitCar) {
-				if (this.roster.get(player)?.team === scoringTeam && !this.muckabout) {
+				if (this.roster.get(player)?.team !== scoringTeam) {
+					return undefined;
+				}
+				if (!this.muckabout) {
 					TeamRegistry.addGoal(player);
 					roundGoals.set(player, (roundGoals.get(player) ?? 0) + 1);
 				}
-				return;
+				return player;
 			}
 		}
+		return undefined;
 	}
 
 	onGoal(defendingTeam: TeamName, ball: BasePart) {
 		// Free-play goals show on the pitch scoreboard for fun but earn no
 		// ladder stats/money (and the scores reset when the real match starts).
-		const freePlayGoal = this.phase === "FreePlay";
 		const scoringTeam: TeamName = defendingTeam === "Blue" ? "Red" : "Blue";
 		this.scores[scoringTeam] += 1;
 		this.publishScores();
-		if (!freePlayGoal) {
-			this.creditScorer(ball, scoringTeam);
-		}
+		const scorer = this.creditScorer(ball, scoringTeam);
 		const gen = ++this.flowGen;
 		const localMatchGen = matchGen;
 		this.setPhase("Goal");
 		const hex = scoringTeam === "Blue" ? BLUE_HEX : RED_HEX;
-		this.announce(`<font color="${hex}">${scoringTeam.upper()} TEAM SCORES!</font>`);
+		const scorerText = scorer ? `${escapeRichText(scorer.DisplayName)} SCORES!` : `${scoringTeam.upper()} TEAM SCORES!`;
+		this.announce(`<font color="${hex}">${scorerText}</font>`);
 		task.spawn(() => {
 			task.wait(GOAL_PAUSE);
 			if (this.flowGen !== gen || matchGen !== localMatchGen) {
@@ -939,10 +959,10 @@ const footballMatch = {
 
 			// Camera first, THEN the winner text.
 			task.wait(0.2);
-			if (winner === "Blue") {
-				match.announce(`<font color="${BLUE_HEX}">BLUE TEAM WINS!</font>`);
-			} else if (winner === "Red") {
-				match.announce(`<font color="${RED_HEX}">RED TEAM WINS!</font>`);
+			if (winner !== undefined) {
+				const hex = winner === "Blue" ? BLUE_HEX : RED_HEX;
+				const teamName = match.ladderTeamNameForSide(winner) ?? `${winner.upper()} TEAM`;
+				match.announce(`<font color="${hex}">${escapeRichText(teamName)} WINS!</font>`);
 			} else if (flipSide !== undefined) {
 				// Coin-flip presentation (Phase 4b): suspense, then the ACTUAL
 				// result the MatchDirector already flipped.
