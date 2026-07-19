@@ -44,6 +44,8 @@ const KICKOFF_COUNTDOWN = 3;
 const RESPAWN_DELAY = 1.5;
 const RESPAWN_LOCK = 5;
 const GOAL_PAUSE = 2.5;
+const GOAL_BLAST_SPEED = 1000;
+const GOAL_BLAST_LIFT = 5500 / 9;
 const END_ANNOUNCE_TIME = 2;
 const FREE_PLAY_INTRO_TIME = 1.8;
 
@@ -533,6 +535,22 @@ class PitchMatch {
 		const hex = scoringTeam === "Blue" ? BLUE_HEX : RED_HEX;
 		const scorerText = scorer ? `${escapeRichText(scorer.DisplayName)} SCORES!` : `${scoringTeam.upper()} TEAM SCORES!`;
 		this.announce(`<font color="${hex}">${scorerText}</font>`);
+		const goalPart = this.goalParts.get(defendingTeam);
+		if (goalPart && goalPart.Parent !== undefined) {
+			for (const [player] of this.roster) {
+				const vehicle = Globals.vehiclesTable[player.UserId];
+				const model = vehicle && vehicle.model;
+				const base = model && model.FindFirstChild("Base");
+				if (!base || !base.IsA("BasePart")) {
+					continue;
+				}
+				const away = base.Position.sub(goalPart.Position);
+				const horizontal = new Vector3(away.X, 0, away.Z);
+				const outward = horizontal.Magnitude > 0.01 ? horizontal.Unit : goalPart.CFrame.LookVector;
+				const impulseVelocity = outward.mul(GOAL_BLAST_SPEED).add(new Vector3(0, GOAL_BLAST_LIFT, 0));
+				base.ApplyImpulse(impulseVelocity.mul(base.AssemblyMass));
+			}
+		}
 		task.spawn(() => {
 			task.wait(GOAL_PAUSE);
 			if (this.flowGen !== gen || matchGen !== localMatchGen) {

@@ -44,12 +44,15 @@ function soundTemplate(name: string, soundId: string, volume: number): Sound {
 }
 
 const gameEndSound = soundTemplate("GameEndSound", "rbxassetid://9119561696", 0.55);
-const scoreCrowdSound = soundTemplate("ScoreCrowdSound", "rbxassetid://124820656606411", 0.55);
+const crowdAmbienceTemplate = soundTemplate("CrowdAmbience", "rbxassetid://124820656606411", 0.04);
+crowdAmbienceTemplate.Looped = true;
 const victoryCrowdSound = soundTemplate("VictoryCrowdSound", "rbxassetid://124820656606411", 0.22);
 const kickoffSound = soundTemplate("KickoffSound", "rbxassetid://6238869231", 0.55);
 
 task.spawn(() =>
-	pcall(() => ContentProvider.PreloadAsync([gameEndSound, scoreCrowdSound, victoryCrowdSound, kickoffSound])),
+	pcall(() =>
+		ContentProvider.PreloadAsync([gameEndSound, crowdAmbienceTemplate, victoryCrowdSound, kickoffSound]),
+	),
 );
 
 function playSound(template: Sound) {
@@ -57,6 +60,21 @@ function playSound(template: Sound) {
 	sound.Parent = SoundService;
 	sound.Play();
 	Debris.AddItem(sound, 15);
+}
+
+let crowdAmbience: Sound | undefined;
+
+function updateCrowdAmbience() {
+	if (currentPitch()) {
+		if (!crowdAmbience) {
+			crowdAmbience = crowdAmbienceTemplate.Clone();
+			crowdAmbience.Parent = SoundService;
+			crowdAmbience.Play();
+		}
+	} else if (crowdAmbience) {
+		crowdAmbience.Destroy();
+		crowdAmbience = undefined;
+	}
 }
 
 interface PlayerIconUi extends Frame {
@@ -320,20 +338,8 @@ function bindPitch() {
 	pitchConnections = [];
 	const pitch = currentPitch();
 	if (pitch) {
-		let lastBlue = attrNumberOn(pitch, ATTR_BLUE);
-		let lastRed = attrNumberOn(pitch, ATTR_RED);
-		const scoreChanged = () => {
-			const blue = attrNumberOn(pitch, ATTR_BLUE);
-			const red = attrNumberOn(pitch, ATTR_RED);
-			if (blue > lastBlue || red > lastRed) {
-				playSound(scoreCrowdSound);
-			}
-			lastBlue = blue;
-			lastRed = red;
-			refreshScore();
-		};
-		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_BLUE).Connect(scoreChanged));
-		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_RED).Connect(scoreChanged));
+		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_BLUE).Connect(refreshScore));
+		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_RED).Connect(refreshScore));
 		pitchConnections.push(
 			pitch.GetAttributeChangedSignal(ATTR_ANNOUNCE).Connect(() => {
 				refreshAnnounce();
@@ -353,6 +359,7 @@ function bindPitch() {
 			}),
 		);
 	}
+	updateCrowdAmbience();
 	refreshAll();
 }
 LocalPlayer.GetAttributeChangedSignal("CB_PitchId").Connect(bindPitch);

@@ -16,8 +16,22 @@ import { BALL_NAME, ballTunables } from "shared/ballSim/BallConfig";
 const RunService = game.GetService("RunService");
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
 const TweenService = game.GetService("TweenService");
+const Players = game.GetService("Players");
+const SoundService = game.GetService("SoundService");
+const Debris = game.GetService("Debris");
+const ContentProvider = game.GetService("ContentProvider");
 
 const SOCCER_BALL_MESH_NAME = "SoccerBallMesh";
+const PITCH_ATTRIBUTE = "CB_PitchId";
+const BLUE_SCORE_ATTRIBUTE = "FB_BlueScore";
+const RED_SCORE_ATTRIBUTE = "FB_RedScore";
+const LocalPlayer = Players.LocalPlayer;
+
+const goalSoundTemplate = new Instance("Sound");
+goalSoundTemplate.Name = "GoalSound";
+goalSoundTemplate.SoundId = "rbxassetid://79833203443837";
+goalSoundTemplate.Volume = 0.6;
+task.spawn(() => pcall(() => ContentProvider.PreloadAsync([goalSoundTemplate])));
 
 interface BallVisual {
 	instance: BasePart | Model;
@@ -110,6 +124,75 @@ function setupBall(ball: BasePart) {
 	renderer.Transparency = 1;
 	const ballVisual = createBallVisual(ball.Size, renderer.CFrame);
 
+	// Goal burst is authored beneath GoalEffects on the cloned rendered mesh.
+	// Watch this ball's own pitch scoreboard so simultaneous pitches only fire
+	// the visual belonging to the ball that was scored with.
+	const scoreConnections: RBXScriptConnection[] = [];
+	let goalEffectGeneration = 0;
+	const goalEffects = ballVisual?.instance.FindFirstChild("GoalEffects", true);
+	const goalEmitters: ParticleEmitter[] = [];
+	if (goalEffects && goalEffects.IsA("Attachment")) {
+		for (const descendant of goalEffects.GetDescendants()) {
+			if (descendant.IsA("ParticleEmitter")) {
+				descendant.Enabled = false;
+				goalEmitters.push(descendant);
+			}
+		}
+	}
+	const triggerGoalEffects = () => {
+		goalEffectGeneration += 1;
+		const generation = goalEffectGeneration;
+		if (ballVisual) {
+			const visualInstances = [ballVisual.instance, ...ballVisual.instance.GetDescendants()];
+			for (const instance of visualInstances) {
+				if (instance.IsA("BasePart")) {
+					instance.Transparency = 1;
+				}
+			}
+		}
+		for (const emitter of goalEmitters) {
+			emitter.Enabled = true;
+		}
+		if (ball.GetAttribute(PITCH_ATTRIBUTE) === LocalPlayer.GetAttribute(PITCH_ATTRIBUTE)) {
+			const sound = goalSoundTemplate.Clone();
+			sound.Parent = SoundService;
+			sound.TimePosition = 0.2;
+			sound.Play();
+			Debris.AddItem(sound, 10);
+		}
+		task.delay(0.2, () => {
+			if (goalEffectGeneration !== generation) {
+				return;
+			}
+			for (const emitter of goalEmitters) {
+				if (emitter.Parent !== undefined) {
+					emitter.Enabled = false;
+				}
+			}
+		});
+	};
+	const pitchId = ball.GetAttribute(PITCH_ATTRIBUTE);
+	const mapFolder = game.Workspace.FindFirstChild("Map");
+	const pitch = typeIs(pitchId, "string") && mapFolder ? mapFolder.FindFirstChild(pitchId) : undefined;
+	if (pitch) {
+		let blueScore = pitch.GetAttribute(BLUE_SCORE_ATTRIBUTE);
+		let redScore = pitch.GetAttribute(RED_SCORE_ATTRIBUTE);
+		const onScoreChanged = () => {
+			const nextBlue = pitch.GetAttribute(BLUE_SCORE_ATTRIBUTE);
+			const nextRed = pitch.GetAttribute(RED_SCORE_ATTRIBUTE);
+			if (
+				(typeIs(nextBlue, "number") && (!typeIs(blueScore, "number") || nextBlue > blueScore)) ||
+				(typeIs(nextRed, "number") && (!typeIs(redScore, "number") || nextRed > redScore))
+			) {
+				triggerGoalEffects();
+			}
+			blueScore = nextBlue;
+			redScore = nextRed;
+		};
+		scoreConnections.push(pitch.GetAttributeChangedSignal(BLUE_SCORE_ATTRIBUTE).Connect(onScoreChanged));
+		scoreConnections.push(pitch.GetAttributeChangedSignal(RED_SCORE_ATTRIBUTE).Connect(onScoreChanged));
+	}
+
 	ball.LocalTransparencyModifier = 1;
 	const sizeConn = ball.GetPropertyChangedSignal("Size").Connect(() => {
 		renderer.Size = ball.Size;
@@ -158,6 +241,10 @@ function setupBall(ball: BasePart) {
 			return;
 		}
 		cleaned = true;
+		goalEffectGeneration += 1;
+		for (const connection of scoreConnections) {
+			connection.Disconnect();
+		}
 		renderConn.Disconnect();
 		sizeConn.Disconnect();
 		ballVisual?.instance.Destroy();

@@ -7,7 +7,11 @@ const UserInputService = game.GetService("UserInputService");
 const RunService = game.GetService("RunService");
 const Players = game.GetService("Players");
 
-const camera = game.Workspace.CurrentCamera!;
+// Re-fetch every use: the Camera instance can be replaced while we're running,
+// and a reference captured at boot would silently target a dead camera.
+function currentCamera(): Camera {
+	return game.Workspace.CurrentCamera!;
+}
 
 const player = Players.LocalPlayer;
 //local character = player.CharacterAdded:Wait()
@@ -42,7 +46,14 @@ const cameraMouseRotateSpeed = 0.25;
 const cameraTouchRotateSpeed = 10;
 const TweenService = game.GetService("TweenService");
 
+// Whether the menu camera currently owns the camera. Guards against the
+// join-team race: a mouse move (or a late SetMenuCameraCFrame) landing after
+// ToggleMenuCamera(false) used to re-force Scriptable with a nil
+// CameraSubject, leaving the player stuck at the menu shot in-game.
+let menuActive = false;
+
 function SetCameraMode() {
+	const camera = currentCamera();
 	camera.CameraType = "Scriptable" as unknown as Enum.CameraType;
 	camera.FieldOfView = 80;
 	camera.CameraSubject = undefined;
@@ -58,8 +69,10 @@ let rotationDifference = 0;
 let lastCameraRotation = 0;
 function UpdateCamera() {
 	// Camera target not received yet (e.g. mouse input on the landing page
-	// before SetMenuCameraCFrame arrives) — nothing to aim at.
-	if (cameraCFrame === undefined || playerGarage === undefined) {
+	// before SetMenuCameraCFrame arrives) — nothing to aim at. Also bail when
+	// the menu no longer owns the camera, so nothing here can steal it back
+	// from gameplay.
+	if (!menuActive || cameraCFrame === undefined || playerGarage === undefined) {
 		return;
 	}
 	SetCameraMode();
@@ -85,6 +98,7 @@ function UpdateCamera() {
 	//	tween1:Play()
 
 	//workspace.garageModel.spawnPlateModel.HingeConstraint.TargetAngle = math.deg(cameraRotation.X)
+	const camera = currentCamera();
 	camera.CFrame = cameraCFrame!; // cameraRotationCFrame + cameraPosition + cameraRotationCFrame * Vector3.new(0, 0, cameraZoom)
 	//camera.Focus = camera.CFrame - Vector3.new(0, camera.CFrame.p.Y, 0)
 	camera.FieldOfView = cameraFOV;
@@ -196,6 +210,7 @@ const comnections = new Map<number, RBXScriptConnection>();
 // Determine whether the user is on a mobile device
 
 function toggleCamera(toggle: boolean, playerGarageParam?: Model & { spawnPlate: BasePart; spawnPlateModel: BasePart }) {
+	menuActive = toggle;
 	if (toggle) {
 		playerGarage = playerGarageParam;
 		for (const [, comenction] of pairs(comnections)) {
@@ -223,7 +238,17 @@ function toggleCamera(toggle: boolean, playerGarageParam?: Model & { spawnPlate:
 	} else {
 		//RunService:UnbindFromRenderStep("PlayerChanged")
 
+		const camera = currentCamera();
 		camera.CameraType = Enum.CameraType.Custom;
+		// SetCameraMode nulled CameraSubject while the menu owned the camera.
+		// The engine only re-points the subject on CharacterAdded, which can
+		// fire BEFORE this event arrives (LoadCharacter runs first on the
+		// server) — so restore it here or a Custom camera with a nil subject
+		// sits at the menu shot forever.
+		const humanoid = player.Character?.FindFirstChildOfClass("Humanoid");
+		if (humanoid) {
+			camera.CameraSubject = humanoid;
+		}
 
 		for (const [, comenction] of pairs(comnections)) {
 			comenction.Disconnect();
@@ -237,6 +262,9 @@ FunctionsAndEvents.ToggleMenuCamera.OnClientEvent.Connect((...args: unknown[]) =
 });
 
 FunctionsAndEvents.SetMenuCameraCFrame.OnClientEvent.Connect((...args: unknown[]) => {
+	// Always remember the target (a toggle-on may follow), but only steer the
+	// camera while the menu owns it — UpdateCamera's menuActive guard keeps a
+	// late-arriving CFrame from re-forcing Scriptable mid-game.
 	cameraCFrame = args[0] as CFrame;
 	UpdateCamera();
 });

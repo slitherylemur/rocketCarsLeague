@@ -44,16 +44,7 @@ export const BallAttr = {
 	SimTime: "BallSimTime",
 	LastHitCar: "BallLastHitCar", // model name of the last car whose hitPower punch applied
 	LastHitTime: "BallLastHitTime", // sim time of that punch (cooldown gate)
-	ImpactSerial: "BallImpactSerial", // changes for every audible car/world bounce
-	ImpactKind: "BallImpactKind", // "Car" or "World"
-	ImpactCar: "BallImpactCar", // hitting car name when ImpactKind is "Car"
 } as const;
-
-function cueImpact(ball: BasePart, kind: "Car" | "World", carName?: string) {
-	ball.SetAttribute(BallAttr.ImpactKind, kind);
-	ball.SetAttribute(BallAttr.ImpactCar, carName ?? "");
-	ball.SetAttribute(BallAttr.ImpactSerial, attrNumber(ball, BallAttr.ImpactSerial, 0) + 1);
-}
 
 // How far below the surface-touch distance the ground probe reaches: keeps
 // `grounded` true through tiny bounces so roll friction & rest engage.
@@ -248,7 +239,6 @@ function stepBall(ball: BasePart, dt: number) {
 				// Advance to the contact point so we never tunnel.
 				position = position.add(travel.Unit.mul(math.max(sweep.Distance - SKIN, 0)));
 				positionChanged = true;
-				cueImpact(ball, "World");
 			} else if (vn < 0) {
 				// Grazing/rolling contact: just slide (cancel the into-surface part).
 				v = v.sub(n.mul(vn));
@@ -297,7 +287,6 @@ function stepBall(ball: BasePart, dt: number) {
 				v = v.add(dir.mul(hitPower * closing));
 				ball.SetAttribute(BallAttr.LastHitCar, contact.carModel.Name);
 				ball.SetAttribute(BallAttr.LastHitTime, now);
-				cueImpact(ball, "Car", contact.carModel.Name);
 			}
 		}
 
