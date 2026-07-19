@@ -1667,7 +1667,7 @@ export function GarageGui(): React.Element {
 					TextWrapped: true,
 					TextXAlignment: Enum.TextXAlignment.Left,
 					TextYAlignment: Enum.TextYAlignment.Center,
-					Visible: true,
+					Visible: false,
 					ZIndex: 1,
 				} as never),
 				React.createElement("UIPadding", {
@@ -2361,7 +2361,7 @@ export function GarageGui(): React.Element {
 				Size: new UDim2(0.310932815, 0, 0.134363443, 0),
 				SizeConstraint: Enum.SizeConstraint.RelativeXY,
 				Style: Enum.FrameStyle.Custom,
-				Visible: true,
+				Visible: false,
 				ZIndex: 1,
 			} as never, [
 				React.createElement("UICorner", {

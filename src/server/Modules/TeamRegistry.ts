@@ -137,6 +137,36 @@ function nextPosition(): number {
 	return highest + 1;
 }
 
+/**
+ * When a second overflow team arrives, the waiting muckabout team and the
+ * newcomer become a new competitive pairing. New real capacity is inserted
+ * immediately above the physical Mud pitch, so its existing occupants must
+ * remain the bottom pair rather than having their venue silently turn Green.
+ *
+ * Returns the new team's position, or undefined when this is an ordinary
+ * append (including the one-team -> two-team Gold-only case).
+ */
+function positionForNewTeam(): number | undefined {
+	const ordered = TeamRegistry.getTeams();
+	const count = ordered.size();
+	// Up to four teams there is no existing Mud venue to preserve: the second
+	// real pitch being introduced becomes Mud and an ordinary append is right.
+	if (count < 5 || count % 2 === 0) {
+		return undefined;
+	}
+
+	const insertionPosition = count - 3;
+	const waitingMuckabout = ordered[count - 1];
+
+	// Make two slots immediately above Mud. The old bottom pair moves down
+	// into those slots and therefore stays on the physical Mud venue.
+	for (let i = count - 2; i >= count - 3; i--) {
+		ordered[i].position += 2;
+	}
+	waitingMuckabout.position = insertionPosition;
+	return insertionPosition + 1;
+}
+
 function setPlayerTeam(player: Player, team: LadderTeam | undefined) {
 	pcall(() => {
 		if (team) {
@@ -207,6 +237,7 @@ const TeamRegistry = {
 
 	createTeam(creator: Player, open: boolean): LadderTeam {
 		TeamRegistry.leaveTeam(creator);
+		const insertedPosition = positionForNewTeam();
 
 		const id = `T${nextTeamNumber}`;
 		nextTeamNumber += 1;
@@ -228,7 +259,7 @@ const TeamRegistry = {
 			colorName,
 			members: [creator],
 			open,
-			position: nextPosition(),
+			position: insertedPosition ?? nextPosition(),
 			joinedMidRound: false,
 		};
 		teams.set(id, team);

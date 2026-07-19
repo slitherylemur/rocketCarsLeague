@@ -7,8 +7,7 @@
 // Original scripts reproduced here (paths relative to their ScreenGui):
 //  A) EnableWithConsole (icon + parent transparency) ×6 — Game/Controls/*/ImageLabel/consoleIcon
 //  B) EnableWithConsole (icon only) ×11 — Spectate Respawn + Garage buttons
-//  C) DetectInput ×1 — Garage/Inventory/Codes/TextBox
-//  D) coinFrame scroll animation ×8 — Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel
+//  C) coinFrame scroll animation ×8 — Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel
 //  E) hover click sound ×1 — Garage/hover (Sound)
 //
 // Like the originals, connections are not explicitly disconnected when a gui is
@@ -77,17 +76,7 @@ function enableWithConsoleVisible(consoleIcon: GuiObject) {
 	});
 }
 
-// ---- Variant C: DetectInput ----------------------------------------------
-// Original: StarterGui/Garage/Inventory/Codes/TextBox/DetectInput
-function detectInput(textBox: TextBox & { TextEntered: RemoteEvent }) {
-	textBox.FocusLost.Connect((enterPressed) => {
-		if (enterPressed) {
-			textBox.TextEntered.FireServer(textBox.Text);
-		}
-	});
-}
-
-// ---- Variant D: coinFrame scroll animation -------------------------------
+// ---- Variant C: coinFrame scroll animation -------------------------------
 // Original: StarterGui/Garage/cashPurchace/cash/buyOptions/coinFrame/ImageLabel/LocalScript
 function coinFrameAnimation(imageLabel: ImageLabel) {
 	RunService.RenderStepped.Connect((step) => {
@@ -165,14 +154,7 @@ function attachGarageBehaviors(garageGui: Instance) {
 		}
 	});
 
-	// Codes textbox (variant C)
-	task.spawn(() => {
-		const textBox = waitForPath(garageGui, "Inventory/Codes/TextBox") as TextBox & { TextEntered: RemoteEvent };
-		textBox.WaitForChild("TextEntered");
-		detectInput(textBox);
-	});
-
-	// The 8 coinFrame scroll animations (variant D)
+	// The 8 coinFrame scroll animations (variant C)
 	task.spawn(() => {
 		const buyOptions = waitForPath(garageGui, "cashPurchace/cash/buyOptions");
 		for (const coinFrame of childrenNamed(buyOptions, "coinFrame")) {

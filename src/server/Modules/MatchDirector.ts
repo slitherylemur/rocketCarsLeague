@@ -81,11 +81,12 @@ const MatchDirector = {
 	},
 
 	/**
-	 * Classic top table via sort keys: winner of pitch t sorts above the
-	 * loser from pitch t-1 (key t-0.6 vs t-1+0.6), draws are coin-flipped,
-	 * the muckabout team moves with the pack (key = its pitch index), and
-	 * anyone unseen sorts to the bottom. The bottom team becomes the next
-	 * muckabout candidate; an immediate repeat swaps with the team above.
+	 * Classic top table via sort keys: winners move one whole table up,
+	 * losers move one whole table down, and the muckabout team moves up onto
+	 * the lowest real table. Equal keys retain the previous ladder order,
+	 * pairing arrivals from adjacent tables. Thus opponents do not immediately
+	 * replay on the same pitch; only the top winner and bottom loser stay at a
+	 * boundary. Draws are coin-flipped and anyone unseen sorts to the bottom.
 	 */
 	applyMovement(results: RoundResult[]): MovementReport {
 		roundNumber += 1;
@@ -119,7 +120,8 @@ const MatchDirector = {
 
 		const keys = new Map<string, number>();
 		for (const result of results) {
-			const delta = result.outcome === "win" ? -0.6 : result.outcome === "loss" ? 0.6 : 0;
+			const delta =
+				result.outcome === "win" || result.outcome === "muck" ? -1 : result.outcome === "loss" ? 1 : 0;
 			keys.set(result.teamId, result.pitchIndex + delta);
 		}
 

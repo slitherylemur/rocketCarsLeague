@@ -7,9 +7,10 @@ const LocalPlayer = PlayerService.LocalPlayer;
 let roundTime = 0;
 
 game.GetService("StarterGui").SetCoreGuiEnabled(Enum.CoreGuiType.Chat, false);
-// Top Table: the default player list IS the team display (ladder teams are
-// real Roblox Teams + Goals/Kills leaderstats), so it stays on.
-game.GetService("StarterGui").SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, true);
+// The match HUD supplies the relevant roster and vehicle state, so the
+// Roblox player list and humanoid health CoreGui only duplicate information.
+game.GetService("StarterGui").SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false);
+game.GetService("StarterGui").SetCoreGuiEnabled(Enum.CoreGuiType.Health, false);
 
 interface PlayerIconUi extends Frame {
 	Value: TextLabel;

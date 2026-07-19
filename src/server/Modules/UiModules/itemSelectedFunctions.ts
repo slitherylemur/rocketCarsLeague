@@ -27,6 +27,13 @@ interface MainUi extends Frame {
 	SpawnButton: GuiObject;
 }
 
+function SetTeamNameStripVisible(mainUI: MainUi, visible: boolean) {
+	const strip = mainUI.FindFirstChild("TeamNameStrip");
+	if (strip?.IsA("GuiObject")) {
+		strip.Visible = visible;
+	}
+}
+
 interface CashPurchaceMenu extends Frame {
 	cash: Frame;
 	multipliers: Frame;
@@ -48,6 +55,7 @@ function EnableSpawnButton(mainUI: MainUi | undefined) {
 	if (mainUI) {
 		mainUI.BuyButton.Visible = false;
 		mainUI.SpawnButton.Visible = true;
+		SetTeamNameStripVisible(mainUI, true);
 	}
 }
 
@@ -96,6 +104,7 @@ function SetupBuyButton(
 ) {
 	mainUI.BuyButton.Visible = true;
 	mainUI.SpawnButton.Visible = false;
+	SetTeamNameStripVisible(mainUI, false);
 
 	if (buyConnections.get(player)) {
 		buyConnections.get(player)!.Disconnect();

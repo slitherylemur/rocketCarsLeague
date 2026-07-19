@@ -15,6 +15,13 @@ const RunService = game.GetService("RunService");
 
 Globals.vehiclesTable = {};
 
+// Which character the player's current vehicle was spawned for. The deferred
+// CharacterRemoving handler below can fire AFTER SpawnInPlayer has already
+// LoadCharacter'd and spawned the next round's car — killing the new car
+// mid-SeatPlayer (the "second game: no car, camera stuck" bug). The handler
+// only kills when the removing character still owns the current vehicle.
+const vehicleCharacter = new Map<number, Model>();
+
 // Under Workspace.AuthorityMode = Server there is no network ownership: the
 // server simulates every assembly and SetNetworkOwner throws.
 //
@@ -170,6 +177,12 @@ const spawnVehicleModule = {
 
 		const [newVehicle, model] = VehicleClass.new(player);
 		Globals.vehiclesTable[player.UserId] = newVehicle;
+		const ownerCharacter = player.Character;
+		if (ownerCharacter) {
+			vehicleCharacter.set(player.UserId, ownerCharacter);
+		} else {
+			vehicleCharacter.delete(player.UserId);
+		}
 		let newModel: VehicleModel | undefined = model;
 
 		if (!newModel) {
@@ -340,6 +353,7 @@ const spawnVehicleModule = {
 			Globals.vehiclesTable[player.UserId]!.model.Destroy();
 
 			Globals.vehiclesTable[player.UserId] = undefined;
+			vehicleCharacter.delete(player.UserId);
 		}
 
 		const playerGarage = Globals.findPlayerGarage(player);
@@ -379,16 +393,30 @@ function KeyHandler(player: Player, actionName: unknown, inputState: unknown, in
 }
 
 Players.PlayerAdded.Connect((player) => {
-	player.CharacterRemoving.Connect(() => {
+	player.CharacterRemoving.Connect((character) => {
 		// Use the closure player: GetPlayerFromCharacter returns nil for a
 		// character that already unparented mid-respawn, and KillVehicle
 		// indexing nil.UserId errored on every menu-return loop.
+		//
+		// Deferred CharacterRemoving can run after SpawnInPlayer has already
+		// LoadCharacter'd and spawned the next round's car; killing then would
+		// destroy the NEW car mid-SeatPlayer. Only kill when the vehicle still
+		// belongs to the character being removed (no recorded owner = old
+		// behavior: kill).
+		const owner = vehicleCharacter.get(player.UserId);
+		if (owner !== undefined && owner !== character) {
+			warn(
+				`[KillVehicle] skipped for ${player.Name}: ${character.Name} removing but vehicle belongs to a newer character`,
+			);
+			return;
+		}
 		spawnVehicleModule.KillVehicle(player);
 	});
 });
 
 Players.PlayerRemoving.Connect((player) => {
 	spawnVehicleModule.KillVehicle(player);
+	vehicleCharacter.delete(player.UserId);
 	task.delay(5, () => {
 		print(Globals.vehiclesTable);
 	});

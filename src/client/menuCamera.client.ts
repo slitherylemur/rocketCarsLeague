@@ -198,7 +198,6 @@ const comnections = new Map<number, RBXScriptConnection>();
 function toggleCamera(toggle: boolean, playerGarageParam?: Model & { spawnPlate: BasePart; spawnPlateModel: BasePart }) {
 	if (toggle) {
 		playerGarage = playerGarageParam;
-		game.GetService("StarterGui").SetCoreGuiEnabled(Enum.CoreGuiType.Chat, false);
 		for (const [, comenction] of pairs(comnections)) {
 			comenction.Disconnect();
 		}
@@ -230,9 +229,6 @@ function toggleCamera(toggle: boolean, playerGarageParam?: Model & { spawnPlate:
 			comenction.Disconnect();
 		}
 
-		pcall(() => {
-			game.GetService("StarterGui").SetCoreGuiEnabled(Enum.CoreGuiType.Chat, true);
-		});
 	}
 }
 

@@ -11,7 +11,6 @@ import roundHandler from "./Modules/roundHandler";
 import crateModule from "./Modules/CrateModule";
 import selectedFunctions from "./Modules/UiModules/itemSelectedFunctions";
 import populateCrateFrameModule from "shared/PopulateCrateFrame";
-import codesModule from "./Modules/CodesModule";
 import ContentModule from "./Modules/Content";
 import { Globals } from "./Globals";
 import footballMatch from "./Modules/footballMatch";
@@ -50,7 +49,6 @@ interface GarageGuiShape extends ScreenGui {
 		BuyButton: Frame & { Button: TextButton; BuyButtonConsole: BindableEvent };
 		Buttons: Frame & { Buttons: Frame & { Inventory: Frame } };
 		ShopButton: GuiButton;
-		Codes: Frame & { TextBox: TextBox & { TextEntered: RemoteEvent } };
 	};
 	Shop: Frame & {
 		InventoryButton: GuiButton;
@@ -541,26 +539,6 @@ function OpenInventory(player: Player) {
 		}),
 	);
 
-	uiConnections.get(player)!.set(
-		"codes",
-		(
-			(inventory.WaitForChild("Codes") as Frame & { TextBox: TextBox & { TextEntered: RemoteEvent } }).TextBox
-				.TextEntered as RemoteEvent
-		).OnServerEvent.Connect((eventPlayer, textP) => {
-			const text = string.lower(textP as string);
-			if (codesModule[text] !== undefined) {
-				codesModule[text]!(eventPlayer);
-				inventory.Codes.TextBox.TextColor3 = Color3.fromRGB(0, 255, 0);
-				task.wait(1.6);
-				inventory.Codes.TextBox.TextColor3 = Color3.fromRGB(0, 0, 0);
-			} else {
-				inventory.Codes.TextBox.TextColor3 = Color3.fromRGB(255, 0, 0);
-				task.wait(0.7);
-				inventory.Codes.TextBox.TextColor3 = Color3.fromRGB(0, 0, 0);
-			}
-		}),
-	);
-
 	inventory.Visible = true;
 }
 
@@ -854,6 +832,10 @@ CarBallRemotes.SubmitTeamName.OnServerEvent.Connect((player, raw) => {
 	}
 	if (result === "ok") {
 		popup.Enabled = false;
+		const teamName = playerGuiOf(player).Garage.FindFirstChild("CurrentTeamName", true);
+		if (teamName?.IsA("TextLabel")) {
+			teamName.Text = TeamRegistry.getTeamOf(player)?.name ?? "NO TEAM";
+		}
 		refreshTeamPage(player);
 	} else if (result === "moderated") {
 		popup.Panel.Status.Text = "That name was moderated — try another";
@@ -864,9 +846,7 @@ CarBallRemotes.SubmitTeamName.OnServerEvent.Connect((player, raw) => {
 	}
 });
 
-/** Back-to-menu + rename buttons on the Cars page (the rename product must be
- * reachable for random-team players too — they visit this page every shop
- * phase). Created imperatively per mount. */
+/** Cars-page navigation and team-name controls, created per UI mount. */
 function ensureGarageMenuButtons(player: Player) {
 	const garage = playerGuiOf(player).Garage;
 	if (garage.FindFirstChild("BackToMenu", true)) {
@@ -874,7 +854,8 @@ function ensureGarageMenuButtons(player: Player) {
 	}
 	const inventory = garage.Inventory;
 	const shopButton = inventory.ShopButton;
-	shopButton.Position = new UDim2(0.395, 0, shopButton.Position.Y.Scale, shopButton.Position.Y.Offset);
+	shopButton.AnchorPoint = new Vector2(1, 0.5);
+	shopButton.Position = new UDim2(1, 0, shopButton.Position.Y.Scale, shopButton.Position.Y.Offset);
 	const shopOutline = new Instance("UIStroke");
 	shopOutline.Name = "MenuOutline";
 	shopOutline.ApplyStrokeMode = Enum.ApplyStrokeMode.Border;
@@ -891,12 +872,12 @@ function ensureGarageMenuButtons(player: Player) {
 
 	const backButton = new Instance("TextButton");
 	backButton.Name = "BackToMenu";
-	backButton.AnchorPoint = new Vector2(1, 0.5);
+	backButton.AnchorPoint = new Vector2(0, 0.5);
 	backButton.AutoButtonColor = true;
 	backButton.BackgroundColor3 = Color3.fromRGB(205, 55, 55);
 	backButton.BorderSizePixel = 0;
 	backButton.FontFace = MENU_FONT;
-	backButton.Position = new UDim2(0.193, 0, 0.932, 0);
+	backButton.Position = new UDim2(0, 0, 0.932, 0);
 	backButton.Size = new UDim2(0.11, 0, 0.134, 0);
 	backButton.Text = "BACK";
 	backButton.TextColor3 = new Color3(1, 1, 1);
@@ -924,22 +905,54 @@ function ensureGarageMenuButtons(player: Player) {
 	});
 	backButton.Parent = inventory;
 
-	const makeButton = (name: string, text: string, y: number, color: Color3, onClick: () => void) => {
-		const buttonInstance = new Instance("TextButton");
-		buttonInstance.Name = name;
-		buttonInstance.Text = text;
-		buttonInstance.FontFace = MENU_FONT;
-		buttonInstance.TextScaled = true;
-		buttonInstance.TextColor3 = new Color3(1, 1, 1);
-		buttonInstance.BackgroundColor3 = color;
-		buttonInstance.Position = new UDim2(0.01, 0, y, 0);
-		buttonInstance.Size = new UDim2(0.09, 0, 0.05, 0);
-		buttonInstance.MouseButton1Click.Connect(onClick);
-		buttonInstance.Parent = garage;
-	};
-	makeButton("RenameTeam", "RENAME TEAM", 0.01, Color3.fromRGB(150, 70, 200), () => {
+	const teamStrip = new Instance("Frame");
+	teamStrip.Name = "TeamNameStrip";
+	teamStrip.AnchorPoint = new Vector2(0.5, 1);
+	teamStrip.BackgroundColor3 = Color3.fromRGB(20, 20, 24);
+	teamStrip.BackgroundTransparency = 0.15;
+	teamStrip.BorderSizePixel = 0;
+	teamStrip.Position = new UDim2(0.5, 0, 1, 0);
+	teamStrip.Size = new UDim2(0.38, 0, 0.07, 0);
+	teamStrip.Visible = !inventory.BuyButton.Visible;
+	teamStrip.ZIndex = shopButton.ZIndex;
+	const stripCorner = new Instance("UICorner");
+	stripCorner.CornerRadius = new UDim(0, 7);
+	stripCorner.Parent = teamStrip;
+
+	const teamName = new Instance("TextLabel");
+	teamName.Name = "CurrentTeamName";
+	teamName.BackgroundTransparency = 1;
+	teamName.FontFace = MENU_FONT;
+	teamName.Position = new UDim2(0.04, 0, 0.15, 0);
+	teamName.Size = new UDim2(0.62, 0, 0.7, 0);
+	teamName.Text = TeamRegistry.getTeamOf(player)?.name ?? "NO TEAM";
+	teamName.TextColor3 = new Color3(1, 1, 1);
+	teamName.TextScaled = true;
+	teamName.TextTruncate = Enum.TextTruncate.AtEnd;
+	teamName.TextXAlignment = Enum.TextXAlignment.Center;
+	teamName.ZIndex = teamStrip.ZIndex + 1;
+	teamName.Parent = teamStrip;
+
+	const changeName = new Instance("TextButton");
+	changeName.Name = "ChangeTeamName";
+	changeName.AnchorPoint = new Vector2(1, 0.5);
+	changeName.BackgroundColor3 = Color3.fromRGB(150, 70, 200);
+	changeName.BorderSizePixel = 0;
+	changeName.FontFace = MENU_FONT;
+	changeName.Position = new UDim2(0.98, 0, 0.5, 0);
+	changeName.Size = new UDim2(0.3, 0, 0.72, 0);
+	changeName.Text = "Change Name";
+	changeName.TextColor3 = new Color3(1, 1, 1);
+	changeName.TextScaled = true;
+	changeName.ZIndex = teamStrip.ZIndex + 1;
+	const changeCorner = new Instance("UICorner");
+	changeCorner.CornerRadius = new UDim(0, 6);
+	changeCorner.Parent = changeName;
+	changeName.MouseButton1Click.Connect(() => {
 		handleRenameRequest(player);
 	});
+	changeName.Parent = teamStrip;
+	teamStrip.Parent = inventory;
 }
 
 Globals.showMultiplier = (player: Player) => {

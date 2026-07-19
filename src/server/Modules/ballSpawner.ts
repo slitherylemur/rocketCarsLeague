@@ -18,6 +18,7 @@ const spawner = {} as {
 	/** Respawn a map's ball (defaults to the last SpawnBall map — the tuning
 	 * HUD and the single-pitch kickoff use that form). */
 	RespawnBall: (map?: Instance) => boolean;
+	ReleaseBall: (map: Instance) => void;
 	/** The live ball belonging to a map/pitch. */
 	GetBall: (map: Instance) => BasePart | undefined;
 };
@@ -139,13 +140,11 @@ spawner.SpawnBall = (map: Instance) => {
 	}
 	currentMap = map;
 
-	const floorCenter = findSpawnCenter(map);
-	if (floorCenter === undefined) {
-		warn(`[BallSpawner] no BaseParts found in map ${map.Name}; ball not spawned`);
+	const ballSpawn = map.FindFirstChild("BallSpawn", true);
+	if (!ballSpawn || !ballSpawn.IsA("BasePart")) {
+		warn(`[BallSpawner] no BallSpawn found in map ${map.Name}; ball not spawned`);
 		return;
 	}
-	// Drop in from slightly above the floor so the spawn reads as an event.
-	const spawnPos = floorCenter.add(new Vector3(0, ballTunables.size / 2 + 10, 0));
 
 	// Custom scripted physics (BallSim.ts): the engine resolves NO contacts
 	// for the ball (CanCollide=false) and its gravity is cancelled by the
@@ -158,7 +157,7 @@ spawner.SpawnBall = (map: Instance) => {
 	ball.Material = Enum.Material.SmoothPlastic;
 	ball.Color = Color3.fromRGB(255, 170, 0);
 	ball.CastShadow = true;
-	ball.Anchored = false;
+	ball.Anchored = true;
 	ball.CanCollide = false;
 	// Invisible to every OTHER system's spatial queries (wheel ground rays,
 	// the damage overlap, camera) — BallSim's own queries exclude the ball
@@ -171,7 +170,7 @@ spawner.SpawnBall = (map: Instance) => {
 	// under GameBall, which includes map + Hitboxes and excludes car bodies
 	// and wheels (initCollisionGroups.server.ts).
 	ball.CollisionGroup = COLLISION_GROUPS.GameBall;
-	ball.CFrame = new CFrame(spawnPos);
+	ball.CFrame = ballSpawn.CFrame;
 
 	// Engine-gravity canceller; BallSim keeps Force = mass × gravity per tick.
 	const attachment = new Instance("Attachment");
@@ -203,7 +202,16 @@ spawner.SpawnBall = (map: Instance) => {
 	ballByMap.set(map, ball);
 	markPredictable(ball);
 
-	warn(`[BallSpawner] spawned ${BALL_NAME} at ${spawnPos} (assemblyMass=${math.round(ball.AssemblyMass)})`);
+	warn(`[BallSpawner] spawned ${BALL_NAME} at ${ballSpawn.Position} (assemblyMass=${math.round(ball.AssemblyMass)})`);
+};
+
+spawner.ReleaseBall = (map: Instance) => {
+	const ball = ballByMap.get(map);
+	if (ball && ball.Parent !== undefined) {
+		ball.AssemblyLinearVelocity = new Vector3(0, 0, 0);
+		ball.AssemblyAngularVelocity = new Vector3(0, 0, 0);
+		ball.Anchored = false;
+	}
 };
 
 spawner.GetBall = (map: Instance) => {

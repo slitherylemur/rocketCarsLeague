@@ -334,7 +334,15 @@ class PitchMatch {
 		if (parts.size() === 0) {
 			return undefined;
 		}
-		return parts[entry.slot % parts.size()].CFrame;
+		const spawnPart = parts[entry.slot % parts.size()];
+		const ball = ballSpawner.GetBall(this.pitch.folder);
+		const ballSpawn = this.pitch.folder.FindFirstChild("BallSpawn", true);
+		const targetPosition = ball?.Position ?? (ballSpawn && ballSpawn.IsA("BasePart") ? ballSpawn.Position : undefined);
+		if (targetPosition === undefined) {
+			return spawnPart.CFrame;
+		}
+		const flatTarget = new Vector3(targetPosition.X, spawnPart.Position.Y, targetPosition.Z);
+		return CFrame.lookAt(spawnPart.Position, flatTarget);
 	}
 
 	teamsReady(): boolean {
@@ -400,6 +408,7 @@ class PitchMatch {
 			}
 			this.announce("GO!");
 			this.setPhase("Play");
+			ballSpawner.ReleaseBall(this.pitch.folder);
 			for (const [player] of this.roster) {
 				unlockPlayer(player);
 			}
@@ -438,6 +447,7 @@ class PitchMatch {
 		if (resetBall) {
 			ballSpawner.RespawnBall(this.pitch.folder);
 		}
+		ballSpawner.ReleaseBall(this.pitch.folder);
 		for (const [player] of this.roster) {
 			unlockPlayer(player);
 		}

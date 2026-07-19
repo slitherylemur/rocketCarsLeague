@@ -11,6 +11,7 @@ const LocalPlayer = Players.LocalPlayer;
 const musicObj = (LocalPlayer as unknown as { PlayerScripts: Instance }).PlayerScripts.WaitForChild(
 	"gameMusic",
 ) as Sound;
+const authoredVolume = musicObj.Volume;
 
 const menuMusicId = 1836805380;
 
@@ -30,6 +31,7 @@ let repeatInGame: RBXScriptConnection | undefined = undefined;
 function menuMusic() {
 	musicObj.SoundId = "rbxassetid://" + menuMusicId;
 	musicObj.Looped = true;
+	musicObj.Volume = authoredVolume * 0.5;
 
 	if (repeatInGame) {
 		repeatInGame.Disconnect();
@@ -52,6 +54,9 @@ function inGameMusic() {
 	musicObj.SoundId = "rbxassetid://" + soundID;
 
 	musicObj.Looped = false;
+	// Keep selection, playback and repeat behaviour intact so gameplay music
+	// can be restored later by changing only this temporary mute.
+	musicObj.Volume = 0;
 	musicObj.Play();
 
 	if (repeatInGame) {
