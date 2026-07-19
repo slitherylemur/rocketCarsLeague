@@ -30,7 +30,6 @@ import { GameGui } from "./components/GameGui";
 import { MobileInterfaceGui } from "./components/MobileInterfaceGui";
 import { GarageGui } from "./components/GarageGui";
 import { CrateMenuGui } from "./components/CrateMenuGui";
-import { MultipliersGui } from "./components/MultipliersGui";
 import { TimerGui } from "./components/TimerGui";
 import { MatchHudGui } from "./components/MatchHudGui";
 import { LandingGui } from "./components/LandingGui";
@@ -60,8 +59,8 @@ function resolvePath(base: Instance, path: string): Instance | undefined {
 
 function buildTree(): React.Element {
 	// Order matches the original StarterGui child order (Game, MobileInterface,
-	// Garage, CrateMenu, Multipliers, TimerGui, Steer, PlayerMoneyGainedPopups,
-	// DataLoss).
+	// Garage, CrateMenu, TimerGui, Steer, PlayerMoneyGainedPopups, DataLoss).
+	// (Multipliers retired with the timed cash-multiplier products.)
 	return React.createElement(
 		React.Fragment,
 		undefined,
@@ -69,7 +68,6 @@ function buildTree(): React.Element {
 		React.createElement(MobileInterfaceGui, { key: "MobileInterface" }),
 		React.createElement(GarageGui, { key: "Garage" }),
 		React.createElement(CrateMenuGui, { key: "CrateMenu" }),
-		React.createElement(MultipliersGui, { key: "Multipliers" }),
 		React.createElement(TimerGui, { key: "TimerGui" }),
 		// Football match HUD (new, not from the original place file).
 		React.createElement(MatchHudGui, { key: "MatchHud" }),

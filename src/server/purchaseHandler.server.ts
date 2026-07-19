@@ -1,11 +1,9 @@
 // Original: ServerScriptService/purchaseHandler (Script)
 
 import DataStore2 from "./Modules/DataStore2";
-import DSDefaultValues from "./Modules/DataStoreDefaults";
 import crateModule from "./Modules/CrateModule";
 import { Globals } from "./Globals";
 import TeamRegistry, { RENAME_PRODUCT_ID } from "./Modules/TeamRegistry";
-import type { MultiplierEntry } from "./Modules/dataTypes";
 
 const MarketplaceService = game.GetService("MarketplaceService");
 const DataStoreService = game.GetService("DataStoreService");
@@ -71,45 +69,9 @@ productFunctions.set(1625754876, (receipt, player) => {
 	return true;
 });
 
-//1.5x - 1h
-productFunctions.set(1625754877, (receipt, player) => {
-	const playerMultDS = DataStore2("multipliers", player);
-	const MultTable = playerMultDS.Get(DSDefaultValues.multipliers) as MultiplierEntry[];
-	MultTable.push([1.5, os.time() + 3600]);
-	playerMultDS.Set(MultTable);
-	Globals.showMultiplier(player);
-	return true;
-});
-
-//2x - 30m
-productFunctions.set(1625756131, (receipt, player) => {
-	const playerMultDS = DataStore2("multipliers", player);
-	const MultTable = playerMultDS.Get(DSDefaultValues.multipliers) as MultiplierEntry[];
-	MultTable.push([2, os.time() + 1800]);
-	playerMultDS.Set(MultTable);
-	Globals.showMultiplier(player);
-	return true;
-});
-
-//2x - 3h
-productFunctions.set(1625756132, (receipt, player) => {
-	const playerMultDS = DataStore2("multipliers", player);
-	const MultTable = playerMultDS.Get(DSDefaultValues.multipliers) as MultiplierEntry[];
-	MultTable.push([2, os.time() + 10800]);
-	playerMultDS.Set(MultTable);
-	Globals.showMultiplier(player);
-	return true;
-});
-
-//3x - 40m
-productFunctions.set(1625756133, (receipt, player) => {
-	const playerMultDS = DataStore2("multipliers", player);
-	const MultTable = playerMultDS.Get(DSDefaultValues.multipliers) as MultiplierEntry[];
-	MultTable.push([3, os.time() + 2400]);
-	playerMultDS.Set(MultTable);
-	Globals.showMultiplier(player);
-	return true;
-});
+// Timed cash-multiplier products removed (progression rework): deactivate
+// product ids 1625754877 / 1625756131 / 1625756132 / 1625756133 in the
+// Creator Dashboard — with no handler here they would sit NotProcessedYet.
 
 //Respawn
 productFunctions.set(1625756134, (receipt, player) => {

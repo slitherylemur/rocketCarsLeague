@@ -19,7 +19,6 @@ import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import { PlayerGuiManager } from "./ui/PlayerGuiManager";
 import VehicleInputActions from "./Modules/vehicleInputActions";
 import { CASH_PURCHACE_MENU_OPEN_SIZE } from "./ui/uiConstants";
-import type { MultiplierEntry } from "./Modules/dataTypes";
 import type { CrateItem } from "./Modules/dataTypes";
 
 const TweenService = game.GetService("TweenService");
@@ -54,7 +53,6 @@ interface GarageGuiShape extends ScreenGui {
 		InventoryButton: GuiButton;
 		Purchases: Frame & { VIP: GuiButton; Nuke: GuiButton; LowGravity: GuiButton };
 		Crates: Frame;
-		Multipliers: Frame;
 	};
 	CrateMenu: Frame & {
 		Content: Frame;
@@ -65,7 +63,10 @@ interface GarageGuiShape extends ScreenGui {
 	cashPurchace: Frame;
 	payOrSpectate: Frame & { Pay: GuiButton; Spectate: GuiButton };
 	cantRespawn: TextLabel;
-	Money: Frame & { Currency: Frame & { TextLabel: TextLabel; Add: GuiButton } };
+	Money: Frame & {
+		Currency: Frame & { TextLabel: TextLabel; Add: GuiButton };
+		Trophies: Frame & { TextLabel: TextLabel };
+	};
 }
 
 interface GameGuiShape extends ScreenGui {
@@ -80,7 +81,6 @@ interface GameGuiShape extends ScreenGui {
 type PlayerGuiShape = Instance & {
 	Garage: GarageGuiShape;
 	Game: GameGuiShape;
-	Multipliers: ScreenGui & { TextLabel: TextLabel };
 };
 
 function playerGuiOf(player: Player): PlayerGuiShape {
@@ -138,6 +138,7 @@ const selectedCrate = new Map<Player, number>();
 DataStore2.Combine(
 	"BumperCarsRelease",
 	"money",
+	"trophies",
 	"wins",
 	"kills",
 	"deaths",
@@ -495,19 +496,6 @@ function OpenShop(player: Player) {
 		}
 	}
 
-	for (const [i, multiplierPurchaceUi] of ipairs(shop.Multipliers.GetChildren())) {
-		if (multiplierPurchaceUi.IsA("ImageLabel")) {
-			uiConnections.get(player)!.set(
-				"shopMultiplier" + i,
-				(multiplierPurchaceUi as ImageLabel & { buy: GuiButton; ID: NumberValue }).buy.MouseButton1Click.Connect(
-					() => {
-						const productId = (multiplierPurchaceUi as ImageLabel & { ID: NumberValue }).ID.Value;
-						MarketplaceService.PromptProductPurchase(player, productId);
-					},
-				),
-			);
-		}
-	}
 }
 
 function OpenInventory(player: Player) {
@@ -955,27 +943,6 @@ function ensureGarageMenuButtons(player: Player) {
 	teamStrip.Parent = inventory;
 }
 
-Globals.showMultiplier = (player: Player) => {
-	const playerMultDS = DataStore2("multipliers", player);
-	const MultTable = playerMultDS.Get(DSDefaultValues.multipliers) as MultiplierEntry[];
-
-	let mult = 0;
-	for (const [i, v] of ipairs(MultTable)) {
-		if (v[1] > os.time()) {
-			mult += v[0];
-		} else {
-			MultTable.remove(i - 1);
-			playerMultDS.Set(MultTable);
-		}
-	}
-
-	if (mult > 1) {
-		const gui = playerGuiOf(player);
-		gui.Multipliers.TextLabel.Text = mult + "x";
-		gui.Multipliers.Enabled = true;
-	}
-};
-
 const resetting = new Map<Player, boolean>();
 
 Globals.SpawnInPlayer = (player: Player): boolean => {
@@ -1005,7 +972,6 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 	garageUi.Enabled = false;
 	//workspace:WaitForChild(player.Name)
 	(player.FindFirstChild("spawned") as NumberValue).Value += 1;
-	Globals.showMultiplier(player);
 	playerGuiOf(player).Game.Enabled = true;
 
 	const playerMoney = DataStore2("money", player);
@@ -1081,12 +1047,12 @@ function initialisePlayerUi(player: Player) {
 	const playerMoney = DataStore2("money", player);
 
 	setPlayerCash(player, playerMoney.Get(DataStoreDefaults.money) as number);
+	setPlayerTrophies(player, DataStore2("trophies", player).Get(DataStoreDefaults.trophies) as number);
 
 	FunctionsAndEvents.ToggleMenuCamera.FireClient(player, true, playerGarage);
 
 	const gui = playerGuiOf(player);
 	const garageUi = gui.Garage;
-	Globals.showMultiplier(player);
 	garageUi.Enabled = true;
 
 	gui.Garage.Money.Currency.Add.MouseButton1Click.Connect(() => {
@@ -1135,6 +1101,11 @@ function setPlayerCash(player: Player, money: number) {
 	const gui = playerGuiOf(player);
 	gui.Garage.Money.Currency.TextLabel.Text = moneyString;
 	gui.Game.Money.Currency.TextLabel.Text = moneyString;
+}
+
+function setPlayerTrophies(player: Player, trophies: number) {
+	const gui = playerGuiOf(player);
+	gui.Garage.Money.Trophies.TextLabel.Text = "🏆 " + GeneralUtils.CommaNumber(trophies);
 }
 
 function showKilledByScreen(player: Player, killer: Player) {
@@ -1253,6 +1224,12 @@ game.GetService("Players").PlayerAdded.Connect((player) => {
 
 	playerMoney.OnUpdate((newValue) => {
 		setPlayerCash(player, newValue as number);
+	});
+
+	const playerTrophies = DataStore2("trophies", player);
+
+	playerTrophies.OnUpdate((newValue) => {
+		setPlayerTrophies(player, newValue as number);
 	});
 
 	const playerVehicles = DataStore2("vehicles", player);

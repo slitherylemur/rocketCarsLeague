@@ -19,7 +19,7 @@ const G = COLLISION_GROUPS;
 // "vehicle"/"VehicleWheels" already exist in the place's registry; the pcall
 // swallows the duplicate-registration error and guarantees every name below
 // exists before the matrix writes.
-for (const name of [G.Vehicle, G.VehicleWheels, G.GameBall, G.Hitbox, G.HitboxQuery]) {
+for (const name of [G.Vehicle, G.VehicleWheels, G.GameBall, G.BallProtectionWall, G.Hitbox, G.HitboxQuery]) {
 	pcall(() => PhysicsService.RegisterCollisionGroup(name));
 }
 
@@ -29,6 +29,15 @@ PhysicsService.CollisionGroupSetCollidable(G.GameBall, G.Vehicle, false);
 PhysicsService.CollisionGroupSetCollidable(G.GameBall, G.VehicleWheels, false);
 PhysicsService.CollisionGroupSetCollidable(G.GameBall, G.Hitbox, true);
 PhysicsService.CollisionGroupSetCollidable(G.GameBall, G.GameBall, true);
+PhysicsService.CollisionGroupSetCollidable(G.GameBall, G.BallProtectionWall, true);
+
+// Protection walls are ball-only. Player characters and ordinary map parts
+// use Default; detailed car bodies and wheels use their dedicated groups.
+PhysicsService.CollisionGroupSetCollidable(G.BallProtectionWall, G.Default, false);
+PhysicsService.CollisionGroupSetCollidable(G.BallProtectionWall, G.Vehicle, false);
+PhysicsService.CollisionGroupSetCollidable(G.BallProtectionWall, G.VehicleWheels, false);
+PhysicsService.CollisionGroupSetCollidable(G.BallProtectionWall, G.Hitbox, false);
+PhysicsService.CollisionGroupSetCollidable(G.BallProtectionWall, G.BallProtectionWall, false);
 
 // Hitbox: GameBall only (set above). Explicitly never the map, car bodies,
 // wheels, or other hitboxes — car-vs-car contact stays body-vs-body.
@@ -44,5 +53,6 @@ PhysicsService.CollisionGroupSetCollidable(G.HitboxQuery, G.Default, false);
 PhysicsService.CollisionGroupSetCollidable(G.HitboxQuery, G.Vehicle, false);
 PhysicsService.CollisionGroupSetCollidable(G.HitboxQuery, G.VehicleWheels, false);
 PhysicsService.CollisionGroupSetCollidable(G.HitboxQuery, G.GameBall, false);
+PhysicsService.CollisionGroupSetCollidable(G.HitboxQuery, G.BallProtectionWall, false);
 
-warn("[CollisionGroups] registered GameBall/Hitbox/HitboxQuery and matrix");
+warn("[CollisionGroups] registered GameBall/BallProtectionWall/Hitbox/HitboxQuery and matrix");

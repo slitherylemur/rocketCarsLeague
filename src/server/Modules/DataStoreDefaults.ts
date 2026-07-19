@@ -20,6 +20,8 @@ const RollRBind = SerializeEnum(Enum.KeyCode.E);
 const DefaultValues: DataStoreDefaultsType = {
 	money: 0,
 
+	trophies: 0,
+
 	wins: 0,
 
 	kills: 0,

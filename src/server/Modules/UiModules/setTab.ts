@@ -32,9 +32,9 @@ interface TabFrame extends Frame {
 	List: ScrollingFrame;
 }
 
-// ServerStorage.CarCategory template (cloned per category).
+// ServerStorage.CarCategory template — cloned ONCE as the single flat car
+// grid (categories removed: cars sort by trophy cost via LayoutOrder).
 type CategoryBlock = Frame & { UIGridLayout: UIGridLayout };
-type CategoryBlocks = Record<string, CategoryBlock | undefined>;
 
 // The itemPopulateSpecifics / itemSelectedFunctions entries are dispatched
 // dynamically by tab name (`module[Tab]` in the original) — the modules are
@@ -130,19 +130,6 @@ function populateScrollFrame(
 	}
 }
 
-function getCarCategoryBlock(car: string, categoryBlocks: CategoryBlocks): CategoryBlock | undefined {
-	//print(car)
-	//local carClass = require(game.ServerStorage.Classes.VehicleSubClass:FindFirstChild(car))
-	//local carObject = carClass.new(nil)
-	//local category = carObject:GetCategory()
-	//return categoryBlocks[category]
-	const carModel = (ServerStorage as unknown as { VehicleModels: Folder }).VehicleModels.FindFirstChild(car)!;
-	const category = carModel.GetAttribute("category") as number;
-	// `category` is a 1-based Lua index into _G.CarCategorys —
-	// Globals.CarCategorys is a 0-based TS array, hence the -1.
-	return categoryBlocks[Globals.CarCategorys[category - 1]];
-}
-
 function populateScrollFrameCar(
 	player: Player,
 	inventory: Inventory,
@@ -152,60 +139,52 @@ function populateScrollFrameCar(
 	callBackFunction: ItemSelectedCallback,
 	lockedContent: string[] | undefined,
 	tab: string,
-	categoryBlocks: CategoryBlocks,
+	carBlock: CategoryBlock,
 ) {
+	// Owned and locked cars interleave in the ONE grid: the UIGridLayout sorts
+	// by LayoutOrder, which itemPopulateSpecifics sets to the trophy cost.
 	for (const car of content) {
-		const categoryBlock = getCarCategoryBlock(car, categoryBlocks);
+		const uiFrame = template.Clone();
+		uiFrame.Parent = carBlock;
+		uiFrame.MouseButton1Click.Connect(() => {
+			callBackFunction(player, car, false, inventory, uiFrame);
+		});
 
-		if (categoryBlock) {
-			const uiFrame = template.Clone();
-			uiFrame.Parent = categoryBlock;
+		populateSpecifics(uiFrame, car, player);
+	}
+
+	if (lockedContent) {
+		for (const car of lockedContent) {
+			const uiFrame = (
+				(ReplicatedStorage as unknown as { Ui: { LockedButtons: Folder } }).Ui.LockedButtons.FindFirstChild(
+					tab,
+				) as GuiButton
+			).Clone();
+			uiFrame.Parent = carBlock;
 			uiFrame.MouseButton1Click.Connect(() => {
-				callBackFunction(player, car, false, inventory, uiFrame);
+				callBackFunction(player, car, true, inventory, uiFrame);
 			});
 
 			populateSpecifics(uiFrame, car, player);
 		}
 	}
 
-	if (lockedContent) {
-		for (const car of lockedContent) {
-			const categoryBlock = getCarCategoryBlock(car, categoryBlocks);
+	const absoluteFrameSize = carBlock.AbsoluteSize;
+	const absoluteContentSize = carBlock.UIGridLayout.AbsoluteContentSize;
+	const increase = absoluteContentSize.Y / absoluteFrameSize.Y;
 
-			if (categoryBlock) {
-				const uiFrame = (
-					(ReplicatedStorage as unknown as { Ui: { LockedButtons: Folder } }).Ui.LockedButtons.FindFirstChild(
-						tab,
-					) as GuiButton
-				).Clone();
-				uiFrame.Parent = categoryBlock;
-				uiFrame.MouseButton1Click.Connect(() => {
-					callBackFunction(player, car, true, inventory, uiFrame);
-				});
-
-				populateSpecifics(uiFrame, car, player);
-			}
-		}
-	}
-
-	for (const [, categoryBlock] of pairs(categoryBlocks)) {
-		const absoluteFrameSize = categoryBlock.AbsoluteSize;
-		const absoluteContentSize = categoryBlock.UIGridLayout.AbsoluteContentSize;
-		const increase = absoluteContentSize.Y / absoluteFrameSize.Y;
-
-		categoryBlock.Size = new UDim2(
-			categoryBlock.Size.X.Scale,
-			categoryBlock.Size.X.Offset,
-			categoryBlock.Size.Y.Scale * increase,
-			categoryBlock.Size.Y.Offset,
-		);
-		categoryBlock.UIGridLayout.CellSize = new UDim2(
-			categoryBlock.UIGridLayout.CellSize.X.Scale,
-			0,
-			categoryBlock.UIGridLayout.CellSize.Y.Scale / increase,
-			0,
-		);
-	}
+	carBlock.Size = new UDim2(
+		carBlock.Size.X.Scale,
+		carBlock.Size.X.Offset,
+		carBlock.Size.Y.Scale * increase,
+		carBlock.Size.Y.Offset,
+	);
+	carBlock.UIGridLayout.CellSize = new UDim2(
+		carBlock.UIGridLayout.CellSize.X.Scale,
+		0,
+		carBlock.UIGridLayout.CellSize.Y.Scale / increase,
+		0,
+	);
 }
 
 //Module fucnctions
@@ -267,24 +246,13 @@ function TurnOnCarsMenu(player: Player, Tab: string, inventory: Inventory) {
 	carList.Visible = true;
 	inventory.Content.List.Visible = false;
 
-	const categoryBlocks: CategoryBlocks = {};
 	GeneralUtils.RemoveChildrenOfType(carList.Scroll, "GuiObject");
 
-	let j = 1;
-	for (const Category of Globals.CarCategorys) {
-		const title = (ServerStorage as unknown as { CarTitle: TextLabel }).CarTitle.Clone();
-		title.Text = Category;
-		title.Parent = carList.Scroll;
-		title.LayoutOrder = j;
-		j += 1;
-
-		const categoryBlock = (ServerStorage as unknown as { CarCategory: CategoryBlock }).CarCategory.Clone();
-		categoryBlock.Parent = carList.Scroll;
-		categoryBlock.LayoutOrder = j;
-		j += 1;
-
-		categoryBlocks[Category] = categoryBlock;
-	}
+	// Categories removed: ONE grid block holds every car, ordered by trophy
+	// cost (LayoutOrder). No CarTitle headers.
+	const carBlock = (ServerStorage as unknown as { CarCategory: CategoryBlock }).CarCategory.Clone();
+	carBlock.Parent = carList.Scroll;
+	carBlock.LayoutOrder = 1;
 
 	populateScrollFrameCar(
 		player,
@@ -297,7 +265,7 @@ function TurnOnCarsMenu(player: Player, Tab: string, inventory: Inventory) {
 		(itemSelectedFunctions as unknown as Record<string, ItemSelectedCallback>)[Tab], //button pressed callback function
 		getTabLockedContent(Tab, playerItems),
 		Tab,
-		categoryBlocks,
+		carBlock,
 	);
 }
 

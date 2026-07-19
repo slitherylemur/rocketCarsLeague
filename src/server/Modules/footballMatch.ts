@@ -13,6 +13,7 @@
 
 import ballSpawner from "./ballSpawner";
 import DataStore2 from "./DataStore2";
+import DataUtilities from "./DataUtilities";
 import { findGoalPart, mapHasGoalParts } from "./goalParts";
 // SAFE value import (no runtime cycle): MatchDirector only imports
 // `type { RoundResult }` from this module, which is erased at compile time.
@@ -94,9 +95,16 @@ const ROUND_MONEY_WIN = 500;
 const ROUND_MONEY_DRAW = 250;
 const ROUND_MONEY_GOAL = 150;
 
+// Trophies (progression currency): flat, never multiplied, never spent —
+// cars unlock at lifetime-trophy thresholds. Champions round pays double.
+const TROPHIES_ROUND_WIN = 1;
+const TROPHIES_CHAMPION_WIN = 2;
+
 // Per-round stats for the summary screen (cleared each beginRound).
 const roundGoals = new Map<Player, number>();
 const roundEarnings = new Map<Player, number>();
+const roundTrophies = new Map<Player, number>();
+const roundChampions = new Set<Player>();
 
 function setGlobalAttr(name: string, value: string | number) {
 	ReplicatedStorage.SetAttribute(name, value);
@@ -664,7 +672,16 @@ function buildSummaryColumn(parent: Frame, forPlayer: Player, subject: Player, l
 	layout.Parent = column;
 
 	const kills = subject.FindFirstChild("kills");
+	// Trophy gain is the hero row: top and biggest. "CHAMPIONS 🏆+2" makes it
+	// obvious the double trophy comes from winning the champions round.
+	const trophies = roundTrophies.get(subject) ?? 0;
+	const isChampion = roundChampions.has(subject);
 	const rows: Array<[string, string, Color3]> = [
+		[
+			"Trophy",
+			isChampion ? `CHAMPIONS 🏆+${trophies}` : `🏆 +${trophies}`,
+			trophies > 0 ? Color3.fromRGB(255, 215, 0) : Color3.fromRGB(150, 150, 150),
+		],
 		["Name", isSelf ? "YOU" : subject.Name, new Color3(1, 1, 1)],
 		["Goals", `Goals: ${roundGoals.get(subject) ?? 0}`, Color3.fromRGB(255, 220, 120)],
 		["Kills", `Kills: ${kills && kills.IsA("NumberValue") ? kills.Value : 0}`, Color3.fromRGB(255, 140, 120)],
@@ -679,7 +696,11 @@ function buildSummaryColumn(parent: Frame, forPlayer: Player, subject: Player, l
 		label.TextScaled = true;
 		label.TextColor3 = rows[i][2];
 		label.Text = rows[i][1];
-		label.Size = new UDim2(0.9, 0, i === 0 ? 0.2 : 0.14, 0);
+		label.Size = new UDim2(0.9, 0, i === 0 ? 0.28 : i === 1 ? 0.18 : 0.12, 0);
+		if (i === 0 && isChampion) {
+			label.TextStrokeTransparency = 0;
+			label.TextStrokeColor3 = Color3.fromRGB(90, 60, 0);
+		}
 		label.Parent = column;
 	}
 	column.Parent = parent;
@@ -777,6 +798,43 @@ const footballMatch = {
 			}
 		}
 		return out;
+	},
+
+	/** Trophy grants for the (just-ended) round — call AFTER applyMovement so
+	 * coin-flipped draws have been resolved to wins in `results`, and BEFORE
+	 * showRoundSummary so the summary shows the fresh amounts. Winners bank
+	 * 🏆+1; the champions-round winner (session-final round, position 0 after
+	 * movement) banks 🏆+2. Flat amounts: no multiplier pipeline, never spent. */
+	awardRoundTrophies(results: RoundResult[], isChampionRound: boolean) {
+		const winningTeamIds = new Set<string>();
+		for (const result of results) {
+			if (result.outcome === "win") {
+				winningTeamIds.add(result.teamId);
+			}
+		}
+		let championTeamId: string | undefined;
+		if (isChampionRound) {
+			const champion = TeamRegistry.getTeams()[0];
+			if (champion !== undefined && champion.position === 0) {
+				championTeamId = champion.id;
+			}
+		}
+		for (const team of TeamRegistry.getTeams()) {
+			if (!winningTeamIds.has(team.id)) {
+				continue;
+			}
+			const isChampion = team.id === championTeamId;
+			const amount = isChampion ? TROPHIES_CHAMPION_WIN : TROPHIES_ROUND_WIN;
+			for (const member of team.members) {
+				pcall(() => {
+					DataUtilities.AddTrophies(member, amount);
+					roundTrophies.set(member, amount);
+					if (isChampion) {
+						roundChampions.add(member);
+					}
+				});
+			}
+		}
 	},
 
 	/** Gold-pitch scores (live, or the end-of-round snapshot after stop()). */
@@ -1009,6 +1067,8 @@ const footballMatch = {
 		endCallback = onRoundEnd;
 		roundGoals.clear();
 		roundEarnings.clear();
+		roundTrophies.clear();
+		roundChampions.clear();
 		timeLeft = MATCH_TIME;
 		setGlobalAttr(FootballAttr.TimeLeft, timeLeft);
 		// Session round counter for the HUD ("Round N/6" under the clock).

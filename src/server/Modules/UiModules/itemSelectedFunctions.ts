@@ -4,6 +4,7 @@
 import spawnVehicle from "../spawnVehicle";
 import DataUtilities from "../DataUtilities";
 import GeneralUtils from "../../GeneralUtils";
+import { getCarTrophyCost } from "../carTrophyCosts";
 import { Globals } from "../../Globals";
 import { CASH_PURCHACE_MENU_OPEN_SIZE } from "../../ui/uiConstants";
 import type { VehicleModel } from "../../Classes/VehicleClass";
@@ -19,7 +20,7 @@ const unselectedColor = new Color3(0, 0, 0); //Change in itemPopulateSpecifics a
 // setTab passes it as scrollFrame.Parent.Parent.Parent.Parent.Parent.
 interface MainUi extends Frame {
 	BuyButton: Frame & {
-		Button: TextButton & { Price: TextLabel };
+		Button: TextButton & { Price: TextLabel; TextLabel: TextLabel };
 		// BindableEvent child of the BuyButton frame (fired by the console
 		// client behavior)
 		BuyButtonConsole: BindableEvent;
@@ -36,7 +37,6 @@ function SetTeamNameStripVisible(mainUI: MainUi, visible: boolean) {
 
 interface CashPurchaceMenu extends Frame {
 	cash: Frame;
-	multipliers: Frame;
 }
 
 interface CashPurchaceOption extends ImageLabel {
@@ -77,31 +77,25 @@ function SelectUiFrame(uiFrame: GuiObject, parent: Instance) {
 	uiFrame.BackgroundColor3 = selectedColor;
 }
 
-function BuyButtonPressed(
-	player: Player,
-	price: number,
-	DataStoreName: string,
-	Item: string,
-	EqquipedDS: string | undefined,
-	mainUI: MainUi,
-) {
-	if (DataUtilities.PlayerCanAfford(player, price)) {
-		DataUtilities.PurchaceItem(player, price, DataStoreName, Item, EqquipedDS);
+// Trophy unlock button (progression rework): cars are gated by LIFETIME
+// trophy count — meeting the threshold unlocks the car for FREE (trophies are
+// never spent). Green when unlockable, grey when the player is short; a short
+// player's click does nothing (no cash-purchase fallback — cash can't buy cars).
+const UNLOCK_AFFORDABLE_COLOR = Color3.fromRGB(60, 200, 90);
+const UNLOCK_LOCKED_COLOR = Color3.fromRGB(110, 110, 110);
+
+function UnlockButtonPressed(player: Player, cost: number, Item: string, mainUI: MainUi) {
+	// Server-side re-check at click time — the threshold may have been met
+	// since the button was drawn (or a stale green button clicked after data
+	// changed elsewhere).
+	if (DataUtilities.GetTrophies(player) >= cost) {
+		DataUtilities.GivePlayerItem(player, "vehicles", Item);
+		DataUtilities.EquipItemIfOwned(player, Item, "equippedVehicle", "vehicles");
 		EnableSpawnButton(mainUI);
-	} else {
-		selectedFunctions.openCashPurchaceMenu(player);
-		//Open Money Purchace Ui
 	}
 }
 
-function SetupBuyButton(
-	mainUI: MainUi,
-	price: number,
-	player: Player,
-	DataStoreName: string,
-	Item: string,
-	EqquipedDS: string | undefined,
-) {
+function SetupUnlockButton(mainUI: MainUi, cost: number, player: Player, Item: string) {
 	mainUI.BuyButton.Visible = true;
 	mainUI.SpawnButton.Visible = false;
 	SetTeamNameStripVisible(mainUI, false);
@@ -110,12 +104,16 @@ function SetupBuyButton(
 		buyConnections.get(player)!.Disconnect();
 		buyConnections.delete(player);
 	}
-	mainUI.BuyButton.Button.Price.Text = `$${GeneralUtils.CommaNumber(price)}`;
+	const button = mainUI.BuyButton.Button;
+	button.TextLabel.Text = "UNLOCK";
+	button.Price.Text = `🏆 ${GeneralUtils.CommaNumber(cost)}`;
+	button.BackgroundColor3 =
+		DataUtilities.GetTrophies(player) >= cost ? UNLOCK_AFFORDABLE_COLOR : UNLOCK_LOCKED_COLOR;
 
 	buyConnections.set(
 		player,
-		mainUI.BuyButton.Button.MouseButton1Click.Connect(() => {
-			BuyButtonPressed(player, price, DataStoreName, Item, EqquipedDS, mainUI);
+		button.MouseButton1Click.Connect(() => {
+			UnlockButtonPressed(player, cost, Item, mainUI);
 		}),
 	);
 
@@ -127,7 +125,7 @@ function SetupBuyButton(
 	buyConnectionsConsole.set(
 		player,
 		mainUI.BuyButton.BuyButtonConsole.Event.Connect(() => {
-			BuyButtonPressed(player, price, DataStoreName, Item, EqquipedDS, mainUI);
+			UnlockButtonPressed(player, cost, Item, mainUI);
 		}),
 	);
 }
@@ -177,14 +175,6 @@ const selectedFunctions = {
 			}
 		}
 
-		for (const multiplierPurchaceUi of cashPurchaceMenu.multipliers.GetChildren()) {
-			if (multiplierPurchaceUi.IsA("ImageLabel")) {
-				(multiplierPurchaceUi as CashPurchaceOption).buy.MouseButton1Click.Connect(() => {
-					const productId = (multiplierPurchaceUi as CashPurchaceOption).ID.Value;
-					MarketplaceService.PromptProductPurchase(player, productId);
-				});
-			}
-		}
 	},
 
 	Body: (player: Player, Value: string, locked: boolean, mainUI: MainUi, uiFrame: GuiObject) => {
@@ -192,13 +182,10 @@ const selectedFunctions = {
 		if (locked) {
 			//local carClass = require(game.ServerStorage.Classes.VehicleSubClass:FindFirstChild(Value)).new()
 
-			const carModel = (ServerStorage as unknown as { VehicleModels: Folder }).VehicleModels.FindFirstChild(
-				Value,
-			)!;
-			const price = carModel.GetAttribute("cost") as number;
+			const cost = getCarTrophyCost(Value);
 			spawnVehicle.SpawnVehicle(player, false, Value, playerGarage!.spawnPlate.CFrame, true);
 
-			SetupBuyButton(mainUI, price, player, "vehicles", Value, "equippedVehicle");
+			SetupUnlockButton(mainUI, cost, player, Value);
 		} else {
 			spawnVehicle.SpawnVehicle(player, false, Value, playerGarage!.spawnPlate.CFrame, true);
 			EnableSpawnButton(mainUI);

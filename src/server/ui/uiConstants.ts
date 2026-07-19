@@ -5,5 +5,6 @@
 
 // PlayerGui.Garage.cashPurchace open Size — itemSelectedFunctions (and an
 // unused local in initializePlayer) read game.StarterGui.Garage.cashPurchace.Size
-// as the open-tween target. Exact serialized value from the place file.
-export const CASH_PURCHACE_MENU_OPEN_SIZE = new UDim2(0.660000026, 0, 0.699999988, 0);
+// as the open-tween target. Must match the cashPurchace frame Size in
+// GarageGui.tsx (shrunk when the multiplier tiles were removed).
+export const CASH_PURCHACE_MENU_OPEN_SIZE = new UDim2(0.660000026, 0, 0.449999988, 0);

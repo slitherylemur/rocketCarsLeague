@@ -12,6 +12,9 @@ import { COLLISION_GROUPS } from "shared/collisionGroups";
 
 const RunService = game.GetService("RunService");
 
+const PROTECTION_WALL_NAME = "PartWallForBallProtection";
+const SAFETY_CHECK_INTERVAL = 0.2;
+
 const spawner = {} as {
 	SpawnBall: (map: Instance) => void;
 	DestroyBall: (map?: Instance) => void;
@@ -28,6 +31,24 @@ const spawner = {} as {
 let currentMap: Instance | undefined;
 // Multi-pitch: one live ball per map/pitch.
 const ballByMap = new Map<Instance, BasePart>();
+const recoveringMaps = new Set<Instance>();
+
+function configureProtectionWalls(map: Instance) {
+	const wall = map.FindFirstChild(PROTECTION_WALL_NAME, true);
+	if (wall === undefined) {
+		warn(`[BallSpawner] ${map.Name} has no ${PROTECTION_WALL_NAME}`);
+		return;
+	}
+	for (const descendant of wall.GetDescendants()) {
+		if (descendant.IsA("BasePart")) {
+			descendant.Anchored = true;
+			descendant.CanCollide = true;
+			descendant.CanQuery = true;
+			descendant.CanTouch = false;
+			descendant.CollisionGroup = COLLISION_GROUPS.BallProtectionWall;
+		}
+	}
+}
 
 // Same rationale as spawnVehicle.markPredictable: client-side On alone left
 // vehicles Authoritative, so the server marks the whole assembly On at spawn.
@@ -131,6 +152,7 @@ spawner.DestroyBall = (map?: Instance) => {
 
 spawner.SpawnBall = (map: Instance) => {
 	spawner.DestroyBall(map);
+	configureProtectionWalls(map);
 	// Prune balls whose pitch was torn down (round reload).
 	for (const [ownerMap, ball] of ballByMap) {
 		if (ownerMap.Parent === undefined) {
@@ -227,5 +249,50 @@ spawner.RespawnBall = (map?: Instance) => {
 	spawner.SpawnBall(target);
 	return true;
 };
+
+// Server-only escape recovery. Converting the ball centre into GroundPart's
+// object space tests the oriented rectangle described by its four corners,
+// rather than assuming the pitch is aligned to the world axes.
+let safetyAccumulator = 0;
+RunService.Heartbeat.Connect((dt) => {
+	safetyAccumulator += dt;
+	if (safetyAccumulator < SAFETY_CHECK_INTERVAL) {
+		return;
+	}
+	safetyAccumulator = 0;
+
+	for (const [map, ball] of ballByMap) {
+		if (recoveringMaps.has(map) || map.Parent === undefined || ball.Parent === undefined) {
+			continue;
+		}
+		const ground = findGroundPart(map);
+		if (ground === undefined) {
+			continue;
+		}
+
+		const localPosition = ground.CFrame.PointToObjectSpace(ball.Position);
+		const half = ground.Size.div(2);
+		const outsideFootprint = math.abs(localPosition.X) > half.X || math.abs(localPosition.Z) > half.Z;
+		const belowGround = localPosition.Y < half.Y;
+		if (!outsideFootprint && !belowGround) {
+			continue;
+		}
+
+		const wasReleased = !ball.Anchored;
+		recoveringMaps.add(map);
+		warn(
+			`[BallSpawner] recovering escaped ball on ${map.Name} (outside=${outsideFootprint}, below=${belowGround})`,
+		);
+		task.defer(() => {
+			if (map.Parent !== undefined) {
+				spawner.SpawnBall(map);
+				if (wasReleased) {
+					spawner.ReleaseBall(map);
+				}
+			}
+			recoveringMaps.delete(map);
+		});
+	}
+});
 
 export = spawner;

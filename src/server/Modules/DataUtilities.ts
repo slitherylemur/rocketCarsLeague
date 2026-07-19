@@ -70,6 +70,15 @@ const DataUtilities = {
 		return (playerMoneyDS.Get(DSDefaults["money"]) as number) >= price;
 	},
 
+	GetTrophies(player: Player): number {
+		return DataStore2("trophies", player).Get(DSDefaults["trophies"]) as number;
+	},
+
+	AddTrophies(player: Player, amount: number) {
+		DataStore2("trophies", player).Increment(amount, DSDefaults["trophies"] as number);
+		DataStore2.SaveAll(player);
+	},
+
 	PurchaceItem(player: Player, price: number, ItemType: string, Item: string, equippedDS?: string) {
 		const playerItemsDS = DataStore2(ItemType, player);
 		const playerItems = playerItemsDS.Get(DSDefaults[ItemType]) as defined[];

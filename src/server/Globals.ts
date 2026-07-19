@@ -12,7 +12,7 @@
 //                              calculateMultMoney, getPlayerIcon
 //   initializePlayer.lua    -> CrateNames, PlayerJoinedTimes, findEmptyGarage,
 //                              findPlayerGarage, addPlayerToGarage, clearPlayerGarage,
-//                              openCrateMenu, showMultiplier, SpawnInPlayer
+//                              openCrateMenu, SpawnInPlayer
 //   tutorial.lua            -> CrateTutorial
 
 import type { VehicleClass } from "./Classes/VehicleClass";
@@ -54,7 +54,6 @@ interface GlobalsTable {
 	addPlayerToGarage: (player: Player) => PlayerGarage;
 	clearPlayerGarage: (player: Player) => void;
 	openCrateMenu: (player: Player, crateName: number) => void;
-	showMultiplier: (player: Player) => void;
 	SpawnInPlayer: (player: Player) => boolean;
 
 	// tutorial.lua

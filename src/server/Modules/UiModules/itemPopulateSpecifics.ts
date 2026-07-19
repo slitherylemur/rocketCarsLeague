@@ -3,6 +3,7 @@
 //variables
 import GeneralUtils from "../../GeneralUtils";
 import DataUtilities from "../DataUtilities";
+import { getCarTrophyCost } from "../carTrophyCosts";
 import requireModule from "shared/requireModule";
 import type { VehicleSubClassModule } from "../../Classes/VehicleSubClass/subClassTypes";
 
@@ -66,14 +67,13 @@ const populateSpecifics = {
 			uiFrame.Txt.Text = carClass.displayName;
 			model.Parent = uiFrame.ViewportFrame;
 
-			const cost = carModel.GetAttribute("cost") as number;
+			// Trophy threshold (progression rework): sorts the flat car list
+			// ascending and shows 🏆N bottom-right on locked tiles.
+			const cost = getCarTrophyCost(Value);
 			uiFrame.LayoutOrder = cost;
 
 			if (uiFrame.FindFirstChild("Price")) {
-				//	print(carClass)
-				//	print(carClass:GetCost())
-
-				uiFrame.Price.Text = `$${GeneralUtils.CommaNumber(cost)}`;
+				uiFrame.Price.Text = cost === 0 ? "FREE" : `🏆${GeneralUtils.CommaNumber(cost)}`;
 			}
 		}
 	},

@@ -15,6 +15,7 @@ export type MultiplierEntry = [number, number];
 
 export interface DataStoreDefaultsType {
 	money: number;
+	trophies: number;
 	wins: number;
 	kills: number;
 	deaths: number;

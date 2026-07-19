@@ -12,6 +12,8 @@ export const COLLISION_GROUPS = {
 	VehicleWheels: "VehicleWheels",
 	/** The game ball: collides with the world and car Hitboxes ONLY. */
 	GameBall: "GameBall",
+	/** Invisible pitch walls queried by BallSim but ignored by cars and players. */
+	BallProtectionWall: "BallProtectionWall",
 	/**
 	 * Car Hitboxes parts (damageBlock): the ball's physical contact surface
 	 * (big smooth box = predictable bounces) and the damage query volume.

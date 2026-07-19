@@ -2,10 +2,10 @@
 
 import DataUtilities from "./DataUtilities";
 import DataStore2 from "./DataStore2";
-import DSDefaultValues from "./DataStoreDefaults";
 import spawnVehicle from "./spawnVehicle";
 import ballSpawner from "./ballSpawner";
 import footballMatch from "./footballMatch";
+import type { RoundResult } from "./footballMatch";
 import PitchManager from "./PitchManager";
 import TeamRegistry from "./TeamRegistry";
 import MatchDirector from "./MatchDirector";
@@ -15,7 +15,6 @@ import { Globals } from "../Globals";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import { StarterGuiState } from "../ui/StarterGuiState";
 import LadderMapScreen from "../ui/LadderMapScreen";
-import type { MultiplierEntry } from "./dataTypes";
 import type { VehicleSubClassModule } from "../Classes/VehicleSubClass/subClassTypes";
 
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
@@ -125,25 +124,6 @@ Globals.calculateMultMoney = (player: Player, amount: number): number => {
 		amount = amount * VIP_MULTIPLIER;
 	}
 
-	const playerMultDS = DataStore2("multipliers", player);
-	const MultTable = playerMultDS.Get(DSDefaultValues.multipliers) as MultiplierEntry[];
-
-	let mult = 0;
-	for (const [i, v] of ipairs(MultTable)) {
-		if (v[1] > os.time()) {
-			mult += v[0];
-		} else {
-			// table.remove during iteration — preserved (Array.remove is the
-			// 0-based wrapper of table.remove, i here is the 1-based runtime index)
-			MultTable.remove(i - 1);
-			playerMultDS.Set(MultTable);
-		}
-	}
-
-	if (mult > 1) {
-		amount *= mult;
-	}
-
 	return math.round(amount);
 };
 
@@ -247,11 +227,27 @@ handler.endRound = () => {
 		// — so startRound() pairs the NEW table order onto the rebuilt pitches.
 		warn("[Round] ladder movement");
 		let movement: MovementReport | undefined;
+		let results: RoundResult[] | undefined;
 		const [moveOk, moveErr] = pcall(() => {
-			movement = MatchDirector.applyMovement(footballMatch.getRoundResults());
+			results = footballMatch.getRoundResults();
+			movement = MatchDirector.applyMovement(results);
 		});
 		if (!moveOk) {
 			warn(`[Round] ladder movement FAILED: ${moveErr}`);
+		}
+		// Trophies AFTER movement (coin-flipped draws are already resolved to
+		// wins in `results`) and BEFORE the summary so it shows fresh gains.
+		// isSessionEnd() is already true here on the final round — its winner
+		// is the champions round winner and banks the doubled trophies.
+		if (results !== undefined) {
+			warn("[Round] trophy awards");
+			const roundResults = results;
+			const [trophyOk, trophyErr] = pcall(() =>
+				footballMatch.awardRoundTrophies(roundResults, MatchDirector.isSessionEnd()),
+			);
+			if (!trophyOk) {
+				warn(`[Round] trophy awards FAILED: ${trophyErr}`);
+			}
 		}
 		// Winners posed on the lineup, camera on the goal shot, winner text /
 		// coin-flip presentation on drawn pitches (~5 s), then the ladder map
