@@ -14,7 +14,73 @@
 import { BALL_NAME, ballTunables } from "shared/ballSim/BallConfig";
 
 const RunService = game.GetService("RunService");
+const ReplicatedStorage = game.GetService("ReplicatedStorage");
 const TweenService = game.GetService("TweenService");
+
+const SOCCER_BALL_MESH_NAME = "SoccerBallMesh";
+
+interface BallVisual {
+	instance: BasePart | Model;
+	setCFrame: (cframe: CFrame) => void;
+	setSize: (size: Vector3) => void;
+}
+
+function makeVisualOnly(instance: Instance) {
+	const candidates = [instance, ...instance.GetDescendants()];
+	for (const candidate of candidates) {
+		if (candidate.IsA("BasePart")) {
+			candidate.Anchored = false;
+			candidate.CanCollide = false;
+			candidate.CanQuery = false;
+			candidate.CanTouch = false;
+			candidate.Massless = true;
+		}
+	}
+}
+
+function createBallVisual(ballSize: Vector3, cframe: CFrame): BallVisual | undefined {
+	const template = ReplicatedStorage.FindFirstChild(SOCCER_BALL_MESH_NAME);
+	if (template === undefined || (!template.IsA("BasePart") && !template.IsA("Model"))) {
+		warn(`[BallRenderer] ReplicatedStorage.${SOCCER_BALL_MESH_NAME} must be a BasePart or Model`);
+		return undefined;
+	}
+
+	if (template.IsA("BasePart")) {
+		const mesh = template.Clone();
+		mesh.Name = `${BALL_NAME}MeshRenderer`;
+		makeVisualOnly(mesh);
+		mesh.Size = ballSize;
+		mesh.CFrame = cframe;
+		mesh.Parent = game.Workspace;
+		return {
+			instance: mesh,
+			setCFrame: (nextCFrame) => (mesh.CFrame = nextCFrame),
+			setSize: (size) => (mesh.Size = size),
+		};
+	}
+
+	const model = template.Clone();
+	model.Name = `${BALL_NAME}MeshRenderer`;
+	makeVisualOnly(model);
+	model.Parent = game.Workspace;
+
+	const setSize = (size: Vector3) => {
+		const extents = model.GetExtentsSize();
+		const currentDiameter = math.max(extents.X, extents.Y, extents.Z);
+		if (currentDiameter > 0) {
+			model.ScaleTo(model.GetScale() * (size.X / currentDiameter));
+		}
+	};
+	const setCFrame = (nextCFrame: CFrame) => {
+		// Align the model's visible bounding-box centre, rather than relying on
+		// an authored pivot that may be offset from the mesh geometry.
+		const [boundsCFrame] = model.GetBoundingBox();
+		model.PivotTo(nextCFrame.mul(boundsCFrame.Inverse()).mul(model.GetPivot()));
+	};
+	setSize(ballSize);
+	setCFrame(cframe);
+	return { instance: model, setCFrame, setSize };
+}
 
 function setupBall(ball: BasePart) {
 	// The server already marks the ball On; re-assert locally the same way
@@ -39,8 +105,16 @@ function setupBall(ball: BasePart) {
 	renderer.Massless = true;
 	renderer.CFrame = ball.CFrame;
 	renderer.Parent = game.Workspace;
+	// The original sphere remains as the smoothing proxy, but only the cloned
+	// soccer-ball asset is rendered.
+	renderer.Transparency = 1;
+	const ballVisual = createBallVisual(ball.Size, renderer.CFrame);
 
 	ball.LocalTransparencyModifier = 1;
+	const sizeConn = ball.GetPropertyChangedSignal("Size").Connect(() => {
+		renderer.Size = ball.Size;
+		ballVisual?.setSize(ball.Size);
+	});
 
 	let smoothing = false;
 	let smoothVelocity = new Vector3();
@@ -74,6 +148,8 @@ function setupBall(ball: BasePart) {
 		} else {
 			renderer.CFrame = simCF;
 		}
+
+		ballVisual?.setCFrame(renderer.CFrame);
 	});
 
 	let cleaned = false;
@@ -83,6 +159,8 @@ function setupBall(ball: BasePart) {
 		}
 		cleaned = true;
 		renderConn.Disconnect();
+		sizeConn.Disconnect();
+		ballVisual?.instance.Destroy();
 		renderer.Destroy();
 	};
 	ball.Destroying.Connect(cleanup);

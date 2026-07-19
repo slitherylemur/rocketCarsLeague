@@ -101,6 +101,11 @@ function refreshRound() {
 	if (!hud) {
 		return;
 	}
+	const pitch = currentPitch();
+	if (attrStringOn(pitch, ATTR_PHASE) === "FreePlay") {
+		hud.TopBar.Center.Round.Text = "FREEPLAY";
+		return;
+	}
 	const round = attrNumberOn(ReplicatedStorage, ATTR_ROUND);
 	const roundMax = attrNumberOn(ReplicatedStorage, ATTR_ROUND_MAX);
 	hud.TopBar.Center.Round.Text = round > 0 && roundMax > 0 ? `Round ${round}/${roundMax}` : "";

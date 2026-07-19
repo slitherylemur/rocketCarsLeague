@@ -73,17 +73,17 @@ export interface BallTunables {
 }
 
 export const ballTunables: BallTunables = {
-	size: 26,
+	size: 20,
 	gravityScale: 0.55,
 	drag: 0.1,
 	rollFriction: 0.6,
 	restSpeed: 4,
 	maxSpeed: 300,
 	worldBounce: 0.6,
-	worldFriction: 0.15,
+	worldFriction: 0.25,
 	carBounce: 0.5,
 	hitPower: 1.2,
-	hitVerticalScale: 0.35,
+	hitVerticalScale: 0.1,
 	hitCooldown: 0.15,
 	smoothEngageDistance: 2,
 	smoothReleaseDistance: 0.5,

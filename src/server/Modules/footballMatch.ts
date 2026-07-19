@@ -44,6 +44,7 @@ const RESPAWN_DELAY = 1.5;
 const RESPAWN_LOCK = 5;
 const GOAL_PAUSE = 2.5;
 const END_ANNOUNCE_TIME = 2;
+const FREE_PLAY_INTRO_TIME = 1.8;
 
 const BLUE_HEX = "#4FA8FF";
 const RED_HEX = "#FF5050";
@@ -202,6 +203,7 @@ class PitchMatch {
 	readonly sideByTeamId = new Map<string, TeamName>();
 	readonly goalParts = new Map<TeamName, BasePart>();
 	flowGen = 0;
+	private shownFreePlayIntro = false;
 
 	constructor(pitch: Pitch) {
 		this.pitch = pitch;
@@ -441,9 +443,20 @@ class PitchMatch {
 	 * (or the shared whistle blows). Used by BOTH the muckabout pitch and a
 	 * real pitch whose opponent hasn't arrived yet. */
 	enterFreePlay(resetBall: boolean) {
-		this.flowGen += 1;
+		const gen = ++this.flowGen;
+		const localMatchGen = matchGen;
 		this.setPhase("FreePlay");
-		this.announce(this.muckabout ? "FREE PLAY!" : "FREE PLAY — waiting for an opponent");
+		if (!this.shownFreePlayIntro) {
+			this.shownFreePlayIntro = true;
+			this.announce(this.muckabout ? "FREE PLAY!" : "FREE PLAY — waiting for an opponent");
+			task.delay(FREE_PLAY_INTRO_TIME, () => {
+				if (this.flowGen === gen && matchGen === localMatchGen && this.phase === "FreePlay") {
+					this.announce("");
+				}
+			});
+		} else {
+			this.announce("");
+		}
 		if (resetBall) {
 			ballSpawner.RespawnBall(this.pitch.folder);
 		}
