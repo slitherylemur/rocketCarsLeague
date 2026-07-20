@@ -37,7 +37,7 @@ const DRIVE_FORCE_MULT = 1.25; // overall engine force, forward and reverse
 // on). 0.8 drops the default car 150 → 120: the old non-boost top read as
 // "already boost speed" and left boost feeling like nothing.
 const TARGET_VELOCITY_SCALE = 0.8;
-const BOOST_FORCE_MULT = 3; // boost punch on the ground (baseline 3)
+const BOOST_FORCE_MULT = 4; // boost punch on the ground (baseline 3; raised for a snappier kick off the cruise cap)
 const BOOST_AIR_FORCE_MULT = 4.5; // boost authority in the air — nose-up boosting sustains airtime
 // Boost top speed as a multiple of (scaled) targetVelocity. 2.0 with the 0.8
 // scale keeps the boost ceiling at the old 1.6 × 150 = 240 while doubling the
@@ -70,10 +70,16 @@ const TURN_RADIUS_MULT = 0.8; // global tightening of the Ackermann turn circle 
 // spin-out: hold a turn at speed, the yaw servo rotates the nose faster than
 // the velocity direction can follow, the slip angle grows and the rear lets
 // go — so the EFFECTIVE turn radius is floored at v²/this. Quadratic in
-// speed: no effect below ~100 studs/s, mild at the 120 top speed, and
+// speed: no effect below ~110 studs/s, barely at the 120 top speed, and
 // progressively wider (but spin-free) at boost speeds. Applied to the yaw
-// servo AND the Ackermann wheel angles so they always agree.
-const MAX_TURN_LATERAL_ACCEL = 220;
+// servo AND the Ackermann wheel angles so they always agree. Slightly above
+// the raw μg because the yaw servo actively damps the incipient slide (220
+// felt too conservative; the spin-out demanded ~470).
+const MAX_TURN_LATERAL_ACCEL = 270;
+// While DRIFTING the point is a controlled slide — the drift yaw mover and
+// sliding wheel friction own stability, not the tyre grip budget — so the
+// friction-circle floor loosens to this and the wheels keep steering tight.
+const DRIFT_MAX_TURN_LATERAL_ACCEL = 550;
 // Overspeed brake: how hard the drive servo pulls the car back DOWN to its
 // target speed once it is above it (post-boost decay, mostly). A multiple of
 // forceAtt, so decel ≈ mult × acceleration — 2 gives ~125 studs/s²: firm
@@ -1265,8 +1271,13 @@ function turnWheels(entry: SimEntry, throttle: number, steerFloat: number, onGro
 	turnRadius *= TURN_RADIUS_MULT;
 
 	// Friction-circle floor on the turn radius (see MAX_TURN_LATERAL_ACCEL).
+	// drift() above has already decided DriftEngaged for this tick, so the
+	// looser drift budget applies exactly while the slide is live.
 	const speed = math.abs(entry.velocity);
-	const gripRadius = (speed * speed) / MAX_TURN_LATERAL_ACCEL;
+	const latAccelLimit = attrBool(entry.base, VehicleAttr.DriftEngaged)
+		? DRIFT_MAX_TURN_LATERAL_ACCEL
+		: MAX_TURN_LATERAL_ACCEL;
+	const gripRadius = (speed * speed) / latAccelLimit;
 	if (gripRadius > turnRadius) {
 		turnRadius = gripRadius;
 	}

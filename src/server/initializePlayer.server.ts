@@ -531,7 +531,7 @@ function OpenInventory(player: Player) {
 }
 
 interface LandingGuiShape extends ScreenGui {
-	Panel: Frame & { JoinTeam: TextButton; CreateTeam: TextButton; Cars: TextButton };
+	Panel: Frame & { Buttons: Frame & { JoinTeam: TextButton; CreateTeam: TextButton; Cars: TextButton } };
 }
 
 /** Landing page (Top Table §5): title + Join Team / Create Team / Cars, car
@@ -557,7 +557,9 @@ function showLanding(player: Player) {
 	const playerGarage = Globals.findPlayerGarage(player);
 	const bodyCamera = playerGarage && playerGarage.Cameras.FindFirstChild("Body");
 	if (bodyCamera && bodyCamera.IsA("BasePart")) {
-		FunctionsAndEvents.SetMenuCameraCFrame.FireClient(player, bodyCamera.CFrame);
+		// Offset only the landing shot in the camera's local space.
+		const landingCamera = bodyCamera.CFrame.mul(new CFrame(-5, 1, 0));
+		FunctionsAndEvents.SetMenuCameraCFrame.FireClient(player, landingCamera, 55);
 	} else {
 		warn(`[Landing] no Body camera in garage for ${player.Name} — menu camera not aimed`);
 	}
@@ -580,7 +582,7 @@ function showLanding(player: Player) {
 
 	uiConnections.get(player)!.set(
 		"landingJoin",
-		landing.Panel.JoinTeam.MouseButton1Click.Connect(() => {
+		landing.Panel.Buttons.JoinTeam.MouseButton1Click.Connect(() => {
 			TeamRegistry.joinRandom(player);
 			landing.Enabled = false;
 			spawnIntoMatch(player);
@@ -588,7 +590,7 @@ function showLanding(player: Player) {
 	);
 	uiConnections.get(player)!.set(
 		"landingCreate",
-		landing.Panel.CreateTeam.MouseButton1Click.Connect(() => {
+		landing.Panel.Buttons.CreateTeam.MouseButton1Click.Connect(() => {
 			// Creates the (locked) team immediately, then opens the team page
 			// for invites/settings — Play there spawns in.
 			if (!TeamRegistry.getTeamOf(player)) {
@@ -600,7 +602,7 @@ function showLanding(player: Player) {
 	);
 	uiConnections.get(player)!.set(
 		"landingCars",
-		landing.Panel.Cars.MouseButton1Click.Connect(() => {
+		landing.Panel.Buttons.Cars.MouseButton1Click.Connect(() => {
 			landing.Enabled = false;
 			gui.Garage.Enabled = true;
 			const [ok, err] = pcall(() => OpenInventory(player));

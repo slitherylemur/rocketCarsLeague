@@ -266,5 +266,8 @@ FunctionsAndEvents.SetMenuCameraCFrame.OnClientEvent.Connect((...args: unknown[]
 	// camera while the menu owns it — UpdateCamera's menuActive guard keeps a
 	// late-arriving CFrame from re-forcing Scriptable mid-game.
 	cameraCFrame = args[0] as CFrame;
+	// An omitted FOV restores normal menu framing, preventing the landing shot
+	// from carrying into the garage pages.
+	cameraFOV = (args[1] as number | undefined) ?? default_CameraFOV;
 	UpdateCamera();
 });

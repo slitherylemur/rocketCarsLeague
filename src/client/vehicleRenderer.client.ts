@@ -39,6 +39,42 @@ interface TrackedCar {
 
 const tracked = new Map<Model, TrackedCar>();
 
+// ---- boost FOV kick (local car only) ----
+// Recomputed every frame from the tracked cars' attributes (never latched on
+// an event), so it recovers by itself if the car despawns or rolls back
+// mid-boost. The pre-boost FOV is captured at kick-on and restored at
+// kick-off.
+const BOOST_FOV_KICK = 6; // degrees added while boosting
+const BOOST_FOV_TWEEN_INFO = new TweenInfo(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
+let fovKickOn = false;
+let fovRestore: number | undefined;
+let fovTween: Tween | undefined;
+
+function setBoostFov(on: boolean) {
+	if (on === fovKickOn) {
+		return;
+	}
+	fovKickOn = on;
+	const camera = game.Workspace.CurrentCamera;
+	if (!camera) {
+		return;
+	}
+	if (fovTween) {
+		fovTween.Cancel();
+		fovTween = undefined;
+	}
+	let target: number;
+	if (on) {
+		fovRestore = fovRestore ?? camera.FieldOfView;
+		target = fovRestore + BOOST_FOV_KICK;
+	} else {
+		target = fovRestore ?? camera.FieldOfView;
+		fovRestore = undefined;
+	}
+	fovTween = TweenService.Create(camera, BOOST_FOV_TWEEN_INFO, { FieldOfView: target });
+	fovTween.Play();
+}
+
 function track(model: Instance) {
 	if (!model.IsA("Model")) {
 		return;
@@ -216,11 +252,20 @@ for (const child of vehiclesFolder.GetChildren()) {
 }
 
 RunService.RenderStepped.Connect(() => {
+	let localBoosting = false;
 	for (const [model, car] of tracked) {
 		if (!model.Parent || !car.base.Parent) {
 			tracked.delete(model);
 			continue;
 		}
 		pcall(() => updateCar(car));
+		if (
+			car.boostOn &&
+			attrBool(car.base, VehicleAttr.Driving) &&
+			attrNumber(model, VehicleModelAttr.OwnerUserId, 0) === LocalPlayer.UserId
+		) {
+			localBoosting = true;
+		}
 	}
+	setBoostFov(localBoosting);
 });

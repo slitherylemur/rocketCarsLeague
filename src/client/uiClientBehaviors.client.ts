@@ -16,6 +16,7 @@
 
 const UserInputService = game.GetService("UserInputService");
 const RunService = game.GetService("RunService");
+const TweenService = game.GetService("TweenService");
 const Players = game.GetService("Players");
 const LocalPlayer = Players.LocalPlayer;
 
@@ -109,6 +110,27 @@ function hoverSound(sound: Sound) {
 	});
 }
 
+// Landing buttons widen locally on hover, giving immediate feedback without
+// changing the vertical list's spacing or affecting any other menu page.
+function attachLandingBehaviors(landingGui: Instance) {
+	const buttons = waitForPath(landingGui, "Panel/Buttons");
+	const sound = landingGui.WaitForChild("HoverSound") as Sound;
+	const tweenInfo = new TweenInfo(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
+
+	for (const child of buttons.GetChildren()) {
+		if (!child.IsA("TextButton")) continue;
+
+		child.MouseEnter.Connect(() => {
+			TweenService.Create(child, tweenInfo, { Size: new UDim2(1.045, 0, 0.27, 0) }).Play();
+			sound.TimePosition = 0;
+			sound.Play();
+		});
+		child.MouseLeave.Connect(() => {
+			TweenService.Create(child, tweenInfo, { Size: new UDim2(1, 0, 0.27, 0) }).Play();
+		});
+	}
+}
+
 // ---- attachment ----------------------------------------------------------
 
 const GAME_CONTROL_BUTTONS = ["Boost", "Drift", "Horn", "Jump", "RollLeft", "RollRight"];
@@ -175,6 +197,8 @@ function onGuiAdded(child: Instance) {
 		attachGameBehaviors(child);
 	} else if (child.Name === "Garage") {
 		attachGarageBehaviors(child);
+	} else if (child.Name === "Landing") {
+		attachLandingBehaviors(child);
 	}
 }
 
