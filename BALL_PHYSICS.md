@@ -57,14 +57,16 @@ Rollback rules (same discipline as VehicleSim):
    `v *= (1 − drag·dt)` (the air die-down).
 2. **Ground probe**: a downward raycast de-penetrates the ball from the
    floor and sets `grounded`.
-3. **World sweep**: a spherecast along `v·dt` (never tunnels at any speed).
-   On approach faster than a small threshold the velocity reflects
-   instantly: into-surface speed × `worldBounce`, along-surface speed ×
-   `(1 − worldFriction)`. Slower contact just slides.
-4. **Car hits**: `GetPartBoundsInRadius` under the GameBall collision group
-   returns exactly the nearby car **Hitboxes** boxes (never body/wheels —
-   the same clean box the damage system uses). Contact normal = ball center
-   minus closest point on the box. Then:
+3. **World sweep**: a spherecast along `v·dt` (never tunnels at any speed)
+   against a **strict include list** — the ball's own pitch's
+   `STADIUM.collisionBottom`, `STADIUM.outer` and `groundPart`, nothing
+   else (no goal parts, no decor, no terrain). On approach faster than a
+   small threshold the velocity reflects instantly: into-surface speed ×
+   `worldBounce`, along-surface speed × `(1 − worldFriction)`. Slower
+   contact just slides. The ground probe uses the same include list.
+4. **Car hits**: `GetPartBoundsInRadius` over an include list holding
+   exactly every car's **Hitboxes.HitboxMain** box (never body/wheels).
+   Contact normal = ball center minus closest point on the box. Then:
    - the ball-vs-car **relative** velocity reflects with `carBounce` — so
      both the ball's incoming speed and the car's speed feed the response;
    - a Psyonix-style punch of `hitPower × closing speed` is added along
@@ -84,7 +86,7 @@ Rollback rules (same discipline as VehicleSim):
 | `restSpeed` | when the ball fully stops | 4 |
 | `maxSpeed` | ceiling (≈2.6× car top speed in RL) | 300 |
 | `worldBounce` | bounciness off map | 0.6 |
-| `worldFriction` | grip of map surfaces on bounces | 0.15 |
+| `worldFriction` | grip of map surfaces on bounces | 0.2 |
 | `carBounce` | passive bounce off cars | 0.5 |
 | `hitPower` | THE punch dial | 1.2 |
 | `hitVerticalScale` | 0 = flat shots, 1 = full lift | 0.35 |
@@ -101,6 +103,8 @@ Tuning recipe: set `maxSpeed` ≈ 2.5× car boost speed first, then raise
   the hitbox contact in one tick; at our speeds the sweep + de-penetration
   make this rare.
 - Only box hitboxes get exact closest-point contact; world contact is
-  sphere-vs-anything via spherecast (includes terrain).
-- Characters on foot are ignored by the ball entirely (excluded from the
-  world queries).
+  sphere-vs-include-list via spherecast (`STADIUM.collisionBottom`,
+  `STADIUM.outer`, `groundPart` — the ball passes through everything else,
+  including terrain and goal parts).
+- Characters on foot are ignored by the ball entirely (not on the include
+  list — nothing outside it can ever touch the ball).

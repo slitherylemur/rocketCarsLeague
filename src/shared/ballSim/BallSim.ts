@@ -15,10 +15,11 @@
 //   2. Custom gravity (gravityScale) and air drag are integrated into v.
 //   3. Ground probe (raycast down) de-penetrates the ball from the floor
 //      and flags grounded for roll friction / rest.
-//   4. World sweep: a spherecast along v*dt; on approach the velocity
-//      reflects instantly — into-surface speed × worldBounce, along-surface
-//      speed × (1 - worldFriction).
-//   5. Car hits: closest point on each nearby Hitboxes box vs ball center;
+//   4. World sweep: a spherecast along v*dt against ONLY the pitch's
+//      STADIUM.collisionBottom / STADIUM.outer / groundPart (strict include
+//      list); on approach the velocity reflects instantly — into-surface
+//      speed × worldBounce, along-surface speed × (1 - worldFriction).
+//   5. Car hits: closest point on each nearby HitboxMain box vs ball center;
 //      the contact normal is (ballCenter - hitPoint).Unit. The ball-vs-car
 //      RELATIVE velocity reflects (so both the ball's incoming speed and the
 //      car's speed matter), then a Psyonix-style extra punch of
@@ -36,7 +37,6 @@ import { BALL_NAME, BALL_FIELDS, ballTunables, ballTuneAttr } from "shared/ballS
 import { COLLISION_GROUPS } from "shared/collisionGroups";
 
 const RunService = game.GetService("RunService");
-const Players = game.GetService("Players");
 
 const IS_SERVER = RunService.IsServer();
 
@@ -95,35 +95,121 @@ function param(ball: BasePart, key: keyof typeof ballTunables): number {
 	return attrNumber(ball, ballTuneAttr(key), ballTunables[key]);
 }
 
-// World query filter: everything except the cars (hit separately via their
-// Hitboxes), the ball itself and player characters. The renderer clone is
-// CanQuery=false, so queries never see it. Running the queries under the
-// GameBall collision group additionally excludes anything the matrix says
-// the ball ignores.
+// STRICT include-list collision. The ball part is CanCollide=false, so the
+// engine resolves no contacts — these queries ARE the entire collision
+// system, and they run as FilterType.Include over exactly:
+//   - the ball's own pitch: STADIUM.collisionBottom + STADIUM.outer (the
+//     arena shell) and the pitch's groundPart (the floor);
+//   - every car's Hitboxes.HitboxMain box (the car overlap query).
+// Nothing else — goal parts, decor, detailed car bodies, wheels, player
+// characters — can ever collide with the ball.
 const worldParams = new RaycastParams();
-worldParams.FilterType = Enum.RaycastFilterType.Exclude;
+worldParams.FilterType = Enum.RaycastFilterType.Include;
 worldParams.IgnoreWater = true;
-worldParams.CollisionGroup = COLLISION_GROUPS.GameBall;
 
 const carOverlapParams = new OverlapParams();
 carOverlapParams.FilterType = Enum.RaycastFilterType.Include;
-// GameBall × Hitbox is the only colliding pair inside the Vehicles folder,
-// so this query returns exactly the hitbox parts (never body/wheels).
-carOverlapParams.CollisionGroup = COLLISION_GROUPS.GameBall;
+// HitboxMain sits in the Hitbox collision group, which collides with nothing
+// — a query running as the default group would filter it out even though it
+// is on the include list. HitboxQuery is the pseudo-group that "sees" Hitbox
+// parts (same trick as the damage GetPartsInPart in VehicleClass).
+carOverlapParams.CollisionGroup = COLLISION_GROUPS.HitboxQuery;
 
-function refreshFilters(ball: BasePart) {
-	const filter: Instance[] = [ball];
-	const vehicles = game.Workspace.FindFirstChild("Vehicles");
-	if (vehicles) {
-		filter.push(vehicles);
+const PITCH_ATTRIBUTE = "CB_PitchId";
+const STADIUM_NAME = "STADIUM";
+const STADIUM_COLLIDER_NAMES = ["collisionBottom", "outer"];
+const GROUND_PART_NAME = "groundPart";
+const HITBOX_FOLDER_NAME = "Hitboxes";
+const HITBOX_MAIN_NAME = "HitboxMain";
+
+// Per-ball cache of its pitch's world colliders (the pitch never moves, so
+// this only rebuilds when the pitch is torn down / the ball respawns).
+interface WorldFilter {
+	pitch: Instance;
+	include: Instance[];
+}
+const worldFilterByBall = new Map<BasePart, WorldFilter>();
+const missingFilterWarned = new Set<string>();
+
+function buildWorldFilter(ball: BasePart): WorldFilter | undefined {
+	const pitchId = ball.GetAttribute(PITCH_ATTRIBUTE);
+	if (!typeIs(pitchId, "string")) {
+		return undefined;
 	}
-	for (const player of Players.GetPlayers()) {
-		if (player.Character) {
-			filter.push(player.Character);
+	const mapFolder = game.Workspace.FindFirstChild("Map");
+	const pitch = mapFolder !== undefined ? mapFolder.FindFirstChild(pitchId) : undefined;
+	if (pitch === undefined) {
+		return undefined;
+	}
+	const include: Instance[] = [];
+	const stadium = pitch.FindFirstChild(STADIUM_NAME, true);
+	if (stadium !== undefined) {
+		for (const name of STADIUM_COLLIDER_NAMES) {
+			const collider = stadium.FindFirstChild(name, true);
+			if (collider !== undefined) {
+				include.push(collider);
+			}
 		}
 	}
-	worldParams.FilterDescendantsInstances = filter;
-	carOverlapParams.FilterDescendantsInstances = vehicles ? [vehicles] : [];
+	const ground = pitch.FindFirstChild(GROUND_PART_NAME, true);
+	if (ground !== undefined) {
+		include.push(ground);
+	}
+	if (include.size() < STADIUM_COLLIDER_NAMES.size() + 1 && !missingFilterWarned.has(pitchId)) {
+		missingFilterWarned.add(pitchId);
+		warn(
+			`[BallSim] pitch ${pitchId}: expected ${STADIUM_NAME}.collisionBottom/${STADIUM_NAME}.outer + ${GROUND_PART_NAME}, found ${include.size()} — ball collides with those only`,
+		);
+	}
+	if (include.size() === 0) {
+		return undefined;
+	}
+	return { pitch, include };
+}
+
+// True when the ball has a usable world filter; false = don't simulate yet
+// (e.g. the pitch hasn't replicated to this client) rather than let the ball
+// fall through a world it can't see.
+function refreshFilters(ball: BasePart): boolean {
+	let cached = worldFilterByBall.get(ball);
+	if (cached !== undefined) {
+		let valid = cached.pitch.Parent !== undefined;
+		if (valid) {
+			for (const collider of cached.include) {
+				if (!collider.IsDescendantOf(game.Workspace)) {
+					valid = false;
+					break;
+				}
+			}
+		}
+		if (!valid) {
+			worldFilterByBall.delete(ball);
+			cached = undefined;
+		}
+	}
+	if (cached === undefined) {
+		cached = buildWorldFilter(ball);
+		if (cached === undefined) {
+			return false;
+		}
+		worldFilterByBall.set(ball, cached);
+	}
+	worldParams.FilterDescendantsInstances = cached.include;
+
+	// Cars come and go every tick, so the HitboxMain list rebuilds each step.
+	const hitboxMains: Instance[] = [];
+	const vehicles = game.Workspace.FindFirstChild("Vehicles");
+	if (vehicles !== undefined) {
+		for (const model of vehicles.GetChildren()) {
+			const hitboxes = model.FindFirstChild(HITBOX_FOLDER_NAME);
+			const main = hitboxes !== undefined ? hitboxes.FindFirstChild(HITBOX_MAIN_NAME) : undefined;
+			if (main !== undefined) {
+				hitboxMains.push(main);
+			}
+		}
+	}
+	carOverlapParams.FilterDescendantsInstances = hitboxMains;
+	return true;
 }
 
 interface CarContact {
@@ -179,6 +265,12 @@ function boxContact(ball: BasePart, part: BasePart, center: Vector3, radius: num
 }
 
 function stepBall(ball: BasePart, dt: number) {
+	// No world filter yet (pitch not replicated / parts missing): freeze the
+	// sim rather than integrating gravity into a world with no floor.
+	if (!refreshFilters(ball)) {
+		return;
+	}
+
 	const now = attrNumber(ball, BallAttr.SimTime, 0) + dt;
 	ball.SetAttribute(BallAttr.SimTime, now);
 
@@ -211,8 +303,6 @@ function stepBall(ball: BasePart, dt: number) {
 	// 2. custom gravity + air drag
 	v = v.add(new Vector3(0, -gravity * gravityScale * dt, 0));
 	v = v.mul(math.max(0, 1 - drag * dt));
-
-	refreshFilters(ball);
 
 	// 3. ground probe: de-penetrate + grounded flag
 	let grounded = false;
@@ -257,14 +347,15 @@ function stepBall(ball: BasePart, dt: number) {
 		}
 	}
 
-	// 5. car hits via the Hitboxes boxes
+	// 5. car hits via the HitboxMain boxes (the overlap's include list holds
+	// exactly those parts; the name guard is belt-and-braces)
 	const nearby = game.Workspace.GetPartBoundsInRadius(position, radius, carOverlapParams);
 	let hitCar: Model | undefined; // one contact per tick — first box wins
 	for (const part of nearby) {
 		if (hitCar !== undefined) {
 			break;
 		}
-		if (part.Parent === undefined || (part.Parent.Name !== "Hitboxes" && part.Name !== "damageBlock")) {
+		if (part.Name !== HITBOX_MAIN_NAME || part.Parent === undefined) {
 			continue;
 		}
 		const contact = boxContact(ball, part, position, radius);
@@ -353,6 +444,7 @@ function tick(dt: number) {
 	for (const ball of balls) {
 		if (ball.Parent === undefined) {
 			balls.delete(ball);
+			worldFilterByBall.delete(ball);
 			continue;
 		}
 		const [ok, err] = pcall(() => stepBall(ball, dt));

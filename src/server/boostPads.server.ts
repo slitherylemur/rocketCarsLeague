@@ -3,7 +3,7 @@
 // Pitches are authored with MegaBoost / MiniBoost models (each containing
 // colorPart parts) somewhere under the pitch folder. This script watches
 // Workspace.Map for pitch clones, finds the pads, and runs the Rocket League
-// pickup rules: mini pads grant 12 boost and respawn in 4 seconds, mega pads
+// pickup rules: mini pads grant 25 boost and respawn in 4 seconds, mega pads
 // grant a full 100 and respawn in 10 seconds. There is NO passive meter
 // regen any more — pads are the only refill (VehicleSim.grantBoost).
 //
@@ -21,7 +21,9 @@ const RunService = game.GetService("RunService");
 const MEGA_NAME = "MegaBoost";
 const MINI_NAME = "MiniBoost";
 const MEGA_GRANT = 100; // full tank — Rocket League big pad
-const MINI_GRANT = 12; // Rocket League small pad
+// At the current drain rate (4 boost every 0.2 seconds), this provides about
+// 1.25 seconds of continuous boost.
+const MINI_GRANT = 25;
 const MEGA_RESPAWN = 10; // seconds — Rocket League big pad
 const MINI_RESPAWN = 4; // seconds — Rocket League small pad
 

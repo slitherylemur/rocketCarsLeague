@@ -10,14 +10,14 @@ export const COLLISION_GROUPS = {
 	Vehicle: "vehicle",
 	/** Wheel parts: collide with the world only, never with car bodies. */
 	VehicleWheels: "VehicleWheels",
-	/** The game ball: collides with the world and car Hitboxes ONLY. */
-	GameBall: "GameBall",
-	/** Invisible pitch walls queried by BallSim but ignored by cars and players. */
-	BallProtectionWall: "BallProtectionWall",
+	// (GameBall and BallProtectionWall are gone: the ball never
+	// engine-collides and BallSim's queries are strict include lists, so the
+	// ball needs no group and the invisible protection walls were deleted.)
 	/**
-	 * Car Hitboxes parts (damageBlock): the ball's physical contact surface
-	 * (big smooth box = predictable bounces) and the damage query volume.
-	 * Collides with GameBall only — never the map, never other cars.
+	 * Car Hitboxes parts (HitboxMain/damageBlock): pure query surfaces —
+	 * BallSim's include-list overlap reads HitboxMain, the damage
+	 * GetPartsInPart reads damageBlock. Engine-collides with nothing: never
+	 * the map, never cars, never the ball (which is CanCollide=false).
 	 */
 	Hitbox: "Hitbox",
 	/**

@@ -143,14 +143,16 @@ function makeWheelsUncollidable(vehicleModel: VehicleModel) {
 				//physicsService:SetPartCollisionGroup(part, "VehicleWheels")
 				part.CollisionGroup = "VehicleWheels";
 			} else if (hitboxes !== undefined && part.IsDescendantOf(hitboxes)) {
-				// Ball contact surface (initCollisionGroups.server.ts): the ball
-				// bounces off this big smooth box instead of the detailed body
-				// and wheels. CanCollide must be on for a physical contact, and
-				// the Hitbox group collides with GameBall ONLY, so this changes
-				// nothing about car-vs-car or car-vs-map behavior — and the
-				// damage GetPartsInPart (VehicleClass) ignores CanCollide.
+				// Pure query surfaces: BallSim's include-list overlap reads
+				// HitboxMain (the ball bounces off this big smooth box instead
+				// of the detailed body and wheels) and the damage
+				// GetPartsInPart reads damageBlock. The Hitbox group
+				// engine-collides with nothing (initCollisionGroups.server.ts),
+				// so car-vs-car and car-vs-map behavior is unchanged; CanQuery
+				// is what the spatial queries need.
 				part.CollisionGroup = COLLISION_GROUPS.Hitbox;
-				part.CanCollide = true;
+				part.CanCollide = false;
+				part.CanQuery = true;
 			} else {
 				//physicsService:SetPartCollisionGroup(part, "vehicle")
 				part.CollisionGroup = "vehicle";

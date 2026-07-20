@@ -32,9 +32,17 @@ const LOCAL_PLAYER = IS_SERVER ? undefined : Players.LocalPlayer;
 
 // ---- feel tuning knobs (a5318d46 baseline: 1.0 / 3 / 3 / 1.6 / uncapped / 0.01) ----
 const DRIVE_FORCE_MULT = 1.25; // overall engine force, forward and reverse
+// Global scale on every vehicle's authored targetVelocity, applied once at
+// registration (the TargetVelocity attribute is the value the whole sim runs
+// on). 0.8 drops the default car 150 → 120: the old non-boost top read as
+// "already boost speed" and left boost feeling like nothing.
+const TARGET_VELOCITY_SCALE = 0.8;
 const BOOST_FORCE_MULT = 3; // boost punch on the ground (baseline 3)
 const BOOST_AIR_FORCE_MULT = 4.5; // boost authority in the air — nose-up boosting sustains airtime
-const BOOST_TARGET_MULT = 1.6; // boost top speed as a fraction of targetVelocity
+// Boost top speed as a multiple of (scaled) targetVelocity. 2.0 with the 0.8
+// scale keeps the boost ceiling at the old 1.6 × 150 = 240 while doubling the
+// non-boost → boost gap, so a full-speed boost is unmistakable.
+const BOOST_TARGET_MULT = 2.0;
 // Drift = handbrake turn: wheels lose lateral grip so momentum keeps traveling
 // while a yaw mover whips the nose into the corner far faster than grip
 // steering allows, the engine is mostly cut and a drag force scrubs speed
@@ -54,14 +62,39 @@ const DRIFT_SPEED_SCRUB = 0.35; // handbrake drag per unit mass per stud/s of tr
 // steering implies (steer × v / turnRadius). Below that rate it assists the
 // tyres into the turn; above it (rear stepping out over a kerb, a bump, a hit)
 // it pulls the car straight — spin-outs are clamped away instead of caught late.
-const GRIP_YAW_TORQUE = 50; // yaw authority per unit total mass for the grip servo
-const TURN_RADIUS_MULT = 0.85; // global tightening of the Ackermann turn circle (1 = a5318d46 baseline)
+const GRIP_YAW_TORQUE = 80; // yaw authority per unit total mass for the grip servo (50 let occasional spin-outs through)
+const TURN_RADIUS_MULT = 0.8; // global tightening of the Ackermann turn circle (1 = a5318d46 baseline; 0.75 caused spin-outs)
+// Friction circle: holding a turn of radius r at speed v demands v²/r of
+// lateral (centripetal) acceleration from the tyres, and they can only supply
+// about μg (grip 1.2 × gravity 196.2 ≈ 235). Commanding more — the top-speed
+// spin-out: hold a turn at speed, the yaw servo rotates the nose faster than
+// the velocity direction can follow, the slip angle grows and the rear lets
+// go — so the EFFECTIVE turn radius is floored at v²/this. Quadratic in
+// speed: no effect below ~100 studs/s, mild at the 120 top speed, and
+// progressively wider (but spin-free) at boost speeds. Applied to the yaw
+// servo AND the Ackermann wheel angles so they always agree.
+const MAX_TURN_LATERAL_ACCEL = 220;
+// Overspeed brake: how hard the drive servo pulls the car back DOWN to its
+// target speed once it is above it (post-boost decay, mostly). A multiple of
+// forceAtt, so decel ≈ mult × acceleration — 2 gives ~125 studs/s²: firm
+// enough that a 240 boost top speed is back under the 150 cap in ~0.7s, but
+// still a smooth bleed, not a snap. Grounded only — airborne overspeed keeps
+// the old gentle 1× so jump/boost flight momentum isn't eaten mid-air.
+const OVERSPEED_BRAKE_MULT = 2;
 // Wheel grip defaults (per-vehicle tunable). Normal grip raised 0.75 → 1.2:
 // cars were skidding out of grip turns at speed.
 const DRIVE_WHEEL_FRICTION = 1.2;
 const DRIFT_WHEEL_FRICTION = 0.15; // wheel friction while sliding; normal grip is restored on release
-const JUMP_FORCE_TIME = 0.18; // seconds the jump force stays on (default; per-vehicle tunable)
-const JUMP_FORCE_GRAVITY_MULT = 4; // jump force as a multiple of gravity; net upward accel = (mult - 1) × g (default; per-vehicle tunable)
+const JUMP_FORCE_TIME = 0.16; // seconds the jump force stays on (default; per-vehicle tunable; 0.18 felt a touch long)
+// Jump force as a multiple of gravity; net accel along the launch dir during
+// the window ≈ (mult - 1) × g (default; per-vehicle tunable). Jump height
+// scales as m + m² with m = mult - 1 (window rise ∝ m, ballistic apex ∝ m²):
+// 4 gave ~38 studs on flat ground; 3.37 (m ≈ 2.37) is ⅔ of that.
+const JUMP_FORCE_GRAVITY_MULT = 3.37;
+// The jump fires along the floor normal under the car (side ramps launch you
+// laterally), clamped to this tilt from vertical; ray miss / wall / ceiling
+// normals fall back to straight up.
+const JUMP_MAX_TILT = math.rad(60);
 const JUMP_DEBOUNCE_TIME = 2; // seconds after the force window before the next jump is allowed
 const JUMP_UPRIGHT_MAX_TIME = 2; // seconds the post-jump upright hold may last
 const JUMP_UPRIGHT_LAND_GRACE = 0.3; // grounded frames within this window after takeoff don't clear the hold
@@ -172,6 +205,7 @@ export const VehicleAttr = {
 	ReleasedThrottle: "ReleasedThrottle",
 	JumpStabilizing: "JumpStabilizing",
 	JumpStabilizeStart: "JumpStabilizeStart",
+	JumpLaunchDir: "JumpLaunchDir", // Vector3: floor normal captured at jump press (world up when no floor)
 	BoostLastInc: "BoostLastInc",
 	FlipActive: "FlipActive",
 	FlipUntil: "FlipUntil",
@@ -351,6 +385,11 @@ function attrNumber(instance: Instance, name: string, fallback: number): number 
 
 function attrBool(instance: Instance, name: string): boolean {
 	return instance.GetAttribute(name) === true;
+}
+
+function attrVector3(instance: Instance, name: string, fallback: Vector3): Vector3 {
+	const value = instance.GetAttribute(name);
+	return typeIs(value, "Vector3") ? value : fallback;
 }
 
 function Vector3ComponentSetter(vector: Vector3, axis: string, value: number): Vector3 | undefined {
@@ -570,13 +609,16 @@ export function register(model: VehicleModel, tuning: VehicleTuning, owner?: Pla
 	base.SetAttribute(VehicleAttr.BoostAmount, tuning.boostAmount);
 	base.SetAttribute(VehicleAttr.JumpForceUntil, 0);
 	base.SetAttribute(VehicleAttr.JumpReadyAt, 0);
-	base.SetAttribute(VehicleAttr.TargetVelocity, tuning.targetVelocity);
+	// The scaled value is what the whole sim runs on (every tick re-reads this
+	// attribute) — per-car authored speeds keep their ratios.
+	base.SetAttribute(VehicleAttr.TargetVelocity, tuning.targetVelocity * TARGET_VELOCITY_SCALE);
 	base.SetAttribute(VehicleAttr.ScriptedInput, false);
 	base.SetAttribute(VehicleAttr.SimTime, 0);
 	base.SetAttribute(VehicleAttr.LastThrottle, 0);
 	base.SetAttribute(VehicleAttr.ReleasedThrottle, false);
 	base.SetAttribute(VehicleAttr.JumpStabilizing, false);
 	base.SetAttribute(VehicleAttr.JumpStabilizeStart, 0);
+	base.SetAttribute(VehicleAttr.JumpLaunchDir, new Vector3(0, 1, 0));
 	base.SetAttribute(VehicleAttr.BoostLastInc, 0);
 	base.SetAttribute(VehicleAttr.FlipActive, false);
 	base.SetAttribute(VehicleAttr.FlipUntil, 0);
@@ -715,11 +757,53 @@ export function grantBoost(model: Model, amount: number) {
 	}
 }
 
+// Launch direction for a jump: the floor normal under the car center (same
+// ray as closeGroundQuery — box center, half the bounding size down), so a
+// side ramp launches the car laterally as well as up. Falls back to straight
+// up — the pre-angled-jump behavior — when the ray misses (airborne press) or
+// the surface isn't a floor (wall/ceiling normals), and clamps the tilt so an
+// extreme surface can never aim the jump mostly sideways.
+function jumpLaunchDirection(entry: SimEntry): Vector3 {
+	const worldUp = new Vector3(0, 1, 0);
+	const filter: Instance[] = [entry.model];
+	if (entry.owner && entry.owner.Character) {
+		filter.push(entry.owner.Character);
+	}
+	groundRaycastParams.FilterDescendantsInstances = filter;
+	const boxCenter = entry.base.CFrame.PointToWorldSpace(entry.boundingCenterOffset);
+	const result = game.Workspace.Raycast(
+		boxCenter,
+		new Vector3(0, -entry.boundingSizeX / 2, 0),
+		groundRaycastParams,
+	);
+	if (!result) {
+		return worldUp;
+	}
+	const normal = result.Normal;
+	if (normal.Y <= 0.05) {
+		return worldUp;
+	}
+	const maxCos = math.cos(JUMP_MAX_TILT);
+	if (normal.Y >= maxCos) {
+		return normal.Unit;
+	}
+	// Steeper than the clamp: keep the horizontal heading, cap the tilt.
+	const horizontal = new Vector3(normal.X, 0, normal.Z);
+	if (horizontal.Magnitude < 1e-4) {
+		return worldUp;
+	}
+	return horizontal.Unit.mul(math.sin(JUMP_MAX_TILT)).add(new Vector3(0, maxCos, 0)).Unit;
+}
+
 function tryJump(entry: SimEntry, now: number) {
 	if (now >= attrNumber(entry.base, VehicleAttr.JumpReadyAt, 0)) {
 		const forceTime = entry.tuning.jumpForceTime ?? JUMP_FORCE_TIME;
 		entry.base.SetAttribute(VehicleAttr.JumpForceUntil, now + forceTime);
 		entry.base.SetAttribute(VehicleAttr.JumpReadyAt, now + forceTime + JUMP_DEBOUNCE_TIME);
+		// Launch direction is captured once at press time; it lives in an
+		// attribute because the force window reads it for several ticks after
+		// this one (cross-tick sim state must be rollback-restorable).
+		entry.base.SetAttribute(VehicleAttr.JumpLaunchDir, jumpLaunchDirection(entry));
 		// Arm the post-jump upright hold.
 		entry.base.SetAttribute(VehicleAttr.JumpStabilizing, true);
 		entry.base.SetAttribute(VehicleAttr.JumpStabilizeStart, now);
@@ -1180,6 +1264,13 @@ function turnWheels(entry: SimEntry, throttle: number, steerFloat: number, onGro
 
 	turnRadius *= TURN_RADIUS_MULT;
 
+	// Friction-circle floor on the turn radius (see MAX_TURN_LATERAL_ACCEL).
+	const speed = math.abs(entry.velocity);
+	const gripRadius = (speed * speed) / MAX_TURN_LATERAL_ACCEL;
+	if (gripRadius > turnRadius) {
+		turnRadius = gripRadius;
+	}
+
 	// Grip yaw servo (see GRIP_YAW_TORQUE). drift() owns the yaw mover while a
 	// slide is engaged; undrift() above already zeroed it, so airborne ticks
 	// stay servo-free and the aerial yaw control keeps sole authority.
@@ -1400,12 +1491,13 @@ function stepVehicle(entry: SimEntry, dt: number) {
 
 	// ---- timers (sim-time state machines replacing task.wait/task.delay) ----
 
-	// Jump force window.
+	// Jump force window: fires along the launch direction captured at press
+	// time (the floor normal). Still ApplyAtCenterOfMass + world-relative, so
+	// the push stays torque-free — direction changes can't spin the car.
 	if (now < attrNumber(base, VehicleAttr.JumpForceUntil, 0)) {
-		entry.jumpThrust.Force = new Vector3(
-			0,
+		const launchDir = attrVector3(base, VehicleAttr.JumpLaunchDir, new Vector3(0, 1, 0));
+		entry.jumpThrust.Force = launchDir.mul(
 			entry.totalMass * game.Workspace.Gravity * (entry.tuning.jumpGravityMult ?? JUMP_FORCE_GRAVITY_MULT),
-			0,
 		);
 	} else {
 		entry.jumpThrust.Force = new Vector3(0, 0, 0);
@@ -1465,8 +1557,13 @@ function stepVehicle(entry: SimEntry, dt: number) {
 			base.SetAttribute(VehicleAttr.JumpStabilizing, false);
 		}
 		if (attrBool(base, VehicleAttr.JumpStabilizing)) {
-			// Post-jump upright hold: level roll+pitch, yaw free.
-			entry.upright.CFrame = cframeFromXAxis(new Vector3(0, 1, 0));
+			// Post-jump upright hold, yaw free: the car is held at the LAUNCH
+			// angle (the floor normal at press time) for the whole hold, so an
+			// angled jump flies nose-along-the-ramp — no mid-air re-leveling.
+			// Deliberate roll/pitch input cancels the hold (aerial controls take
+			// over), the close-ground slope hug re-aligns to the landing surface
+			// on approach, and the manual flip handles a bad landing.
+			entry.upright.CFrame = cframeFromXAxis(attrVector3(base, VehicleAttr.JumpLaunchDir, new Vector3(0, 1, 0)));
 			entry.upright.MaxTorque = math.huge;
 		} else {
 			entry.upright.MaxTorque = 0;
@@ -1567,8 +1664,11 @@ function stepVehicle(entry: SimEntry, dt: number) {
 	}
 
 	if (entry.propVelocity > 1 && !boostHeld) {
-		//if faster than max velocity, slow down
-		force = forceAtt;
+		// Faster than the non-boost cap (post-boost, downhill, a hit): the
+		// drive servo's target is already back at throttle × targetVelocity, so
+		// giving it OVERSPEED_BRAKE_MULT × forceAtt of authority bleeds the
+		// excess smoothly until the car sits at its normal top speed again.
+		force = forceAtt * (grounded ? OVERSPEED_BRAKE_MULT : 1);
 	}
 
 	base.LinearVelocity.MaxForce = force;

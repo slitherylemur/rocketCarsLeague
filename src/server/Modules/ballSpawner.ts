@@ -8,11 +8,9 @@
 
 import { BALL_NAME, BALL_FIELDS, ballTunables, ballTuneAttr } from "shared/ballSim/BallConfig";
 import { BallAttr } from "shared/ballSim/BallSim";
-import { COLLISION_GROUPS } from "shared/collisionGroups";
 
 const RunService = game.GetService("RunService");
 
-const PROTECTION_WALL_NAME = "PartWallForBallProtection";
 const SAFETY_CHECK_INTERVAL = 0.2;
 
 const spawner = {} as {
@@ -33,22 +31,10 @@ let currentMap: Instance | undefined;
 const ballByMap = new Map<Instance, BasePart>();
 const recoveringMaps = new Set<Instance>();
 
-function configureProtectionWalls(map: Instance) {
-	const wall = map.FindFirstChild(PROTECTION_WALL_NAME, true);
-	if (wall === undefined) {
-		warn(`[BallSpawner] ${map.Name} has no ${PROTECTION_WALL_NAME}`);
-		return;
-	}
-	for (const descendant of wall.GetDescendants()) {
-		if (descendant.IsA("BasePart")) {
-			descendant.Anchored = true;
-			descendant.CanCollide = true;
-			descendant.CanQuery = true;
-			descendant.CanTouch = false;
-			descendant.CollisionGroup = COLLISION_GROUPS.BallProtectionWall;
-		}
-	}
-}
+// (The old PartWallForBallProtection setup is gone: BallSim's world queries
+// are now a strict include list — STADIUM.collisionBottom / STADIUM.outer /
+// groundPart — so the extra invisible walls were deleted from the maps. The
+// groundPart escape check below stays as the safety net.)
 
 // Same rationale as spawnVehicle.markPredictable: client-side On alone left
 // vehicles Authoritative, so the server marks the whole assembly On at spawn.
@@ -152,7 +138,6 @@ spawner.DestroyBall = (map?: Instance) => {
 
 spawner.SpawnBall = (map: Instance) => {
 	spawner.DestroyBall(map);
-	configureProtectionWalls(map);
 	// Prune balls whose pitch was torn down (round reload).
 	for (const [ownerMap, ball] of ballByMap) {
 		if (ownerMap.Parent === undefined) {
@@ -188,10 +173,8 @@ spawner.SpawnBall = (map: Instance) => {
 	// .Touched would create a TouchTransmitter — an unpredictable class that
 	// makes the engine refuse the assembly (see spawnVehicle damage notes).
 	ball.CanTouch = false;
-	// Group kept for the QUERY matrix: BallSim runs its world/hitbox queries
-	// under GameBall, which includes map + Hitboxes and excludes car bodies
-	// and wheels (initCollisionGroups.server.ts).
-	ball.CollisionGroup = COLLISION_GROUPS.GameBall;
+	// No collision group: the ball never engine-collides (CanCollide=false)
+	// and BallSim's queries are strict include lists, so groups play no part.
 	ball.CFrame = ballSpawn.CFrame;
 
 	// Engine-gravity canceller; BallSim keeps Force = mass × gravity per tick.
