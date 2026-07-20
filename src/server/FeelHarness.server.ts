@@ -167,7 +167,8 @@ function runSuite(player: Player) {
 	metrics.drift_yaw_rate = round2(driftYawSum / math.max(driftN, 1));
 	metrics.drift_side_speed_max = round2(driftSideMax);
 
-	// 5. boost: top speed, 100→0 drain time, regen (+10 incl. the 3 s delay)
+	// 5. boost: top speed, 100→0 drain time (no regen metric: the meter only
+	// refills through boost pads now — Rocket League rules)
 	resetCar(vehicle, pose);
 	const readBoost = () => {
 		const value = vehicle.model.Base.GetAttribute(VehicleAttr.BoostAmount);
@@ -191,17 +192,6 @@ function runSuite(player: Player) {
 	metrics.boost_top_speed = round2(boostTop);
 	metrics.boost_drain_time = round2(drainTime);
 	setInputs(vehicle, 0, 0);
-	const regenStartAmount = readBoost();
-	const regenT0 = os.clock();
-	let regen10 = -1;
-	while (os.clock() - regenT0 < 15) {
-		RunService.Heartbeat.Wait();
-		if (readBoost() >= regenStartAmount + 10) {
-			regen10 = os.clock() - regenT0;
-			break;
-		}
-	}
-	metrics.boost_regen10 = round2(regen10);
 
 	// 6. jump: apex height and airtime
 	resetCar(vehicle, pose);

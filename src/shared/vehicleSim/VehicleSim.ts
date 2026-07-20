@@ -68,7 +68,7 @@ const JUMP_UPRIGHT_LAND_GRACE = 0.3; // grounded frames within this window after
 const FLIP_HOLD_TIME = 1; // seconds the flip lift + righting hold stays on
 const FLIP_DEBOUNCE_TIME = 3; // seconds from flip start until the next flip is allowed (old wait(1)+wait(2))
 const BOOST_TICK_INTERVAL = 0.2; // boost meter cadence
-const BOOST_REGEN_DELAY = 3; // seconds after boost release (or depletion) before regen resumes
+const MAX_BOOST = 100; // meter capacity; refills come from boost pads only (Rocket League rules — no passive regen)
 const AERIAL_TORQUE_PER_MASS = 378; // aerial control authority per unit total mass
 
 // ---- modern-constraint servo tuning (replaces BodyGyro/BodyPosition P/D gains) ----
@@ -155,7 +155,6 @@ export const VehicleAttr = {
 	DriftEngaged: "DriftEngaged",
 	BoostHeld: "BoostHeld",
 	BoostAmount: "BoostAmount",
-	BoostBlockedUntil: "BoostBlockedUntil",
 	JumpForceUntil: "JumpForceUntil",
 	JumpReadyAt: "JumpReadyAt",
 	TargetVelocity: "TargetVelocity",
@@ -281,6 +280,7 @@ interface SimEntry {
 	// within BindToSimulation. The client never sets these; it learns of the
 	// resulting attribute changes through rollback.
 	pendingBoostHeld?: boolean;
+	pendingBoostGrant?: number; // boost-pad pickup: meter refill applied inside the next sim step
 	pendingJump?: boolean;
 	pendingFlip?: boolean;
 	pendingRolls?: Array<{ direction: -1 | 1; begin: boolean }>;
@@ -568,7 +568,6 @@ export function register(model: VehicleModel, tuning: VehicleTuning, owner?: Pla
 	base.SetAttribute(VehicleAttr.DriftEngaged, false);
 	base.SetAttribute(VehicleAttr.BoostHeld, false);
 	base.SetAttribute(VehicleAttr.BoostAmount, tuning.boostAmount);
-	base.SetAttribute(VehicleAttr.BoostBlockedUntil, 0);
 	base.SetAttribute(VehicleAttr.JumpForceUntil, 0);
 	base.SetAttribute(VehicleAttr.JumpReadyAt, 0);
 	base.SetAttribute(VehicleAttr.TargetVelocity, tuning.targetVelocity);
@@ -698,19 +697,21 @@ export function setDriftHeld(model: Model, held: boolean) {
 	}
 }
 
-function applyBoostHeld(entry: SimEntry, held: boolean, now: number) {
-	entry.base.SetAttribute(VehicleAttr.BoostHeld, held);
-	if (!held) {
-		// Releasing (or depleting) boost blocks regen for a spell — the old
-		// boostDelay + task.delay(3).
-		entry.base.SetAttribute(VehicleAttr.BoostBlockedUntil, now + BOOST_REGEN_DELAY);
-	}
-}
-
 export function setBoostHeld(model: Model, held: boolean) {
 	const entry = registry.get(model);
 	if (entry) {
 		entry.pendingBoostHeld = held; // consumed inside the next sim step
+	}
+}
+
+// Boost-pad pickup (server): queues a meter refill consumed inside the next
+// sim step — attributes on predicted instances may only be written from
+// within BindToSimulation. The client mispredicts the pickup for one RTT and
+// the rollback correction snaps the meter to the granted value.
+export function grantBoost(model: Model, amount: number) {
+	const entry = registry.get(model);
+	if (entry) {
+		entry.pendingBoostGrant = (entry.pendingBoostGrant ?? 0) + amount;
 	}
 }
 
@@ -945,7 +946,7 @@ function readPlayerInputs(entry: SimEntry, now: number) {
 	const boostHeld = stateBool(actions.boost);
 	if (boostHeld !== attrBool(base, VehicleAttr.PrevBoostHeld)) {
 		base.SetAttribute(VehicleAttr.PrevBoostHeld, boostHeld);
-		applyBoostHeld(entry, boostHeld, now);
+		base.SetAttribute(VehicleAttr.BoostHeld, boostHeld);
 	}
 
 	const jumpHeld = stateBool(actions.jump);
@@ -1205,21 +1206,17 @@ function turnWheels(entry: SimEntry, throttle: number, steerFloat: number, onGro
 	}
 }
 
-// Boost meter cadence — the old boostIncrement, on sim time.
-function boostTick(entry: SimEntry, increase: boolean, now: number) {
+// Boost meter drain cadence — the old boostIncrement, on sim time. Drain
+// only: the meter refills exclusively through boost-pad pickups
+// (pendingBoostGrant), Rocket League rules.
+function boostDrainTick(entry: SimEntry, now: number) {
 	if (now - attrNumber(entry.base, VehicleAttr.BoostLastInc, 0) >= BOOST_TICK_INTERVAL) {
 		const amount = attrNumber(entry.base, VehicleAttr.BoostAmount, 0);
-		if (increase) {
-			entry.base.SetAttribute(VehicleAttr.BoostAmount, math.clamp(amount + 1, 0, 100));
+		if (amount === 0) {
+			// Depleted: force the boost off — the old internal Boost(End) call.
+			entry.base.SetAttribute(VehicleAttr.BoostHeld, false);
 		} else {
-			if (amount === 0) {
-				// Depleted: force the boost off and block regen — the old
-				// internal Boost(End) call.
-				entry.base.SetAttribute(VehicleAttr.BoostHeld, false);
-				entry.base.SetAttribute(VehicleAttr.BoostBlockedUntil, now + BOOST_REGEN_DELAY);
-			} else {
-				entry.base.SetAttribute(VehicleAttr.BoostAmount, math.clamp(amount - 4, 0, 100));
-			}
+			entry.base.SetAttribute(VehicleAttr.BoostAmount, math.clamp(amount - 4, 0, MAX_BOOST));
 		}
 		entry.base.SetAttribute(VehicleAttr.BoostLastInc, now);
 	}
@@ -1370,7 +1367,13 @@ function stepVehicle(entry: SimEntry, dt: number) {
 		const held = entry.pendingBoostHeld;
 		entry.pendingBoostHeld = undefined;
 		base.SetAttribute(VehicleAttr.PrevBoostHeld, held);
-		applyBoostHeld(entry, held, now);
+		base.SetAttribute(VehicleAttr.BoostHeld, held);
+	}
+	if (entry.pendingBoostGrant !== undefined) {
+		const grant = entry.pendingBoostGrant;
+		entry.pendingBoostGrant = undefined;
+		const amount = attrNumber(base, VehicleAttr.BoostAmount, 0);
+		base.SetAttribute(VehicleAttr.BoostAmount, math.clamp(amount + grant, 0, MAX_BOOST));
 	}
 	if (entry.pendingJump) {
 		entry.pendingJump = undefined;
@@ -1552,7 +1555,7 @@ function stepVehicle(entry: SimEntry, dt: number) {
 	const boostHeld = attrBool(base, VehicleAttr.BoostHeld);
 	if (boostHeld && attrNumber(base, VehicleAttr.BoostAmount, 0) >= 0) {
 		//if boosting go back to gear 1 accel
-		boostTick(entry, false, now); //decrease boostAmount
+		boostDrainTick(entry, now); //decrease boostAmount
 		// Re-read AFTER the decrement, matching the old boostIncrement ordering.
 		if (attrNumber(base, VehicleAttr.BoostAmount, 0) > 0) {
 			// Aerial boost gets extra force so nose-up boosting can fight
@@ -1561,8 +1564,6 @@ function stepVehicle(entry: SimEntry, dt: number) {
 			force += totalMass * game.Workspace.Gravity * lookVector.Y;
 			targetVelocity = BOOST_TARGET_MULT * entry.tuning.targetVelocity;
 		}
-	} else if (now >= attrNumber(base, VehicleAttr.BoostBlockedUntil, 0)) {
-		boostTick(entry, true, now); //increase boostAmount
 	}
 
 	if (entry.propVelocity > 1 && !boostHeld) {
