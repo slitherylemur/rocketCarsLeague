@@ -49,9 +49,9 @@ const DataUtilities = {
 		if (bindsTable[action] !== undefined) {
 			return DeserializeEnum(bindsTable[action]!);
 		}
-		// Saved tables predate actions added later (e.g. BallCam): fall back to
-		// the code default rather than returning nil, which the keybind menus
-		// can't render.
+		// Saved tables can predate actions added later (e.g. RollLeft/RollRight
+		// on old saves): fall back to the code default rather than returning
+		// nil, which the keybind menus can't render.
 		const defaultBinds = DSDefaults["keyBinds"] as Record<string, SerializedEnum | undefined>;
 		if (defaultBinds[action] !== undefined) {
 			return DeserializeEnum(defaultBinds[action]!);
