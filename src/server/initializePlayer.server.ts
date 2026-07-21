@@ -55,7 +55,7 @@ interface GarageGuiShape extends ScreenGui {
 	};
 	Shop: Frame & {
 		InventoryButton: GuiButton;
-		Purchases: Frame & { VIP: GuiButton; Nuke: GuiButton; LowGravity: GuiButton };
+		Purchases: Frame & { VIP: GuiButton };
 		Crates: Frame;
 	};
 	CrateMenu: Frame & {
@@ -510,20 +510,6 @@ function OpenShop(player: Player) {
 		"shop2",
 		shop.Purchases.VIP.MouseButton1Click.Connect(() => {
 			MarketplaceService.PromptGamePassPurchase(player, Globals.VIP_PASS_ID);
-		}),
-	);
-
-	uiConnections.get(player)!.set(
-		"shop3",
-		shop.Purchases.Nuke.MouseButton1Click.Connect(() => {
-			MarketplaceService.PromptProductPurchase(player, ProductIds.Nuke);
-		}),
-	);
-
-	uiConnections.get(player)!.set(
-		"shop4",
-		shop.Purchases.LowGravity.MouseButton1Click.Connect(() => {
-			MarketplaceService.PromptProductPurchase(player, ProductIds.LowGravity);
 		}),
 	);
 

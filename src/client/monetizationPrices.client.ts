@@ -44,11 +44,7 @@ function applyPrice(productId: number, price: number) {
 			}
 		}
 
-		if (productId === ProductIds.LowGravity) {
-			setPriceLabelWithin(waitForPath(garage, "Shop/Purchases/LowGravity"), price);
-		} else if (productId === ProductIds.Nuke) {
-			setPriceLabelWithin(waitForPath(garage, "Shop/Purchases/Nuke"), price);
-		} else if (productId === ProductIds.OverdriveCrate) {
+		if (productId === ProductIds.OverdriveCrate) {
 			const tilePrice = waitForPath(garage, "Shop/Crates/Robux/-1/Price");
 			if (tilePrice?.IsA("TextLabel")) tilePrice.Text = priceText(price);
 

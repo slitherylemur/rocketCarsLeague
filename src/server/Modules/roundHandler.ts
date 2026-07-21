@@ -251,8 +251,9 @@ handler.endRound = () => {
 			}
 		}
 		// Winners posed on the lineup, camera on the goal shot, winner text /
-		// coin-flip presentation on drawn pitches (~5 s), then the ladder map
-		// (~7 s), then the full-screen stats summary (~6 s). The legacy
+		// coin-flip presentation on drawn pitches (~8 s), then the full-screen
+		// stats summary (~6 s), then the ladder map
+		// (3D rise off the pitch into the animated table, ~11 s). The legacy
 		// podium/EndScreen is NOT used for football.
 		warn("[Round] victory scene");
 		const [sceneOk, sceneErr] = pcall(() =>
@@ -261,6 +262,14 @@ handler.endRound = () => {
 		if (!sceneOk) {
 			warn(`[Round] victory scene FAILED: ${sceneErr}`);
 		}
+		warn("[Round] round summary");
+		const [summaryOk, summaryErr] = pcall(() => footballMatch.showRoundSummary());
+		if (!summaryOk) {
+			warn(`[Round] round summary FAILED: ${summaryErr}`);
+		}
+		// Ladder map LAST (victory -> summary -> ladder): runs BEFORE stop()
+		// so CB_PitchId is still set and the 3D camera rise can start over the
+		// viewer's own pitch.
 		warn("[Round] ladder map");
 		if (movement !== undefined) {
 			const entries = movement.entries;
@@ -268,11 +277,6 @@ handler.endRound = () => {
 			if (!mapOk) {
 				warn(`[Round] ladder map FAILED: ${mapErr}`);
 			}
-		}
-		warn("[Round] round summary");
-		const [summaryOk, summaryErr] = pcall(() => footballMatch.showRoundSummary());
-		if (!summaryOk) {
-			warn(`[Round] round summary FAILED: ${summaryErr}`);
 		}
 		// Session end (Phase 5, after round SESSION_ROUNDS): champions screen +
 		// payout, then shuffle/reset — BEFORE startRound so the new (shuffled)

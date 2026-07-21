@@ -39,9 +39,9 @@ const ReplicatedStorage = game.GetService("ReplicatedStorage");
 export type TeamName = "Red" | "Blue";
 const TEAM_NAMES: TeamName[] = ["Blue", "Red"];
 
-const MATCH_TIME = 3 * 60;
+const MATCH_TIME = 30;
 const KICKOFF_COUNTDOWN = 3;
-const FACE_OFF_TIME = 10;
+const FACE_OFF_TIME = 7; // was 10 — cut by a third per playtest
 const RESPAWN_DELAY = 1.5;
 const RESPAWN_LOCK = 5;
 const GOAL_PAUSE = 2.5;
@@ -68,6 +68,11 @@ export const FootballAttr = {
 	BlueName: "FB_BlueName",
 	RedName: "FB_RedName",
 	FaceOffCamCFrame: "FB_FaceOffCamCFrame",
+	// Victory overlay: set by playVictoryScene while the lineup camera runs,
+	// cleared when the scene ends. matchHud shows the Victory ScreenGui
+	// (WINNERS / YOU LOSE + confetti) while WinnerSide is non-empty.
+	WinnerSide: "FB_WinnerSide",
+	WinnerName: "FB_WinnerName",
 } as const;
 
 // "FreePlay" (design §muckabout): ≥1 rostered player but no opponent yet —
@@ -97,7 +102,7 @@ let endCallback: (() => void) | undefined;
 // Snapshot for the end-of-round banner: stop() clears `matches`, which made
 // the old banner read 0-0 regardless of the real score.
 let lastGoldScores = { Blue: 0, Red: 0 };
-const VICTORY_SCENE_TIME = 5;
+const VICTORY_SCENE_TIME = 8;
 const SUMMARY_TIME = 6;
 const COIN_FLIP_SUSPENSE = 2;
 
@@ -349,6 +354,9 @@ class PitchMatch {
 		this.publishScores();
 		this.setPhase("Waiting");
 		this.announce(this.muckabout ? "FREE PLAY — waiting for a car" : "Waiting for players...");
+		// Stale victory overlay state from the previous round on this pitch.
+		this.setAttr(FootballAttr.WinnerSide, "");
+		this.setAttr(FootballAttr.WinnerName, "");
 	}
 
 	setAttr(name: string, value: string | number) {
@@ -592,6 +600,48 @@ class PitchMatch {
 		}
 	}
 
+	/** Mid-face-off spawn (SpawnVehicle's ~2s internal waits let onPlayerSpawned
+	 * land AFTER runFaceOff posed the roster, and deaths respawn mid-segment):
+	 * pose the late car on ITS podium — slot-keyed, the same part runFaceOff
+	 * picks — instead of the kickoff spot. False when no stage/podium exists
+	 * (caller falls back to the kickoff placement). */
+	placeVehicleOnStageFor(player: Player): boolean {
+		const entry = this.roster.get(player);
+		const vehicle = Globals.vehiclesTable[player.UserId];
+		const model = vehicle && vehicle.model;
+		if (!entry || !model || model.Parent === undefined) {
+			return false;
+		}
+		const stage = this.faceOffStageModel();
+		if (!stage) {
+			return false;
+		}
+		const stageParts = stageSideParts(stage, entry.team);
+		if (stageParts.size() === 0) {
+			return false;
+		}
+		this.poseOnPodium(model, stageParts[entry.slot % stageParts.size()]);
+		return true;
+	}
+
+	/** Direct placement (no floor raycast — the floor here is the stage's own
+	 * geometry, not the pitch groundPart): podium part orientation, lifted by
+	 * half the model height like placeVehicle's no-floor fallback. */
+	private poseOnPodium(model: Model, part: BasePart) {
+		const target = part.CFrame.Rotation.add(
+			part.Position.add(new Vector3(0, model.GetExtentsSize().Y / 2, 0)),
+		);
+		pcall(() => {
+			model.SetPrimaryPartCFrame(target);
+			for (const descendant of model.GetDescendants()) {
+				if (descendant.IsA("BasePart")) {
+					descendant.AssemblyLinearVelocity = new Vector3(0, 0, 0);
+					descendant.AssemblyAngularVelocity = new Vector3(0, 0, 0);
+				}
+			}
+		});
+	}
+
 	/** Cached per round; re-resolved if the cached model went away. */
 	faceOffStageModel(): Instance | undefined {
 		if (this.faceOffStage !== undefined && this.faceOffStage.Parent !== undefined) {
@@ -601,11 +651,12 @@ class PitchMatch {
 		return this.faceOffStage;
 	}
 
-	/** Pre-countdown face-off (~10s): both teams posed on the stage podiums,
-	 * camera on the stage's CameraPart, controls live but pinned on X/Z so the
-	 * cars can jump/boost on the spot without driving away. Skipped when no
-	 * stage model exists. Returns false when the flow was cancelled
-	 * mid-segment (locks and camera already cleaned up). */
+	/** Pre-countdown face-off (~7s): both teams posed still on the stage
+	 * podiums, camera on the stage's CameraPart, controls LOCKED for the whole
+	 * segment (the kickoff lock from startKickoff simply stays on) — a static
+	 * showcase, no physics pins involved. Skipped when no stage model exists.
+	 * Returns false when the flow was cancelled mid-segment (camera already
+	 * cleaned up). */
 	runFaceOff(gen: number, localMatchGen: number): boolean {
 		if (this.faceOffDone) {
 			return true;
@@ -630,13 +681,11 @@ class PitchMatch {
 		this.setPhase("FaceOff");
 		this.announce("");
 
-		const lockedBases: BasePart[] = [];
 		for (const side of TEAM_NAMES) {
 			const stageParts = stageSideParts(stage, side);
 			if (stageParts.size() === 0) {
 				continue;
 			}
-			let placed = 0;
 			for (const [player, entry] of this.roster) {
 				if (entry.team !== side) {
 					continue;
@@ -646,32 +695,12 @@ class PitchMatch {
 				if (!model || model.Parent === undefined) {
 					continue;
 				}
-				const part = stageParts[placed % stageParts.size()];
-				placed += 1;
-				// Direct placement (no floor raycast — the floor here is the
-				// stage's own geometry, not the pitch groundPart): podium part
-				// orientation, lifted by half the model height like
-				// placeVehicle's no-floor fallback.
-				const target = part.CFrame.Rotation.add(
-					part.Position.add(new Vector3(0, model.GetExtentsSize().Y / 2, 0)),
-				);
-				pcall(() => {
-					model.SetPrimaryPartCFrame(target);
-					for (const descendant of model.GetDescendants()) {
-						if (descendant.IsA("BasePart")) {
-							descendant.AssemblyLinearVelocity = new Vector3(0, 0, 0);
-							descendant.AssemblyAngularVelocity = new Vector3(0, 0, 0);
-						}
-					}
-				});
-				const base = model.FindFirstChild("Base");
-				if (base && base.IsA("BasePart")) {
-					VehicleSim.setShowcaseLock(base, target.Position);
-					lockedBases.push(base);
-				}
-				// The kickoff lock loop just ran — free the inputs so
-				// jump/boost/aerial work; the X/Z pin keeps the car in place.
-				unlockPlayer(player);
+				// Slot-keyed part choice — placeVehicleOnStageFor (late spawns
+				// mid-segment) must land on the SAME podium.
+				this.poseOnPodium(model, stageParts[entry.slot % stageParts.size()]);
+				// Controls stay locked (startKickoff's lockPlayer): the cars sit
+				// still on the podiums, so no showcase pin — and none of the
+				// pin-release physics that flung cars in playtests.
 			}
 		}
 
@@ -683,35 +712,20 @@ class PitchMatch {
 				break;
 			}
 		}
-		for (const base of lockedBases) {
-			if (base.Parent !== undefined) {
-				VehicleSim.setShowcaseLock(base, undefined);
-			}
-		}
 		this.pitch.folder.SetAttribute(FootballAttr.FaceOffCamCFrame, undefined);
 		if (cancelled) {
 			return false;
-		}
-		for (const [player] of this.roster) {
-			lockPlayer(player);
 		}
 		this.setPhase("Kickoff");
 		this.repositionVehicles();
 		return true;
 	}
 
-	/** Teardown safety (endMatch/stop can land mid-face-off): no showcase
-	 * lock or face-off camera may outlive the segment. */
+	/** Teardown safety (endMatch/stop can land mid-face-off): the face-off
+	 * camera must not outlive the segment. (No physics locks to undo — the
+	 * face-off is a static showcase.) */
 	clearFaceOffScene() {
 		this.pitch.folder.SetAttribute(FootballAttr.FaceOffCamCFrame, undefined);
-		for (const [player] of this.roster) {
-			const vehicle = Globals.vehiclesTable[player.UserId];
-			const model = vehicle && vehicle.model;
-			const base = model && model.FindFirstChild("Base");
-			if (base && base.IsA("BasePart")) {
-				VehicleSim.setShowcaseLock(base, undefined);
-			}
-		}
 	}
 
 	/** `introText` (free-play → match transition): brief announce while the
@@ -814,7 +828,7 @@ class PitchMatch {
 		this.publishScores();
 	}
 
-	creditScorer(ball: BasePart, scoringTeam: TeamName): Player | undefined {
+	creditScorer(ball: BasePart, scoringTeam: TeamName): { player: Player; ownGoal: boolean } | undefined {
 		const lastHitCar = ball.GetAttribute(BallAttr.LastHitCar);
 		if (!typeIs(lastHitCar, "string") || lastHitCar === "") {
 			return undefined;
@@ -822,14 +836,18 @@ class PitchMatch {
 		for (const player of PlayerService.GetPlayers()) {
 			const vehicle = Globals.vehiclesTable[player.UserId];
 			if (vehicle && vehicle.model && vehicle.model.Name === lastHitCar) {
-				if (this.roster.get(player)?.team !== scoringTeam) {
+				const team = this.roster.get(player)?.team;
+				if (team === undefined) {
 					return undefined;
+				}
+				if (team !== scoringTeam) {
+					return { player, ownGoal: true };
 				}
 				if (!this.muckabout) {
 					TeamRegistry.addGoal(player);
 					roundGoals.set(player, (roundGoals.get(player) ?? 0) + 1);
 				}
-				return player;
+				return { player, ownGoal: false };
 			}
 		}
 		return undefined;
@@ -846,7 +864,11 @@ class PitchMatch {
 		const localMatchGen = matchGen;
 		this.setPhase("Goal");
 		const hex = scoringTeam === "Blue" ? BLUE_HEX : RED_HEX;
-		const scorerText = scorer ? `${escapeRichText(scorer.DisplayName)} SCORES!` : `${scoringTeam.upper()} TEAM SCORES!`;
+		const scorerText = scorer
+			? scorer.ownGoal
+				? `${escapeRichText(scorer.player.DisplayName)} OWN GOALED!`
+				: `${escapeRichText(scorer.player.DisplayName)} SCORES!`
+			: `${scoringTeam.upper()} TEAM SCORES!`;
 		this.announce(`<font color="${hex}">${scorerText}</font>`);
 		const goalPart = this.goalParts.get(defendingTeam);
 		if (goalPart && goalPart.Parent !== undefined) {
@@ -923,26 +945,13 @@ function startClock() {
 			if (matchGen !== localMatchGen) {
 				return;
 			}
-			// Tick while any pitch is actually playing. Kickoff countdowns and
-			// goal pauses hold the clock ONLY if nothing else is mid-play; once
-			// started the clock must reach 0 even if every real match fell back
-			// to free play (a leaver must never wedge the round).
-			let anyPlaying = false;
-			let anyTransient = false;
-			for (const match of matches) {
-				if (match.phase === "Play") {
-					anyPlaying = true;
-				} else if (match.phase === "Kickoff" || match.phase === "FaceOff" || match.phase === "Goal") {
-					anyTransient = true;
-				}
-			}
-			if (anyPlaying || !anyTransient) {
-				timeLeft -= 1;
-				setGlobalAttr(FootballAttr.TimeLeft, timeLeft);
-				if (timeLeft <= 0) {
-					warn("[Football] clock expired — ending every match at the shared whistle");
-					endRoundForAll();
-				}
+			// One global whistle: once started the clock never pauses, even
+			// while every pitch sits in a kickoff countdown or goal pause.
+			timeLeft -= 1;
+			setGlobalAttr(FootballAttr.TimeLeft, timeLeft);
+			if (timeLeft <= 0) {
+				warn("[Football] clock expired — ending every match at the shared whistle");
+				endRoundForAll();
 			}
 		}
 	});
@@ -1295,7 +1304,7 @@ const footballMatch = {
 	 * pitch, the winning team's cars teleport to the VictoryLineup parts —
 	 * or spread in front of the goal they defended — while clients aim their
 	 * camera at the pitch's VictoryCamera (matchHud reacts to Phase=Ended).
-	 * Blocks ~5 s; the winner announce is already on screen.
+	 * Blocks ~8 s; the winner announce is already on screen.
 	 *
 	 * `flipWinners` (Phase 4b, from MatchDirector.applyMovement) maps a DRAWN
 	 * pitch's index to the ladder team its coin flip promoted: those pitches
@@ -1316,124 +1325,142 @@ const footballMatch = {
 			if (match.muckabout || match.roster.size() === 0 || match.sideByTeamId.size() < 2) {
 				continue;
 			}
-			const diff = match.scores.Blue - match.scores.Red;
-			const winner: TeamName | undefined = diff === 0 ? undefined : diff > 0 ? "Blue" : "Red";
-			// Translate the flip-winning ladder team back to this pitch's SIDE.
-			let flipSide: TeamName | undefined;
-			if (winner === undefined && flipWinners) {
-				const flipTeamId = flipWinners.get(match.pitch.index);
-				if (flipTeamId !== undefined) {
-					flipSide = match.sideByTeamId.get(flipTeamId);
+			// Per-pitch pcall: a staging error on one pitch (missing lineup
+			// part, despawned car, ...) must never escape the method — that
+			// would skip the VICTORY_SCENE_TIME wait below and slam the ladder
+			// map on screen a fraction of a second after the camera cut.
+			const [stageOk, stageErr] = pcall(() => {
+				const diff = match.scores.Blue - match.scores.Red;
+				const winner: TeamName | undefined = diff === 0 ? undefined : diff > 0 ? "Blue" : "Red";
+				// Translate the flip-winning ladder team back to this pitch's SIDE.
+				let flipSide: TeamName | undefined;
+				if (winner === undefined && flipWinners) {
+					const flipTeamId = flipWinners.get(match.pitch.index);
+					if (flipTeamId !== undefined) {
+						flipSide = match.sideByTeamId.get(flipTeamId);
+					}
 				}
-			}
 
-			const lineupFolder = match.pitch.folder.FindFirstChild("VictoryLineup");
-			if (winner) {
-				// Winning cars onto the VictoryLineup/<side> parts (Red/Blue
-				// subfolders), fallback: spread across the goal mouth.
-				const lineup: BasePart[] = [];
-				let lineupSource: Instance | undefined = lineupFolder;
-				const sideFolder = lineupFolder && lineupFolder.FindFirstChild(winner);
-				if (sideFolder) {
-					lineupSource = sideFolder;
-				}
-				if (lineupSource) {
-					for (const descendant of lineupSource.GetDescendants()) {
-						// The side models also hold the authored camera shot —
-						// never pose a car on it.
-						if (descendant.IsA("BasePart") && descendant.Name !== "CameraPart") {
-							lineup.push(descendant);
+				const lineupFolder = match.pitch.folder.FindFirstChild("VictoryLineup");
+				if (winner) {
+					// Winning cars onto the VictoryLineup/<side> parts (Red/Blue
+					// subfolders), fallback: spread across the goal mouth.
+					const lineup: BasePart[] = [];
+					let lineupSource: Instance | undefined = lineupFolder;
+					const sideFolder = lineupFolder && lineupFolder.FindFirstChild(winner);
+					if (sideFolder) {
+						lineupSource = sideFolder;
+					}
+					if (lineupSource) {
+						for (const descendant of lineupSource.GetDescendants()) {
+							// The side models also hold the authored camera shot —
+							// never pose a car on it.
+							if (descendant.IsA("BasePart") && descendant.Name !== "CameraPart") {
+								lineup.push(descendant);
+							}
 						}
 					}
-				}
-				lineup.sort((a, b) => a.Name < b.Name);
-				const goal = match.goalParts.get(winner);
-				let placed = 0;
-				for (const [player, entry] of match.roster) {
-					if (entry.team !== winner) {
-						continue;
-					}
-					const vehicle = Globals.vehiclesTable[player.UserId];
-					const model = vehicle && vehicle.model;
-					if (!model || model.Parent === undefined) {
-						continue;
-					}
-					let target: CFrame | undefined;
-					if (lineup.size() > 0) {
-						target = lineup[placed % lineup.size()].CFrame;
-					} else if (goal) {
-						target = goal.CFrame.mul(new CFrame((placed - 1) * 14, 2, -18));
-					}
-					if (target) {
-						const [posed, lockPos] = pcall(() => {
-							const size = model.GetExtentsSize();
-							const lifted = target!.add(new Vector3(0, size.Y / 2, 0));
-							model.SetPrimaryPartCFrame(lifted);
-							const base = model.FindFirstChild("Base");
-							if (base && base.IsA("BasePart")) {
-								base.AssemblyLinearVelocity = new Vector3(0, 0, 0);
-								base.AssemblyAngularVelocity = new Vector3(0, 0, 0);
-							}
-							return lifted.Position;
-						});
-						if (posed) {
-							const base = model.FindFirstChild("Base");
-							if (base && base.IsA("BasePart")) {
-								VehicleSim.setShowcaseLock(base, lockPos as Vector3);
-								winnerBases.push(base);
-							}
-							// Only the winners celebrate with live controls.
-							unlockPlayer(player);
-							winnerPlayers.push(player);
+					lineup.sort((a, b) => a.Name < b.Name);
+					const goal = match.goalParts.get(winner);
+					let placed = 0;
+					for (const [player, entry] of match.roster) {
+						if (entry.team !== winner) {
+							continue;
 						}
+						const vehicle = Globals.vehiclesTable[player.UserId];
+						const model = vehicle && vehicle.model;
+						if (!model || model.Parent === undefined) {
+							continue;
+						}
+						let target: CFrame | undefined;
+						if (lineup.size() > 0) {
+							target = lineup[placed % lineup.size()].CFrame;
+						} else if (goal) {
+							target = goal.CFrame.mul(new CFrame((placed - 1) * 14, 2, -18));
+						}
+						if (target) {
+							const [posed, lockPos] = pcall(() => {
+								const size = model.GetExtentsSize();
+								const lifted = target!.add(new Vector3(0, size.Y / 2, 0));
+								model.SetPrimaryPartCFrame(lifted);
+								const base = model.FindFirstChild("Base");
+								if (base && base.IsA("BasePart")) {
+									base.AssemblyLinearVelocity = new Vector3(0, 0, 0);
+									base.AssemblyAngularVelocity = new Vector3(0, 0, 0);
+								}
+								return lifted.Position;
+							});
+							if (posed) {
+								const base = model.FindFirstChild("Base");
+								if (base && base.IsA("BasePart")) {
+									VehicleSim.setShowcaseLock(base, lockPos as Vector3);
+									winnerBases.push(base);
+								}
+								// Only the winners celebrate with live controls.
+								unlockPlayer(player);
+								winnerPlayers.push(player);
+							}
+						}
+						placed += 1;
 					}
-					placed += 1;
 				}
-			}
 
-			// Use the exact authored shot for the winning side: the CameraPart
-			// inside the VictoryLineup side model (legacy CameraWinParts kept as
-			// a fallback). CFrame is a supported attribute type, so the client
-			// reproduces the part's complete position and rotation without
-			// recalculating either.
-			const camSide: TeamName = winner ?? flipSide ?? "Blue";
-			const sideModel = lineupFolder ? lineupFolder.FindFirstChild(camSide) : undefined;
-			let cameraPart: Instance | undefined = sideModel ? sideModel.FindFirstChild("CameraPart", true) : undefined;
-			if (!(cameraPart && cameraPart.IsA("BasePart"))) {
-				const cameraWinParts = match.pitch.folder.FindFirstChild("CameraWinParts", true);
-				cameraPart = cameraWinParts ? cameraWinParts.FindFirstChild(camSide) : undefined;
-			}
-			if (cameraPart && cameraPart.IsA("BasePart")) {
-				match.pitch.folder.SetAttribute("FB_VictoryCamCFrame", cameraPart.CFrame);
-			} else {
-				match.pitch.folder.SetAttribute("FB_VictoryCamCFrame", undefined);
-				warn(`[Football] ${match.pitch.folder.Name} is missing VictoryLineup/${camSide}/CameraPart`);
-			}
+				// Use the exact authored shot for the winning side: the CameraPart
+				// inside the VictoryLineup side model (legacy CameraWinParts kept as
+				// a fallback). CFrame is a supported attribute type, so the client
+				// reproduces the part's complete position and rotation without
+				// recalculating either.
+				const camSide: TeamName = winner ?? flipSide ?? "Blue";
+				const sideModel = lineupFolder ? lineupFolder.FindFirstChild(camSide) : undefined;
+				let cameraPart: Instance | undefined = sideModel ? sideModel.FindFirstChild("CameraPart", true) : undefined;
+				if (!(cameraPart && cameraPart.IsA("BasePart"))) {
+					const cameraWinParts = match.pitch.folder.FindFirstChild("CameraWinParts", true);
+					cameraPart = cameraWinParts ? cameraWinParts.FindFirstChild(camSide) : undefined;
+				}
+				if (cameraPart && cameraPart.IsA("BasePart")) {
+					match.pitch.folder.SetAttribute("FB_VictoryCamCFrame", cameraPart.CFrame);
+				} else {
+					match.pitch.folder.SetAttribute("FB_VictoryCamCFrame", undefined);
+					warn(`[Football] ${match.pitch.folder.Name} is missing VictoryLineup/${camSide}/CameraPart`);
+				}
 
-			// Camera first, THEN the winner text.
-			task.wait(0.2);
-			if (winner !== undefined) {
-				const hex = winner === "Blue" ? BLUE_HEX : RED_HEX;
-				const teamName = match.ladderTeamNameForSide(winner) ?? `${winner.upper()} TEAM`;
-				match.announce(`<font color="${hex}">${escapeRichText(teamName)} WINS!</font>`);
-			} else if (flipSide !== undefined) {
-				// Coin-flip presentation (Phase 4b): suspense, then the ACTUAL
-				// result the MatchDirector already flipped.
-				match.announce("COIN FLIP...");
-				const localMatchGen = matchGen;
-				const side = flipSide;
-				task.delay(COIN_FLIP_SUSPENSE, () => {
-					if (matchGen !== localMatchGen) {
-						return;
-					}
-					const hex = side === "Blue" ? BLUE_HEX : RED_HEX;
-					match.announce(`<font color="${hex}">${side.upper()} MOVES UP!</font>`);
-				});
-			} else {
-				match.announce("TIE GAME!");
+				// Camera first, THEN the winner presentation.
+				task.wait(0.2);
+				if (winner !== undefined) {
+					// The Victory overlay replaces the old center announce: it
+					// renders WINNERS/YOU LOSE, the winning side, the ladder
+					// team name, the roster icons and the confetti client-side.
+					const teamName = match.ladderTeamNameForSide(winner) ?? `${winner.upper()} TEAM`;
+					match.announce("");
+					match.setAttr(FootballAttr.WinnerName, teamName);
+					match.setAttr(FootballAttr.WinnerSide, winner);
+				} else if (flipSide !== undefined) {
+					// Coin-flip presentation (Phase 4b): suspense, then the ACTUAL
+					// result the MatchDirector already flipped.
+					match.announce("COIN FLIP...");
+					const localMatchGen = matchGen;
+					const side = flipSide;
+					task.delay(COIN_FLIP_SUSPENSE, () => {
+						if (matchGen !== localMatchGen) {
+							return;
+						}
+						const hex = side === "Blue" ? BLUE_HEX : RED_HEX;
+						match.announce(`<font color="${hex}">${side.upper()} MOVES UP!</font>`);
+					});
+				} else {
+					match.announce("TIE GAME!");
+				}
+			});
+			if (!stageOk) {
+				warn(`[Football] victory staging FAILED on ${match.pitch.folder.Name}: ${stageErr}`);
 			}
 		}
 		task.wait(VICTORY_SCENE_TIME);
+		// Drop the victory overlay before the ladder map takes the screen.
+		for (const match of matches) {
+			match.setAttr(FootballAttr.WinnerSide, "");
+			match.setAttr(FootballAttr.WinnerName, "");
+		}
 		for (const base of winnerBases) {
 			if (base.Parent !== undefined) {
 				VehicleSim.setShowcaseLock(base, undefined);
@@ -1660,6 +1687,11 @@ const footballMatch = {
 		if (match.phase === "Kickoff" || match.phase === "FaceOff" || match.phase === "Goal") {
 			// startKickoff's GO / the goal-pause resolution unlocks the roster.
 			lockPlayer(player);
+			// Mid-face-off the car belongs on its podium, NOT the kickoff spot
+			// (a late SpawnVehicle return here teleported cars off the stage).
+			if (match.phase === "FaceOff" && match.placeVehicleOnStageFor(player)) {
+				return;
+			}
 			match.placeVehicleFor(player);
 			return;
 		}

@@ -1,8 +1,8 @@
 // Legacy `wait` / `delay` / `spawn` equivalents.
 //
 // A handful of original scripts used the deprecated globals (`wait(0.01)` /
-// `wait()` in vehicle.client, killNotowned's `while wait(10)`, Nuke light's
-// `wait()`, `delay(3, ...)` in vehicle.client boost, VehicleKeyHandler's
+// `wait()` in vehicle.client, killNotowned's `while wait(10)`,
+// `delay(3, ...)` in vehicle.client boost, VehicleKeyHandler's
 // `wait(.2)`, gameUi's commented `wait(1)`).
 //
 // Legacy semantics differ from task.wait: resumption is throttled (~30 Hz) and

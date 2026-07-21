@@ -2,13 +2,11 @@
 
 import DataStore2 from "./Modules/DataStore2";
 import crateModule from "./Modules/CrateModule";
-import { Globals } from "./Globals";
 import TeamRegistry, { RENAME_PRODUCT_ID } from "./Modules/TeamRegistry";
 import { ProductIds } from "shared/Monetization";
 
 const MarketplaceService = game.GetService("MarketplaceService");
 const DataStoreService = game.GetService("DataStoreService");
-const TweenService = game.GetService("TweenService");
 const Players = game.GetService("Players");
 
 // Data store for tracking purchases that were successfully processed
@@ -74,43 +72,9 @@ productFunctions.set(ProductIds.Gold280000, (receipt, player) => {
 // product ids 1625754877 / 1625756131 / 1625756132 / 1625756133 in the
 // Creator Dashboard — with no handler here they would sit NotProcessedYet.
 
-//Nuke
-productFunctions.set(ProductIds.Nuke, (receipt, player) => {
-	const nuke = (
-		game.GetService("ServerStorage") as unknown as { Nuke: BasePart & { Mesh: SpecialMesh } }
-	).Nuke.Clone();
-	nuke.Parent = game.Workspace;
-	const tweenInfo = new TweenInfo(10, Enum.EasingStyle.Linear);
-
-	const tween = TweenService.Create(nuke.Mesh, tweenInfo, { Scale: new Vector3(2000, 2000, 2000) });
-	tween.Play();
-
-	Globals.SpawnInPlayer(player);
-
-	task.wait(3);
-	for (const p of Players.GetPlayers()) {
-		Globals.vehiclesTable[p.UserId]!.KillVehicle(player, 69420);
-	}
-
-	nuke.Destroy();
-
-	return true;
-});
-
 productFunctions.set(ProductIds.OverdriveCrate, (receipt, player) => {
 	task.spawn(() => {
 		crateModule.actuallyOpen(player, -1);
-	});
-
-	return true;
-});
-
-//Low Gravity
-productFunctions.set(ProductIds.LowGravity, (receipt, player) => {
-	game.Workspace.Gravity = 80;
-
-	task.delay(120, () => {
-		game.Workspace.Gravity = 196.2;
 	});
 
 	return true;

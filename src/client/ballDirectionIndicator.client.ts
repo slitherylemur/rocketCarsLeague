@@ -103,6 +103,19 @@ function createIndicator(): Frame {
 
 arrow = createIndicator();
 
+// The victory scene (FB_Phase="Ended") points the camera at the lineup, not
+// the pitch — the arrow would just sit on screen aiming at the leftover ball.
+// Hidden for that phase; the next round's phases bring it straight back.
+function matchEnded(): boolean {
+	const pitchId = localPlayer.GetAttribute(PITCH_ATTRIBUTE);
+	if (!typeIs(pitchId, "string")) {
+		return false;
+	}
+	const mapFolder = Workspace.FindFirstChild("Map");
+	const pitch = mapFolder && mapFolder.FindFirstChild(pitchId);
+	return pitch !== undefined && pitch.GetAttribute("FB_Phase") === "Ended";
+}
+
 function localBall(): BasePart | undefined {
 	const pitchId = localPlayer.GetAttribute(PITCH_ATTRIBUTE);
 	if (!typeIs(pitchId, "string")) {
@@ -123,7 +136,7 @@ RunService.RenderStepped.Connect(() => {
 	const currentArrow = arrow;
 	const camera = Workspace.CurrentCamera;
 	const ball = localBall();
-	if (!camera || !ball || ball.Parent === undefined) {
+	if (!camera || !ball || ball.Parent === undefined || matchEnded()) {
 		currentArrow.Visible = false;
 		return;
 	}

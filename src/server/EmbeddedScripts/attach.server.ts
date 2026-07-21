@@ -5,19 +5,17 @@
 //     — kills vehicles whose VehicleSeat touches the second water level
 //  2. ServerStorage/Maps/ShipIsland/water/sea/ocean/hits/Hit/Script (×4 identical)
 //     — kills the vehicle of any character whose HumanoidRootPart touches a Hit part
-//  3. ServerStorage/Nuke/Light/Script — re-adorns the light every legacy-wait tick
-//  4. ServerStorage/VehicleModels/TestVehicle/Seats/VehicleSeat/Script
+//  3. ServerStorage/VehicleModels/TestVehicle/Seats/VehicleSeat/Script
 //     — ProximityPrompt sits the triggering player in the seat
+//
+// (The Nuke/Light re-adorn script left with the Nuke product's removal.)
 //
 // Attachment points mirror when the originals started running:
 //  - map scripts: when the ShipIsland clone is parented into workspace.Map
 //    (roundHandler.loadMap)
-//  - Nuke: when the Nuke clone is parented to Workspace (purchaseHandler)
 //  - TestVehicle: when a TestVehicle clone enters Workspace (spawnVehicle —
 //    both the drivable copy under workspace.Vehicles and the garage display
 //    copy under workspace.PlayerGarages/*/VehicleFolder)
-
-import { legacyWait } from "shared/LegacyTiming";
 
 const Workspace = game.GetService("Workspace");
 
@@ -80,27 +78,7 @@ for (const child of (Workspace as unknown as { Map: Folder }).Map.GetChildren())
 	}
 }
 
-// ---- 3) Nuke/Light --------------------------------------------------------
-function attachNukeLight(nuke: Instance) {
-	task.spawn(() => {
-		const light = nuke.WaitForChild("Light") as Instance & { Adornee?: Instance };
-		// Original: while true do script.Parent.Adornee = script.Parent.Parent wait() end
-		// The loop died with the script when the nuke was destroyed; here it exits
-		// once the nuke leaves the game.
-		while (nuke.IsDescendantOf(game)) {
-			(light as unknown as { Adornee: Instance }).Adornee = light.Parent!;
-			legacyWait();
-		}
-	});
-}
-
-Workspace.ChildAdded.Connect((child) => {
-	if (child.Name === "Nuke") {
-		attachNukeLight(child);
-	}
-});
-
-// ---- 4) TestVehicle seat prompt -------------------------------------------
+// ---- 3) TestVehicle seat prompt -------------------------------------------
 function attachTestVehicleSeat(seat: VehicleSeat) {
 	(seat.WaitForChild("ProximityPrompt") as ProximityPrompt).Triggered.Connect((player) => {
 		seat.Sit((player.Character as unknown as { Humanoid: Humanoid }).Humanoid);

@@ -54,7 +54,7 @@ const DRIFT_MIN_PROP_VEL = 0.15; // below this fraction of top speed drift disen
 const DRIFT_SIDE_FORCE_FWD = 30; // centripetal assist per unit mass while drifting forward
 const DRIFT_SIDE_FORCE_REV = 15; // centripetal assist per unit mass while drifting in reverse
 const DRIFT_YAW_RATE = 8; // rad/s of commanded yaw at full steer and full speed — a handbrake whip. Must stay clearly above grip turning's kinematic rate (v/minTurnRadius, ~4 rad/s at top speed) or the handbrake feels like nothing.
-const DRIFT_YAW_TORQUE = 400; // yaw authority per unit total mass — how hard the slide rotation is enforced; high so the handbrake whip decisively out-muscles the grip servo
+const DRIFT_YAW_TORQUE = 300; // yaw authority per unit total mass — how hard the slide rotation is enforced; high so the handbrake whip decisively out-muscles the grip servo
 const DRIFT_ENGINE_FORCE_MULT = 0.25; // engine force while sliding — a handbrake brakes; boost punches through
 const DRIFT_SPEED_SCRUB = 0.35; // handbrake drag per unit mass per stud/s of travel speed while sliding
 // Grip-mode yaw servo: while grounded and not sliding, the drift yaw mover is
@@ -72,7 +72,7 @@ const DRIFT_SPEED_SCRUB = 0.35; // handbrake drag per unit mass per stud/s of tr
 // arc that feels right; spin-out control is then ONE knob — the servo's
 // GRIP_YAW_TORQUE budget. (maxTurnRadius / minAngularSpeed tuning fields are
 // currently unused by the sim.)
-const GRIP_YAW_TORQUE = 130; // yaw authority per unit total mass for the grip servo — enforces the arc and damps roll/spin (110 let spin-outs through; 300 felt too strong; playtest-walked down from 180). Per-vehicle tunable.
+const GRIP_YAW_TORQUE = 125; // yaw authority per unit total mass for the grip servo — enforces the arc and damps roll/spin (110 let spin-outs through; 300 felt too strong; playtest-walked down from 180). Per-vehicle tunable.
 // While boosting (BoostHeld with meter > 0) the servo torque DROPS to this —
 // slightly below the normal budget, so boost-speed steering is a little
 // looser instead of forced. Friction is not changed by boost.

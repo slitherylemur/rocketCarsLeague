@@ -291,6 +291,14 @@ task.spawn(() => {
 	const context = vehicleContext;
 	context.GetPropertyChangedSignal("Enabled").Connect(() => syncActionStates(context, context.Enabled));
 	syncActionStates(context, context.Enabled);
+
+	// Focus changes are the other latch vector (alt-tab / multi-client window
+	// switching): a key released while another window has focus never delivers
+	// its transition here. Neutral everything on focus loss, and re-sync to the
+	// real hardware state on focus gain (a key genuinely still held keeps
+	// working).
+	UserInputService.WindowFocusReleased.Connect(() => syncActionStates(context, false));
+	UserInputService.WindowFocused.Connect(() => syncActionStates(context, context.Enabled));
 });
 
 // ---------------------------------------------------------------------------

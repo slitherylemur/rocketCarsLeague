@@ -33,6 +33,7 @@ import { CrateMenuGui } from "./components/CrateMenuGui";
 import { TimerGui } from "./components/TimerGui";
 import { MatchHudGui } from "./components/MatchHudGui";
 import { FaceOffGui } from "./components/FaceOffGui";
+import { VictoryGui } from "./components/VictoryGui";
 import { LandingGui } from "./components/LandingGui";
 import { CreateTeamGui, InvitePopupGui, RenamePopupGui } from "./components/CarBallMenusGui";
 import { RoundSummaryGui } from "./components/RoundSummaryGui";
@@ -74,6 +75,8 @@ function buildTree(): React.Element {
 		React.createElement(MatchHudGui, { key: "MatchHud" }),
 		// Round-start face-off overlay (blue vs red name plates).
 		React.createElement(FaceOffGui, { key: "FaceOff" }),
+		// End-of-match victory overlay (WINNERS/YOU LOSE + confetti).
+		React.createElement(VictoryGui, { key: "Victory" }),
 		// Car Ball landing page (Top Table Phase 1).
 		React.createElement(LandingGui, { key: "Landing" }),
 		// Top Table Phase 2 menus.
@@ -81,7 +84,7 @@ function buildTree(): React.Element {
 		React.createElement(InvitePopupGui, { key: "InvitePopup" }),
 		React.createElement(RenamePopupGui, { key: "RenamePopup" }),
 		React.createElement(RoundSummaryGui, { key: "RoundSummary" }),
-		// Ladder map between victory scene and summary (Top Table Phase 4b);
+		// Ladder map after the victory scene + summary (Top Table Phase 4b);
 		// doubles as the session-end champions screen (Phase 5).
 		React.createElement(LadderMapGui, { key: "LadderMap" }),
 		// Steer NumberValue — a plain (non-UI) StarterGui child, cloned along

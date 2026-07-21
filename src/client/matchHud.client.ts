@@ -10,6 +10,8 @@
 // re-resolves the current MatchHud, and a PlayerGui.ChildAdded repaints the
 // fresh mount with the latest state.
 
+import { startUiConfetti } from "shared/UiConfetti";
+
 const Players = game.GetService("Players");
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
 const RunService = game.GetService("RunService");
@@ -31,6 +33,10 @@ const ATTR_GAME_END_CUE = "FB_GameEndCue";
 const ATTR_FOCAM_CFRAME = "FB_FaceOffCamCFrame";
 const ATTR_BLUE_NAME = "FB_BlueName";
 const ATTR_RED_NAME = "FB_RedName";
+// Victory overlay: footballMatch.playVictoryScene sets these on the pitch
+// while the lineup camera runs, and clears them before the ladder map.
+const ATTR_WINNER_SIDE = "FB_WinnerSide";
+const ATTR_WINNER_NAME = "FB_WinnerName";
 // Session round counter (Phase 5) — footballMatch.beginRound sets both.
 const ATTR_ROUND = "CB_Round";
 const ATTR_ROUND_MAX = "CB_SessionRounds";
@@ -195,6 +201,8 @@ function fetchThumbnail(player: Player) {
 		if (ok) {
 			thumbnailCache.set(player.UserId, content as string);
 			rebuildTeamRows();
+			rebuildFaceOffIcons();
+			refreshVictory();
 		}
 	});
 }
@@ -274,6 +282,68 @@ interface FaceOffShape extends ScreenGui {
 	};
 }
 
+// ---- face-off roster icons ----------------------------------------------
+// One PlayerIcon clone per rostered player, under each plate's Icons row,
+// ringed with the side's color. Same thumbnail cache as the top bar.
+
+const FACEOFF_BLUE = Color3.fromRGB(79, 168, 255);
+const FACEOFF_RED = Color3.fromRGB(255, 80, 80);
+
+function faceOffIconsRow(plate: Frame): Frame | undefined {
+	const icons = plate.FindFirstChild("Icons");
+	return icons && icons.IsA("Frame") ? icons : undefined;
+}
+
+function fillFaceOffIcons(row: Frame | undefined, members: Player[], accent: Color3) {
+	if (!row) {
+		return;
+	}
+	for (const child of row.GetChildren()) {
+		if (child.Name === "PlayerIcon") {
+			child.Destroy();
+		}
+	}
+	let shown = 0;
+	for (const member of members) {
+		shown += 1;
+		const icon = (
+			ReplicatedStorage as unknown as { Ui: { PlayerIcon: PlayerIconUi } }
+		).Ui.PlayerIcon.Clone();
+		icon.LayoutOrder = shown;
+		icon.BackgroundColor3 = accent;
+		icon.Value.Visible = false; // kill count slot from the deathmatch row
+		// Square inside the row regardless of the template's authored size.
+		icon.Size = UDim2.fromScale(1, 1);
+		if (!icon.FindFirstChildOfClass("UIAspectRatioConstraint")) {
+			const aspect = new Instance("UIAspectRatioConstraint");
+			aspect.AspectRatio = 1;
+			aspect.Parent = icon;
+		}
+		const stroke = new Instance("UIStroke");
+		stroke.Name = "TeamStroke";
+		stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border;
+		stroke.Color = accent;
+		stroke.Thickness = 3;
+		stroke.Parent = icon;
+		const thumb = playerThumbnail(member);
+		if (thumb !== undefined) {
+			icon.Person.Image = thumb;
+		} else {
+			fetchThumbnail(member);
+		}
+		icon.Parent = row;
+	}
+}
+
+function rebuildFaceOffIcons() {
+	const gui = currentFaceOff();
+	if (!gui || !gui.Enabled) {
+		return;
+	}
+	fillFaceOffIcons(faceOffIconsRow(gui.Banner.BluePlate), playersOnSide("Blue"), FACEOFF_BLUE);
+	fillFaceOffIcons(faceOffIconsRow(gui.Banner.RedPlate), playersOnSide("Red"), FACEOFF_RED);
+}
+
 function currentFaceOff(): FaceOffShape | undefined {
 	const playerGui = LocalPlayer.FindFirstChild("PlayerGui");
 	const gui = playerGui && playerGui.FindFirstChild("FaceOff");
@@ -302,6 +372,9 @@ function showFaceOff(gui: FaceOffShape, pitch: Instance) {
 	gui.Banner.BluePlate.TeamName.Text = blueName !== "" ? blueName : "BLUE TEAM";
 	gui.Banner.RedPlate.TeamName.Text = redName !== "" ? redName : "RED TEAM";
 	gui.Enabled = true;
+	// Unconditional (not gated on faceOffShown): a respawn remount mid-segment
+	// rebuilds the gui empty, and this repaints the fresh rows.
+	rebuildFaceOffIcons();
 	if (faceOffShown) {
 		return;
 	}
@@ -356,6 +429,11 @@ function refreshFaceOff() {
 
 let faceOffCamConnection: RBXScriptConnection | undefined;
 
+// Widened during the face-off so the whole lineup fits the authored shot;
+// the driver's own FOV is captured on entry and restored on exit.
+const FACEOFF_FOV = 75;
+let faceOffPrevFov: number | undefined;
+
 function stopFaceOffCamera() {
 	if (faceOffCamConnection) {
 		faceOffCamConnection.Disconnect();
@@ -365,7 +443,11 @@ function stopFaceOffCamera() {
 		const camera = game.Workspace.CurrentCamera;
 		if (camera) {
 			camera.CameraType = Enum.CameraType.Custom;
+			if (faceOffPrevFov !== undefined) {
+				camera.FieldOfView = faceOffPrevFov;
+			}
 		}
+		faceOffPrevFov = undefined;
 	}
 }
 
@@ -376,8 +458,12 @@ function applyFaceOffCamera(pitch: Instance): boolean {
 	}
 	const camCFrame = pitch.GetAttribute(ATTR_FOCAM_CFRAME);
 	if (typeIs(camCFrame, "CFrame")) {
+		if (faceOffPrevFov === undefined) {
+			faceOffPrevFov = camera.FieldOfView;
+		}
 		camera.CameraType = Enum.CameraType.Scriptable;
 		camera.CFrame = camCFrame;
+		camera.FieldOfView = FACEOFF_FOV;
 		return true;
 	}
 	return false;
@@ -404,6 +490,131 @@ function handleFaceOffCamera() {
 	}
 }
 
+// ---- victory overlay -----------------------------------------------------
+//
+// While FB_Phase is "Ended" AND the pitch has a FB_WinnerSide, the Victory
+// ScreenGui (VictoryGui.tsx) overlays the lineup camera shot: a giant
+// pulsing/tilting "🏆 WINNERS 🏆" (gold) or "YOU LOSE !" (red) headline,
+// "<SIDE> TEAM WINS!" in the side color, the winning ladder team's name, its
+// roster icons, and corner-launched confetti in two shades of the side color.
+
+interface VictoryShape extends ScreenGui {
+	Confetti: Frame;
+	Title: TextLabel & { Pulse: UIScale };
+	SubTitle: TextLabel;
+	TeamName: TextLabel;
+	Icons: Frame;
+}
+
+const VICTORY_GOLD = Color3.fromRGB(255, 200, 60);
+const VICTORY_LOSE_RED = Color3.fromRGB(255, 60, 60);
+
+// Repeating + reversing, with different periods so the pulse and the tilt
+// drift out of phase instead of breathing in sync.
+const VICTORY_PULSE = new TweenInfo(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true);
+const VICTORY_TILT = new TweenInfo(1.3, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true);
+
+function currentVictory(): VictoryShape | undefined {
+	const playerGui = LocalPlayer.FindFirstChild("PlayerGui");
+	const gui = playerGui && playerGui.FindFirstChild("Victory");
+	if (gui && gui.IsA("ScreenGui") && gui.FindFirstChild("Title") && gui.FindFirstChild("Confetti")) {
+		return gui as VictoryShape;
+	}
+	return undefined;
+}
+
+// Effects are bound to ONE mounted gui instance: a respawn remount destroys
+// it (killing the tweens with it), and the repaint then restarts the effects
+// against the fresh mount.
+let victoryFxGui: VictoryShape | undefined;
+let victoryTweens: Tween[] = [];
+let victoryConfettiStop: (() => void) | undefined;
+
+function stopVictoryFx() {
+	for (const tween of victoryTweens) {
+		tween.Cancel();
+	}
+	victoryTweens = [];
+	if (victoryConfettiStop) {
+		victoryConfettiStop();
+		victoryConfettiStop = undefined;
+	}
+	victoryFxGui = undefined;
+}
+
+function startVictoryFx(gui: VictoryShape, sideColor: Color3) {
+	stopVictoryFx();
+	victoryFxGui = gui;
+	const lightShade = sideColor.Lerp(new Color3(1, 1, 1), 0.5);
+	victoryConfettiStop = startUiConfetti(gui.Confetti, [sideColor, lightShade]);
+	gui.Title.Pulse.Scale = 0.94;
+	gui.Title.Rotation = -3;
+	const pulse = TweenService.Create(gui.Title.Pulse, VICTORY_PULSE, { Scale: 1.06 });
+	const tilt = TweenService.Create(gui.Title, VICTORY_TILT, { Rotation: 3 });
+	pulse.Play();
+	tilt.Play();
+	victoryTweens = [pulse, tilt];
+}
+
+// RichText <font size> beats TextScaled's 100px cap. Sized off the viewport
+// (height-capped, and width-capped by the text's rough character count) so
+// the headline is giant on desktop yet still fits a phone screen.
+function setGiantTitle(label: TextLabel, text: string, widthChars: number) {
+	const camera = game.Workspace.CurrentCamera;
+	const viewport = camera ? camera.ViewportSize : new Vector2(1280, 720);
+	const fontSize = math.floor(math.min(viewport.Y * 0.17, (viewport.X * 0.92) / (widthChars * 0.45)));
+	label.Text = `<font size="${math.max(fontSize, 24)}">${text}</font>`;
+}
+
+function showVictory(gui: VictoryShape, pitch: Instance, winnerSide: string) {
+	const sideColor = winnerSide === "Blue" ? FACEOFF_BLUE : FACEOFF_RED;
+	const mySide = LocalPlayer.GetAttribute("CB_Side");
+	const lost = typeIs(mySide, "string") && mySide !== "" && mySide !== winnerSide;
+	if (lost) {
+		gui.Title.TextColor3 = VICTORY_LOSE_RED;
+		setGiantTitle(gui.Title, "YOU LOSE !", 10);
+	} else {
+		gui.Title.TextColor3 = VICTORY_GOLD;
+		setGiantTitle(gui.Title, "🏆 WINNERS 🏆", 13);
+	}
+	gui.SubTitle.Text = `${winnerSide.upper()} TEAM WINS!`;
+	gui.SubTitle.TextColor3 = sideColor;
+	gui.TeamName.Text = attrStringOn(pitch, ATTR_WINNER_NAME);
+	// Winning roster icons, ringed in the side color — same builder as the
+	// face-off plates (and the same thumbnail cache).
+	fillFaceOffIcons(gui.Icons, playersOnSide(winnerSide), sideColor);
+	gui.Enabled = true;
+	if (victoryFxGui !== gui) {
+		startVictoryFx(gui, sideColor);
+	}
+}
+
+function hideVictory(gui: VictoryShape) {
+	stopVictoryFx();
+	gui.Enabled = false;
+	gui.Title.Rotation = 0;
+	gui.Title.Pulse.Scale = 1;
+}
+
+function refreshVictory() {
+	const gui = currentVictory();
+	if (!gui) {
+		stopVictoryFx();
+		return;
+	}
+	const pitch = currentPitch();
+	const winnerSide = attrStringOn(pitch, ATTR_WINNER_SIDE);
+	if (
+		pitch !== undefined &&
+		attrStringOn(pitch, ATTR_PHASE) === "Ended" &&
+		(winnerSide === "Blue" || winnerSide === "Red")
+	) {
+		showVictory(gui, pitch, winnerSide);
+	} else {
+		hideVictory(gui);
+	}
+}
+
 // Victory scene camera: when our pitch's match ends, aim at its
 // VictoryCamera shot (winners are posed in front of their goal). The server
 // sets FB_Phase="Ended" FIRST and the cam attributes only ~0.2s later, so this
@@ -414,6 +625,15 @@ function handleFaceOffCamera() {
 // menu camera takes over when the shop phase remounts the UI (CB_PitchId is
 // cleared by footballMatch.stop(), which ends the loop).
 let victoryCamConnection: RBXScriptConnection | undefined;
+
+// The ladder map's 3D pitch rise (ladderMap.client.ts) needs the camera while
+// its gui is enabled — the victory shot must stand down for it, or the two
+// would fight over camera.CFrame every frame.
+function ladderMapCovering(): boolean {
+	const playerGui = LocalPlayer.FindFirstChild("PlayerGui");
+	const gui = playerGui && playerGui.FindFirstChild("LadderMap");
+	return gui !== undefined && gui.IsA("ScreenGui") && gui.Enabled;
+}
 
 function stopVictoryCamera() {
 	if (victoryCamConnection) {
@@ -447,7 +667,7 @@ function applyVictoryCamera(pitch: Instance): boolean {
 
 function handleVictoryCamera() {
 	const pitch = currentPitch();
-	if (!pitch || attrStringOn(pitch, ATTR_PHASE) !== "Ended") {
+	if (!pitch || attrStringOn(pitch, ATTR_PHASE) !== "Ended" || ladderMapCovering()) {
 		stopVictoryCamera();
 		return;
 	}
@@ -459,11 +679,26 @@ function handleVictoryCamera() {
 	if (!victoryCamConnection) {
 		victoryCamConnection = RunService.RenderStepped.Connect(() => {
 			const current = currentPitch();
-			if (!current || attrStringOn(current, ATTR_PHASE) !== "Ended" || !applyVictoryCamera(current)) {
+			if (
+				!current ||
+				attrStringOn(current, ATTR_PHASE) !== "Ended" ||
+				ladderMapCovering() ||
+				!applyVictoryCamera(current)
+			) {
 				stopVictoryCamera();
 			}
 		});
 	}
+}
+
+// The scoreboard bar has no place over the face-off presentation — the
+// FaceOff overlay owns the screen until the phase moves on to Kickoff.
+function refreshTopBarVisibility() {
+	const hud = currentHud();
+	if (!hud) {
+		return;
+	}
+	hud.TopBar.Visible = attrStringOn(currentPitch(), ATTR_PHASE) !== "FaceOff";
 }
 
 function refreshAll() {
@@ -471,8 +706,10 @@ function refreshAll() {
 	refreshClock();
 	refreshRound();
 	refreshAnnounce();
+	refreshTopBarVisibility();
 	rebuildTeamRows();
 	refreshFaceOff();
+	refreshVictory();
 	handleFaceOffCamera();
 	handleVictoryCamera();
 }
@@ -503,6 +740,9 @@ function bindPitch() {
 			}),
 		);
 		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_PHASE).Connect(refreshAll));
+		// Winner side lands ~0.2s after Phase="Ended" (camera first) and is
+		// cleared when the scene ends — both edges drive the overlay.
+		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_WINNER_SIDE).Connect(refreshVictory));
 		// The face-off camera arrives just before Phase="FaceOff" — react to both.
 		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_FOCAM_CFRAME).Connect(handleFaceOffCamera));
 		// The victory camera arrives AFTER Phase="Ended" — react when it does.
@@ -536,7 +776,7 @@ Players.PlayerRemoving.Connect(() => task.defer(rebuildTeamRows));
 
 // Repaint every fresh mount (the server remounts PlayerGui on each respawn).
 LocalPlayer.WaitForChild("PlayerGui").ChildAdded.Connect((child) => {
-	if (child.Name === "MatchHud" || child.Name === "FaceOff") {
+	if (child.Name === "MatchHud" || child.Name === "FaceOff" || child.Name === "Victory") {
 		task.defer(refreshAll);
 	}
 });

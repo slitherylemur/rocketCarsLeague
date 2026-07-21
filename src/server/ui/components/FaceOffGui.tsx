@@ -66,6 +66,29 @@ function teamPlate(name: string, accent: Color3, anchorX: number, posXScale: num
 					TextStrokeTransparency: 0.4,
 				} as never,
 			),
+			// Roster row under the plate: matchHud.client.ts clones PlayerIcon
+			// into it (with a team-colored UIStroke) for every player on the
+			// side. A plate child so it slides in with the plate tween.
+			React.createElement(
+				"Frame",
+				{
+					Name: "Icons",
+					AnchorPoint: new Vector2(0.5, 0),
+					BackgroundTransparency: 1,
+					Position: new UDim2(0.5, 0, 1.45, 0),
+					Size: new UDim2(1, 0, 1.15, 0),
+				} as never,
+				[
+					React.createElement("UIListLayout", {
+						Name: "UIListLayout",
+						FillDirection: Enum.FillDirection.Horizontal,
+						HorizontalAlignment: Enum.HorizontalAlignment.Center,
+						VerticalAlignment: Enum.VerticalAlignment.Top,
+						Padding: new UDim(0.03, 0),
+						SortOrder: Enum.SortOrder.LayoutOrder,
+					} as never),
+				],
+			),
 		],
 	);
 }
