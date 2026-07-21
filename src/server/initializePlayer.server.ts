@@ -15,6 +15,8 @@ import ContentModule from "./Modules/Content";
 import { Globals } from "./Globals";
 import footballMatch from "./Modules/footballMatch";
 import TeamRegistry, { CarBallRemotes, RENAME_PRODUCT_ID } from "./Modules/TeamRegistry";
+import { ProductIds } from "shared/Monetization";
+import type { LadderTeam } from "./Modules/TeamRegistry";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import { PlayerGuiManager } from "./ui/PlayerGuiManager";
 import VehicleInputActions from "./Modules/vehicleInputActions";
@@ -395,7 +397,7 @@ Globals.openCrateMenu = (player: Player, crateName: number) => {
 	if (crateName > 0) {
 		crateMenu.OpenButton.TextLabel.Text = "OPEN - $" + crateContent.price;
 	} else {
-		crateMenu.OpenButton.TextLabel.Text = "OPEN - " + crateContent.price + "R$";
+		crateMenu.OpenButton.TextLabel.Text = "OPEN - R$ …";
 	}
 
 	for (const [i, itemToShow] of ipairs(crateContent.content)) {
@@ -465,14 +467,14 @@ function OpenShop(player: Player) {
 	uiConnections.get(player)!.set(
 		"shop3",
 		shop.Purchases.Nuke.MouseButton1Click.Connect(() => {
-			MarketplaceService.PromptProductPurchase(player, 1625756136);
+			MarketplaceService.PromptProductPurchase(player, ProductIds.Nuke);
 		}),
 	);
 
 	uiConnections.get(player)!.set(
 		"shop4",
 		shop.Purchases.LowGravity.MouseButton1Click.Connect(() => {
-			MarketplaceService.PromptProductPurchase(player, 1625756139);
+			MarketplaceService.PromptProductPurchase(player, ProductIds.LowGravity);
 		}),
 	);
 
@@ -620,21 +622,32 @@ function spawnIntoMatch(player: Player) {
 		if (!ok || result !== true) {
 			warn(`[Landing] SpawnInPlayer failed (ok=${ok}) — returning to menu`);
 			ResetAndInitialisePlayerMenuUI(player);
+			return;
+		}
+		// Teammates still in the lobby see this member flip to IN MATCH.
+		const team = TeamRegistry.getTeamOf(player);
+		if (team) {
+			for (const member of team.members) {
+				if (member !== player) {
+					refreshTeamPage(member);
+				}
+			}
 		}
 	});
 }
 
 // ---- Top Table Phase 2: team page, invites, rename ------------------------
 
+type TeamMemberSlot = Frame & { Avatar: ImageLabel; PlayerName: TextLabel; ReadyTag: TextLabel };
 interface CreateTeamGuiShape extends ScreenGui {
 	Panel: Frame & {
-		TeamName: TextLabel;
-		PlayerList: ScrollingFrame;
+		Header: Frame & { TeamName: TextLabel; Rename: TextButton };
+		Members: Frame & { Slot1: TeamMemberSlot; Slot2: TeamMemberSlot; Slot3: TeamMemberSlot };
+		PlayerList: ScrollingFrame & { EmptyHint: TextLabel };
 		InviteFriends: TextButton;
 		AllowRandoms: TextButton & { SwitchTrack: Frame & { SwitchKnob: Frame } };
-		Rename: TextButton;
 		Play: TextButton;
-		Back: TextButton;
+		Leave: TextButton;
 	};
 }
 interface InvitePopupShape extends ScreenGui {
@@ -646,35 +659,157 @@ interface RenamePopupShape extends ScreenGui {
 
 const MENU_FONT = new Font("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Heavy, Enum.FontStyle.Normal);
 
+// ---- vote start (the team page is a mini lobby) ---------------------------
+// Play is a ready vote: every member must press it, then the whole team
+// spawns together. A lobby team's members are ALWAYS all in the lobby —
+// invites can't be accepted into a team that started playing (team.inPlay)
+// and joinRandom never fills lobby teams — so there are no exemptions. Votes
+// reset on any membership change so a new arrival is never launched by stale
+// votes.
+const teamReadyVotes = new Map<string, Set<Player>>();
+
+// Lobbies whose vote completed while no round was spawnable (the end-of-round
+// interlude, or the shop window): held on "STARTING SOON…" and launched by the
+// shop-phase auto start — members carry CB_PendingLaunch so MatchDirector
+// shows them the NEXT ROUND countdown and includes them in the auto-spawn.
+const pendingLaunchTeams = new Set<string>();
+
+function cancelPendingLaunch(team: LadderTeam) {
+	if (!pendingLaunchTeams.delete(team.id)) {
+		return;
+	}
+	for (const member of team.members) {
+		member.SetAttribute("CB_PendingLaunch", undefined);
+	}
+}
+
+/** Every member voted → spawn the team together, or hold on STARTING SOON
+ * when there is no live round to spawn into. */
+function tryLaunchTeam(team: LadderTeam) {
+	if (pendingLaunchTeams.has(team.id)) {
+		return;
+	}
+	const votes = teamReadyVotes.get(team.id);
+	if (!votes || team.members.size() === 0) {
+		return;
+	}
+	for (const member of team.members) {
+		if (!votes.has(member)) {
+			return;
+		}
+	}
+	if (!footballMatch.isRoundLive() || Globals.shopPhaseActive === true) {
+		pendingLaunchTeams.add(team.id);
+		for (const member of team.members) {
+			member.SetAttribute("CB_PendingLaunch", true);
+			refreshTeamPage(member);
+		}
+		warn(`[TeamLobby] ${team.name} vote complete — STARTING SOON (rides the next-round countdown)`);
+		return;
+	}
+	teamReadyVotes.delete(team.id);
+	warn(`[TeamLobby] ${team.name} vote complete — launching ${team.members.size()} player(s)`);
+	for (const member of team.members) {
+		const page = member.FindFirstChild("PlayerGui")?.FindFirstChild("CreateTeam");
+		if (page && page.IsA("ScreenGui")) {
+			page.Enabled = false;
+		}
+		spawnIntoMatch(member);
+	}
+}
+
+Players.PlayerRemoving.Connect((player) => {
+	// Drop the leaver's votes, then re-check every voting team: if the leaver
+	// was the only unready member, the rest should launch, not sit waiting.
+	// (A pending team stays pending — the rest are all ready and the auto
+	// start will take them.)
+	task.defer(() => {
+		const affectedIds: string[] = [];
+		for (const [teamId, votes] of teamReadyVotes) {
+			votes.delete(player);
+			affectedIds.push(teamId);
+		}
+		for (const teamId of affectedIds) {
+			const team = TeamRegistry.getTeamById(teamId);
+			if (team) {
+				for (const member of team.members) {
+					refreshTeamPage(member);
+				}
+				tryLaunchTeam(team);
+			}
+		}
+	});
+});
+
+TeamRegistry.onTeamDisbanded((team) => {
+	teamReadyVotes.delete(team.id);
+	pendingLaunchTeams.delete(team.id);
+});
+
 function refreshTeamPage(player: Player) {
 	const page = player.WaitForChild("PlayerGui").FindFirstChild("CreateTeam") as CreateTeamGuiShape | undefined;
 	const team = TeamRegistry.getTeamOf(player);
 	if (!page || !team) {
 		return;
 	}
-	page.Panel.TeamName.Text = team.name.upper();
-	page.Panel.AllowRandoms.Text = "ALLOW RANDOM PLAYERS";
+	page.Panel.Header.TeamName.Text = team.name.upper();
 	page.Panel.AllowRandoms.SwitchTrack.BackgroundColor3 = team.open ? Color3.fromRGB(0, 190, 100) : Color3.fromRGB(75, 84, 98);
 	page.Panel.AllowRandoms.SwitchTrack.SwitchKnob.Position = UDim2.fromScale(team.open ? 0.73 : 0.27, 0.5);
 
+	// Member cards: slot i shows team.members[i] (index 0 = creator = crown).
+	const votes = teamReadyVotes.get(team.id);
+	const slots = [page.Panel.Members.Slot1, page.Panel.Members.Slot2, page.Panel.Members.Slot3];
+	for (let i = 0; i < slots.size(); i++) {
+		const slot = slots[i];
+		const member = team.members[i] as Player | undefined;
+		if (member) {
+			slot.Avatar.Image = `rbxthumb://type=AvatarHeadShot&id=${member.UserId}&w=150&h=150`;
+			slot.PlayerName.Text = i === 0 ? `👑 ${member.DisplayName}` : member.DisplayName;
+			slot.PlayerName.TextColor3 = member === player ? Color3.fromRGB(255, 214, 120) : new Color3(1, 1, 1);
+			slot.PlayerName.TextTransparency = 0;
+			slot.ReadyTag.Visible = votes !== undefined && votes.has(member);
+		} else {
+			slot.Avatar.Image = "";
+			slot.PlayerName.Text = "EMPTY SLOT";
+			slot.PlayerName.TextColor3 = new Color3(1, 1, 1);
+			slot.PlayerName.TextTransparency = 0.5;
+			slot.ReadyTag.Visible = false;
+		}
+	}
+
+	// Play button doubles as the vote button once the team has 2+ members.
+	let readyCount = 0;
+	for (const member of team.members) {
+		if (votes !== undefined && votes.has(member)) {
+			readyCount += 1;
+		}
+	}
+	if (pendingLaunchTeams.has(team.id)) {
+		page.Panel.Play.Text = "STARTING SOON…";
+	} else if (team.members.size() <= 1) {
+		page.Panel.Play.Text = "PLAY";
+	} else if (votes !== undefined && votes.has(player)) {
+		page.Panel.Play.Text = `CANCEL — ${readyCount}/${team.members.size()} READY`;
+	} else {
+		page.Panel.Play.Text = `READY UP (${readyCount}/${team.members.size()})`;
+	}
+
 	for (const child of page.Panel.PlayerList.GetChildren()) {
-		if (child.IsA("TextButton")) {
+		if (child.IsA("Frame")) {
 			child.Destroy();
 		}
 	}
+	let rowCount = 0;
 	for (const other of Players.GetPlayers()) {
 		if (other === player || TeamRegistry.getTeamOf(other) === team) {
 			continue;
 		}
-		const row = new Instance("TextButton");
+		rowCount += 1;
+		const row = new Instance("Frame");
 		row.Name = "InviteRow";
-		row.Size = new UDim2(1, -16, 0, 42);
-		row.BackgroundColor3 = Color3.fromRGB(42, 61, 84);
+		row.Size = new UDim2(1, -16, 0, 46);
+		row.BackgroundColor3 = Color3.fromRGB(30, 43, 60);
 		row.BorderSizePixel = 0;
-		row.TextColor3 = new Color3(1, 1, 1);
-		row.TextScaled = true;
-		row.FontFace = MENU_FONT;
-		row.Text = `INVITE ${other.Name}`;
 		const rowCorner = new Instance("UICorner");
 		rowCorner.CornerRadius = new UDim(0, 8);
 		rowCorner.Parent = row;
@@ -683,12 +818,60 @@ function refreshTeamPage(player: Player) {
 		rowStroke.Color = Color3.fromRGB(105, 135, 175);
 		rowStroke.Transparency = 0.55;
 		rowStroke.Parent = row;
-		row.MouseButton1Click.Connect(() => {
-			row.Text = "INVITED";
+
+		const avatar = new Instance("ImageLabel");
+		avatar.Name = "Avatar";
+		avatar.AnchorPoint = new Vector2(0, 0.5);
+		avatar.BackgroundColor3 = Color3.fromRGB(46, 60, 80);
+		avatar.BorderSizePixel = 0;
+		avatar.Image = `rbxthumb://type=AvatarHeadShot&id=${other.UserId}&w=48&h=48`;
+		avatar.Position = new UDim2(0, 8, 0.5, 0);
+		avatar.Size = new UDim2(0, 34, 0, 34);
+		const avatarCorner = new Instance("UICorner");
+		avatarCorner.CornerRadius = new UDim(0.5, 0);
+		avatarCorner.Parent = avatar;
+		avatar.Parent = row;
+
+		const nameLabel = new Instance("TextLabel");
+		nameLabel.Name = "PlayerName";
+		nameLabel.AnchorPoint = new Vector2(0, 0.5);
+		nameLabel.BackgroundTransparency = 1;
+		nameLabel.FontFace = MENU_FONT;
+		nameLabel.Position = new UDim2(0, 52, 0.5, 0);
+		nameLabel.Size = new UDim2(1, -180, 0, 22);
+		nameLabel.Text = other.DisplayName;
+		nameLabel.TextColor3 = new Color3(1, 1, 1);
+		nameLabel.TextScaled = true;
+		nameLabel.TextXAlignment = Enum.TextXAlignment.Left;
+		nameLabel.Parent = row;
+
+		const inviteButton = new Instance("TextButton");
+		inviteButton.Name = "Invite";
+		inviteButton.AnchorPoint = new Vector2(1, 0.5);
+		inviteButton.AutoButtonColor = true;
+		inviteButton.BackgroundColor3 = Color3.fromRGB(166, 235, 187);
+		inviteButton.BorderSizePixel = 0;
+		inviteButton.FontFace = MENU_FONT;
+		inviteButton.Position = new UDim2(1, -8, 0.5, 0);
+		inviteButton.Size = new UDim2(0, 108, 0, 30);
+		inviteButton.Text = "INVITE";
+		inviteButton.TextColor3 = Color3.fromRGB(20, 76, 43);
+		inviteButton.TextScaled = true;
+		const inviteCorner = new Instance("UICorner");
+		inviteCorner.CornerRadius = new UDim(0, 15);
+		inviteCorner.Parent = inviteButton;
+		const invitePadding = new Instance("UIPadding");
+		invitePadding.PaddingTop = new UDim(0, 6);
+		invitePadding.PaddingBottom = new UDim(0, 6);
+		invitePadding.Parent = inviteButton;
+		inviteButton.MouseButton1Click.Connect(() => {
+			inviteButton.Text = "SENT ✓";
 			sendInvitePopup(other, player);
 		});
+		inviteButton.Parent = row;
 		row.Parent = page.Panel.PlayerList;
 	}
+	page.Panel.PlayerList.EmptyHint.Visible = rowCount === 0;
 }
 
 function showTeamPage(player: Player) {
@@ -699,6 +882,15 @@ function showTeamPage(player: Player) {
 		connection.Disconnect();
 	}
 	const page = player.WaitForChild("PlayerGui").WaitForChild("CreateTeam") as CreateTeamGuiShape;
+	// The lobby can open from anywhere (landing button, invite acceptance
+	// mid-menu or mid-match) — make sure the other menu screens drop away.
+	pcall(() => {
+		playerGuiOf(player).Garage.Enabled = false;
+	});
+	const landingGui = player.FindFirstChild("PlayerGui")?.FindFirstChild("Landing");
+	if (landingGui && landingGui.IsA("ScreenGui")) {
+		landingGui.Enabled = false;
+	}
 	page.Enabled = true;
 	refreshTeamPage(player);
 
@@ -716,24 +908,84 @@ function showTeamPage(player: Player) {
 		// Roblox's native invite prompt must run client-side.
 		CarBallRemotes.PromptGameInvite.FireClient(player);
 	});
-	wire("teamRename", page.Panel.Rename, () => {
+	wire("teamRename", page.Panel.Header.Rename, () => {
 		handleRenameRequest(player);
 	});
 	wire("teamPlay", page.Panel.Play, () => {
-		page.Enabled = false;
-		spawnIntoMatch(player);
+		const team = TeamRegistry.getTeamOf(player);
+		if (!team || pendingLaunchTeams.has(team.id)) {
+			return;
+		}
+		let votes = teamReadyVotes.get(team.id);
+		if (!votes) {
+			votes = new Set();
+			teamReadyVotes.set(team.id, votes);
+		}
+		if (team.members.size() <= 1) {
+			// Solo team: no vote to hold — tryLaunchTeam spawns immediately,
+			// or holds on STARTING SOON when no round is spawnable.
+			votes.add(player);
+		} else if (votes.has(player)) {
+			votes.delete(player);
+		} else {
+			votes.add(player);
+		}
+		for (const member of team.members) {
+			refreshTeamPage(member);
+		}
+		tryLaunchTeam(team);
 	});
-	wire("teamBack", page.Panel.Back, () => {
+	wire("teamLeave", page.Panel.Leave, () => {
+		const team = TeamRegistry.getTeamOf(player);
 		page.Enabled = false;
+		if (team) {
+			// Cancel BEFORE leaveTeam so the leaver's pending marker clears too.
+			cancelPendingLaunch(team);
+		}
+		TeamRegistry.leaveTeam(player);
+		if (team) {
+			// Membership changed: stale votes must not launch the rest.
+			teamReadyVotes.delete(team.id);
+			for (const member of team.members) {
+				refreshTeamPage(member);
+			}
+		}
 		showLanding(player);
 	});
+	// Keep the roster live while the page is open: players joining/leaving the
+	// server change both the invite list and (via TeamRegistry's own
+	// PlayerRemoving) possibly the member cards. Deferred so registry cleanup
+	// runs first.
+	uiConnections.get(player)!.set(
+		"teamRosterAdded",
+		Players.PlayerAdded.Connect(() => task.defer(() => refreshTeamPage(player))),
+	);
+	uiConnections.get(player)!.set(
+		"teamRosterRemoved",
+		Players.PlayerRemoving.Connect((leaving) => {
+			if (leaving !== player) {
+				task.defer(() => refreshTeamPage(player));
+			}
+		}),
+	);
 }
 
 const inviteGen = new Map<Player, number>();
+const inviteConnections = new Map<Player, RBXScriptConnection[]>();
+
+Players.PlayerRemoving.Connect((player) => {
+	inviteGen.delete(player);
+	for (const connection of inviteConnections.get(player) ?? []) {
+		connection.Disconnect();
+	}
+	inviteConnections.delete(player);
+});
 
 function sendInvitePopup(target: Player, from: Player) {
 	const team = TeamRegistry.getTeamOf(from);
-	if (!team || team.members.size() >= 3) {
+	// No invites for playing teams (referral popups can arrive long after the
+	// lobby launched) — joining mid-play is only via the allow-randoms path.
+	if (!team || team.inPlay || team.members.size() >= 3) {
 		return;
 	}
 	const popup = target.FindFirstChild("PlayerGui")?.FindFirstChild("InvitePopup") as InvitePopupShape | undefined;
@@ -742,14 +994,26 @@ function sendInvitePopup(target: Player, from: Player) {
 	}
 	const gen = (inviteGen.get(target) ?? 0) + 1;
 	inviteGen.set(target, gen);
-	popup.Panel.Message.Text = `${from.Name} invited you to ${team.name}`;
+	popup.Panel.Message.Text = `${from.DisplayName} invited you to ${team.name}`;
+	// A previous invite may have ended on the buttons-hidden failure message.
+	popup.Panel.Accept.Visible = true;
+	popup.Panel.Decline.Visible = true;
 	popup.Enabled = true;
 
+	// A superseded invite's handlers would otherwise stay connected forever
+	// (their gen guard keeps them inert but they leak).
+	for (const connection of inviteConnections.get(target) ?? []) {
+		connection.Disconnect();
+	}
 	const connections: RBXScriptConnection[] = [];
+	inviteConnections.set(target, connections);
 	const finish = () => {
 		popup.Enabled = false;
 		for (const connection of connections) {
 			connection.Disconnect();
+		}
+		if (inviteConnections.get(target) === connections) {
+			inviteConnections.delete(target);
 		}
 	};
 	connections.push(
@@ -757,11 +1021,63 @@ function sendInvitePopup(target: Player, from: Player) {
 			if (inviteGen.get(target) !== gen) {
 				return;
 			}
+			// Validate BEFORE joining: during the invite's 30s lifetime the
+			// lobby may have launched into a round, filled up, or disbanded —
+			// accepting must fail with a message, never join a playing team.
+			let failText: string | undefined;
+			if (!TeamRegistry.teamExists(team)) {
+				failText = `${team.name} no longer exists`;
+			} else if (team.inPlay) {
+				failText = `${team.name} already started playing`;
+			} else if (team.members.size() >= 3) {
+				failText = `${team.name} is full`;
+			}
+			if (failText !== undefined) {
+				finish();
+				popup.Panel.Message.Text = `Sorry — ${failText}!`;
+				popup.Panel.Accept.Visible = false;
+				popup.Panel.Decline.Visible = false;
+				popup.Enabled = true;
+				task.delay(2.5, () => {
+					if (inviteGen.get(target) === gen) {
+						popup.Enabled = false;
+					}
+				});
+				return;
+			}
 			finish();
+			const oldTeam = TeamRegistry.getTeamOf(target);
+			const wasInMatch = footballMatch.isInMatch(target);
 			if (!TeamRegistry.addToTeam(target, team)) {
 				warn(`[Invite] ${target.Name} accepted but ${team.name} is full/gone`);
-			} else if (target.FindFirstChild("PlayerGui")?.FindFirstChild("CreateTeam")) {
-				refreshTeamPage(target);
+			} else {
+				// Membership changed on both sides — stale ready votes or a
+				// pending launch must not carry anyone who didn't vote.
+				cancelPendingLaunch(team);
+				teamReadyVotes.delete(team.id);
+				if (oldTeam) {
+					cancelPendingLaunch(oldTeam);
+					teamReadyVotes.delete(oldTeam.id);
+				}
+				target.SetAttribute("CB_PendingLaunch", undefined);
+				// Accepting mid-match pulls the player off their pitch (the
+				// pitch falls back / rebalances like a disconnect), then the
+				// accepter lands in the new team's mini lobby.
+				const [ok, err] = pcall(() => {
+					if (wasInMatch) {
+						footballMatch.leaveMatch(target);
+						ResetAndInitialisePlayerMenuUI(target);
+					}
+					showTeamPage(target);
+				});
+				if (!ok) {
+					warn(`[Invite] opening the lobby for ${target.Name} failed: ${err}`);
+				}
+				// Every member with a mounted team page sees the roster update
+				// (refreshTeamPage no-ops for players without page/team).
+				for (const member of team.members) {
+					refreshTeamPage(member);
+				}
 			}
 		}),
 	);
@@ -837,9 +1153,22 @@ CarBallRemotes.SubmitTeamName.OnServerEvent.Connect((player, raw) => {
 });
 
 /** Cars-page navigation and team-name controls, created per UI mount. */
+/** Bottom-left garage button label: teamed = playing between rounds → the
+ * only way out is EXIT TEAM (leave team + landing, excluded from the auto
+ * start); teamless = browsing cars from the landing page → plain BACK. */
+function backButtonLabel(player: Player): string {
+	return TeamRegistry.getTeamOf(player) ? "EXIT TEAM" : "BACK";
+}
+
 function ensureGarageMenuButtons(player: Player) {
 	const garage = playerGuiOf(player).Garage;
-	if (garage.FindFirstChild("BackToMenu", true)) {
+	const existingBack = garage.FindFirstChild("BackToMenu", true);
+	if (existingBack) {
+		// Same mount can be reached teamed (shop phase) then teamless
+		// (EXIT TEAM → landing → SELECT CAR) — keep the label honest.
+		if (existingBack.IsA("TextButton")) {
+			existingBack.Text = backButtonLabel(player);
+		}
 		return;
 	}
 	const inventory = garage.Inventory;
@@ -869,7 +1198,7 @@ function ensureGarageMenuButtons(player: Player) {
 	backButton.FontFace = MENU_FONT;
 	backButton.Position = new UDim2(0, 0, 0.932, 0);
 	backButton.Size = new UDim2(0.11, 0, 0.134, 0);
-	backButton.Text = "BACK";
+	backButton.Text = backButtonLabel(player);
 	backButton.TextColor3 = new Color3(1, 1, 1);
 	backButton.TextScaled = true;
 	backButton.ZIndex = shopButton.ZIndex;
@@ -888,7 +1217,17 @@ function ensureGarageMenuButtons(player: Player) {
 	backShadow.Transparency = 0.5;
 	backShadow.Parent = backButton;
 	backButton.MouseButton1Click.Connect(() => {
-		const [ok, err] = pcall(() => showLanding(player));
+		const [ok, err] = pcall(() => {
+			// EXIT TEAM: leaving the team is what disconnects the player from
+			// the shop-phase auto start (auto-spawn only takes teamed players).
+			const team = TeamRegistry.getTeamOf(player);
+			if (team) {
+				TeamRegistry.leaveTeam(player);
+				teamReadyVotes.delete(team.id);
+			}
+			backButton.Text = backButtonLabel(player);
+			showLanding(player);
+		});
 		if (!ok) {
 			warn(`[Garage] back to menu failed: ${err}`);
 		}
@@ -987,6 +1326,16 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 	let spawnCFrame: CFrame | undefined;
 	if (Globals.gamemode === "Football") {
 		TeamRegistry.joinRandom(player);
+		// Spawning is THE transition out of the lobby state: markInPlay seats
+		// the team on the ladder (lobby teams have no position/pitch) and
+		// permanently closes it to invites; any held launch state is spent.
+		const ladderTeam = TeamRegistry.getTeamOf(player);
+		if (ladderTeam) {
+			TeamRegistry.markInPlay(ladderTeam);
+			pendingLaunchTeams.delete(ladderTeam.id);
+			teamReadyVotes.delete(ladderTeam.id);
+		}
+		player.SetAttribute("CB_PendingLaunch", undefined);
 		spawnCFrame = footballMatch.getSpawnCFrame(player);
 	}
 	if (spawnCFrame === undefined) {
@@ -1002,11 +1351,17 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 		}
 		spawnCFrame = spawnParts[math.random(1, spawnParts.size()) - 1].CFrame;
 	}
+	if (Globals.gamemode === "Football") {
+		// Lock marker BEFORE seating: the sim's sit-edge context enable fires
+		// inside SpawnVehicle's internal waits, ~2s before onPlayerSpawned —
+		// without the marker that window is fully drivable mid-match.
+		footballMatch.preSpawnLock(player);
+	}
 	spawnVehicle.SpawnVehicle(player, true, DataUtilities.getPlayerEquippedVehicle(player), spawnCFrame);
 
 	if (Globals.gamemode === "Football") {
-		// After SpawnVehicle: its internal waits guarantee the sim's sit-edge
-		// context enable has run, so the phase lock applied here sticks.
+		// onPlayerSpawned starts the countdown/lock bookkeeping; the marker set
+		// by preSpawnLock already kept the sit-edge enable from firing.
 		footballMatch.onPlayerSpawned(player);
 		const matchHud = player.WaitForChild("PlayerGui").FindFirstChild("MatchHud");
 		if (matchHud && matchHud.IsA("ScreenGui")) {
@@ -1132,20 +1487,6 @@ function hideKilledByScreen(player: Player) {
 function enablePayOrSpectate(player: Player) {
 	const payOrSpectate = (player.WaitForChild("PlayerGui").WaitForChild("Garage") as GarageGuiShape).payOrSpectate;
 	payOrSpectate.Visible = true;
-	payOrSpectate.Pay.MouseButton1Click.Connect(() => {
-		payOrSpectate.Visible = false;
-
-		if ((player.WaitForChild("spawned") as NumberValue).Value > 1) {
-			const garage = player.WaitForChild("PlayerGui").WaitForChild("Garage") as GarageGuiShape;
-			garage.cantRespawn.Visible = true;
-			task.wait(3);
-			(player.WaitForChild("PlayerGui").WaitForChild("Garage") as GarageGuiShape).cantRespawn.Visible = false;
-			enableSpectateScreen(player, undefined);
-			return;
-		}
-
-		MarketplaceService.PromptProductPurchase(player, 1625756134);
-	});
 	payOrSpectate.Spectate.MouseButton1Click.Connect(() => {
 		payOrSpectate.Visible = false;
 		enableSpectateScreen(player, undefined);

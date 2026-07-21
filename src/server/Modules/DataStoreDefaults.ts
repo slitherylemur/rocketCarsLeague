@@ -16,6 +16,7 @@ const DriftBind = SerializeEnum(Enum.KeyCode.Space);
 const HornBind = SerializeEnum(Enum.KeyCode.H);
 const RollLBind = SerializeEnum(Enum.KeyCode.Q);
 const RollRBind = SerializeEnum(Enum.KeyCode.E);
+const BallCamBind = SerializeEnum(Enum.KeyCode.C);
 
 const DefaultValues: DataStoreDefaultsType = {
 	money: 0,
@@ -61,6 +62,7 @@ const DefaultValues: DataStoreDefaultsType = {
 		Horn: HornBind,
 		RollLeft: RollLBind,
 		RollRight: RollRBind,
+		BallCam: BallCamBind,
 	},
 
 	codes: [],

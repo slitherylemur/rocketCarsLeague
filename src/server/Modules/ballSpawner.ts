@@ -31,10 +31,10 @@ let currentMap: Instance | undefined;
 const ballByMap = new Map<Instance, BasePart>();
 const recoveringMaps = new Set<Instance>();
 
-// (The old PartWallForBallProtection setup is gone: BallSim's world queries
-// are now a strict include list — STADIUM.collisionBottom / STADIUM.outer /
-// groundPart — so the extra invisible walls were deleted from the maps. The
-// groundPart escape check below stays as the safety net.)
+// (BallSim's world queries are a strict include list — STADIUM.collisionBottom
+// / STADIUM.outer / groundPart, plus each pitch's PartWallForBallProtection
+// model of invisible containment walls. The groundPart escape check below
+// stays as the safety net.)
 
 // Same rationale as spawnVehicle.markPredictable: client-side On alone left
 // vehicles Authoritative, so the server marks the whole assembly On at spawn.

@@ -464,13 +464,19 @@ function createMovers(base: VehicleBase) {
 	upAxisAttachment.CFrame = CFrame.Angles(0, 0, math.rad(90));
 	upAxisAttachment.Parent = base;
 
-	// Aerial controls (roll/pitch/yaw while airborne), world-relative like the
-	// old BodyAngularVelocity. The commanded vector on the instance IS the
-	// aerial control state.
+	// Aerial controls (roll/pitch/yaw while airborne), CAR-relative like the
+	// original model's Aerial constraint (RelativeTo Attachment0, attachment
+	// X axis rotated onto the car's forward -Z): X = roll, Y = yaw, Z = pitch
+	// in the car's own frame regardless of heading. The commanded vector on
+	// the instance IS the aerial control state.
+	const aerialAttachment = new Instance("Attachment");
+	aerialAttachment.Name = "AerialAttachment";
+	aerialAttachment.CFrame = CFrame.Angles(0, math.rad(90), 0);
+	aerialAttachment.Parent = base;
 	const aerial = new Instance("AngularVelocity");
 	aerial.Name = "Aerial";
-	aerial.Attachment0 = centerAttachment;
-	aerial.RelativeTo = Enum.ActuatorRelativeTo.World;
+	aerial.Attachment0 = aerialAttachment;
+	aerial.RelativeTo = Enum.ActuatorRelativeTo.Attachment0;
 	aerial.ReactionTorqueEnabled = false;
 	aerial.MaxTorque = 0;
 	aerial.AngularVelocity = new Vector3(0, 0, 0);
@@ -981,6 +987,12 @@ function setOwnerContextEnabled(entry: SimEntry, enabled: boolean) {
 	}
 	const owner = entry.owner;
 	task.defer(() => {
+		// An active match control lock (football kickoff/respawn freeze —
+		// CB_ControlLock, set BEFORE the car is seated) outranks the fresh-sit
+		// enable; the match layer re-enables the context when it unlocks.
+		if (enabled && owner.GetAttribute("CB_ControlLock") === true) {
+			return;
+		}
 		const context = owner.FindFirstChild(VehicleInput.ContextName);
 		if (context && context.IsA("InputContext")) {
 			context.Enabled = enabled;

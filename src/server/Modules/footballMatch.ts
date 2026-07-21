@@ -162,9 +162,17 @@ function zeroVehicleInputs(player: Player) {
 	}
 }
 
+/** While set on the Player, the sim's fresh-sit context enable
+ * (VehicleSim.setOwnerContextEnabled) leaves controls disabled — closing the
+ * ~2s window where a respawned car was drivable before the phase lock landed
+ * (the sit-edge enable fires inside SpawnVehicle's internal waits, long
+ * before onPlayerSpawned runs). unlockPlayer clears it. */
+const CONTROL_LOCK_ATTR = "CB_ControlLock";
+
 function lockPlayer(player: Player, seconds?: number) {
 	const gen = (lockGen.get(player) ?? 0) + 1;
 	lockGen.set(player, gen);
+	player.SetAttribute(CONTROL_LOCK_ATTR, true);
 	setContextEnabled(player, false);
 	zeroVehicleInputs(player);
 
@@ -190,6 +198,7 @@ function lockPlayer(player: Player, seconds?: number) {
 function unlockPlayer(player: Player) {
 	lockGen.set(player, (lockGen.get(player) ?? 0) + 1);
 	hideTimerText(player);
+	player.SetAttribute(CONTROL_LOCK_ATTR, undefined);
 	setContextEnabled(player, true);
 }
 
@@ -760,6 +769,99 @@ function matchOf(player: Player): PitchMatch | undefined {
 	return assignTeamToPitch(team);
 }
 
+/** Pure roster lookup — unlike matchOf this can NEVER assign the player's
+ * (possibly brand-new) ladder team to a pitch as a side effect. Death/leave
+ * paths must use this: matchOf there caused spurious pitch creation when the
+ * player switched teams between death and respawn. */
+function matchWithPlayer(player: Player): PitchMatch | undefined {
+	for (const match of matches) {
+		if (match.roster.has(player)) {
+			return match;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * A ladder team evaporated (last member left the server or was pulled into
+ * another team's lobby). Free its pitch slot, then rescue an abandoned
+ * opponent: pair them with the team waiting on the muckabout pitch when one
+ * exists (they become a new match together), otherwise the leftover team
+ * free-plays — their pitch is effectively the muckabout until the whistle.
+ * Runs deferred so the PlayerRemoving roster cleanups land first.
+ */
+function handleTeamGone(teamId: string) {
+	const match = matchByTeamId.get(teamId);
+	matchByTeamId.delete(teamId);
+	if (!match || match.phase === "Ended") {
+		return;
+	}
+	match.sideByTeamId.delete(teamId);
+	if (match.muckabout) {
+		return;
+	}
+	if (match.sideByTeamId.size() !== 1) {
+		if (match.roster.size() === 0 && match.phase !== "Waiting") {
+			match.enterWaiting();
+		}
+		return;
+	}
+
+	// One team left behind mid-round. Muckabout rescue first.
+	const muck = matches.find((m) => m.muckabout);
+	let movedTeamId: string | undefined;
+	if (muck) {
+		for (const [id] of muck.sideByTeamId) {
+			movedTeamId = id;
+			break;
+		}
+	}
+	if (muck && movedTeamId !== undefined) {
+		muck.sideByTeamId.delete(movedTeamId);
+		matchByTeamId.set(movedTeamId, match);
+		match.sideForLadderTeam(movedTeamId);
+		const moving: Player[] = [];
+		for (const [rosterPlayer] of muck.roster) {
+			const team = TeamRegistry.getTeamOf(rosterPlayer);
+			if (team && team.id === movedTeamId) {
+				moving.push(rosterPlayer);
+			}
+		}
+		for (const rosterPlayer of moving) {
+			muck.roster.delete(rosterPlayer);
+			match.assignSide(rosterPlayer);
+		}
+		if (muck.roster.size() === 0) {
+			muck.enterWaiting();
+		}
+		warn(`[Football] muckabout team → ${match.pitch.folder.Name} to replace the leavers`);
+		match.repositionVehicles();
+		if (match.teamsReady()) {
+			match.resetScores();
+			match.startKickoff("NEW OPPONENT!");
+		} else if (match.roster.size() > 0) {
+			match.enterFreePlay(false);
+		} else {
+			match.enterWaiting();
+		}
+		return;
+	}
+
+	// No muckabout partner — leftover team free-plays until the whistle.
+	if (match.roster.size() > 0) {
+		if (match.phase !== "FreePlay") {
+			warn(`[Football] ${match.pitch.folder.Name} lost its opponent — free play`);
+			match.enterFreePlay(false);
+		}
+	} else if (match.phase !== "Waiting") {
+		match.enterWaiting();
+	}
+}
+
+TeamRegistry.onTeamDisbanded((team) => {
+	task.defer(() => handleTeamGone(team.id));
+});
+
 /** FAILURE 1 fix: clone a brand-new pitch mid-round onto the next slot along
  * the line, spawn its ball and stand up a PitchMatch for it. The shared goal
  * watcher and clock loops iterate `matches`, so pushing IS registration; the
@@ -1077,6 +1179,9 @@ const footballMatch = {
 			for (const [player] of match.roster) {
 				lockGen.set(player, (lockGen.get(player) ?? 0) + 1);
 				hideTimerText(player);
+				// Stale marker would silence the sit-edge enable on the NEXT
+				// round's first (unlocked) spawn.
+				player.SetAttribute(CONTROL_LOCK_ATTR, undefined);
 				player.SetAttribute("CB_Side", undefined);
 				player.SetAttribute("CB_PitchId", undefined);
 				// Round-end vehicle cleanup (the retired EndScreen used to do
@@ -1179,6 +1284,24 @@ const footballMatch = {
 		return match.spawnCFrameFor(match.assignSide(player));
 	},
 
+	/**
+	 * Call BEFORE SpawnVehicle seats the player (SpawnInPlayer): stamps the
+	 * control-lock marker so the sim's fresh-sit context enable respects the
+	 * coming phase lock instead of opening a drive window ~2s ahead of
+	 * onPlayerSpawned. Waiting/FreePlay spawns stay unlocked (no marker).
+	 * Requires the player to already be rostered (getSpawnCFrame does that).
+	 */
+	preSpawnLock(player: Player) {
+		const match = matchWithPlayer(player);
+		if (!match) {
+			return;
+		}
+		if (match.phase === "Play" || match.phase === "Kickoff" || match.phase === "Goal") {
+			player.SetAttribute(CONTROL_LOCK_ATTR, true);
+			setContextEnabled(player, false);
+		}
+	},
+
 	onPlayerSpawned(player: Player) {
 		const match = matchOf(player);
 		if (!match || match.phase === "Ended") {
@@ -1206,8 +1329,8 @@ const footballMatch = {
 	},
 
 	onPlayerDied(player: Player): boolean {
-		const match = matchOf(player);
-		if (!match || match.phase === "Ended" || !match.roster.has(player)) {
+		const match = matchWithPlayer(player);
+		if (!match || match.phase === "Ended") {
 			return false;
 		}
 		const localMatchGen = matchGen;
@@ -1216,7 +1339,10 @@ const footballMatch = {
 			if (matchGen !== localMatchGen || player.Parent === undefined) {
 				return;
 			}
-			const stillMatch = matchOf(player);
+			// Roster lookup, NOT matchOf: if the player switched ladder teams
+			// during the delay (invite accepted → lobby) matchOf would assign
+			// the new team to a pitch and respawn them into it.
+			const stillMatch = matchWithPlayer(player);
 			if (!stillMatch || stillMatch.phase === "Ended") {
 				return;
 			}
@@ -1226,6 +1352,61 @@ const footballMatch = {
 			}
 		});
 		return true;
+	},
+
+	/** True when the player is on any pitch's roster (spawned into the round,
+	 * dead-and-respawning included). Menu/lobby players are not. */
+	isInMatch(player: Player): boolean {
+		return matchWithPlayer(player) !== undefined;
+	},
+
+	/** True while the current round can be spawned into: pitches exist and the
+	 * whistle hasn't blown. False during the end-of-round interlude (victory
+	 * scene → ladder map → summary) and after stop() until the next
+	 * beginRound. Lobby vote launches hold on this. */
+	isRoundLive(): boolean {
+		return matches.size() > 0 && matches[0].phase !== "Ended";
+	},
+
+	/**
+	 * Mini-lobby pull (accepted an invite mid-match): remove the player from
+	 * their pitch without them leaving the server. Car and character die the
+	 * same way stop() kills them (no PlayerDamaged event, so no death screen
+	 * or respawn scheduling), and the pitch falls back exactly as if they had
+	 * disconnected. Team-level consequences (opponent abandoned → muckabout
+	 * rescue) ride on the TeamRegistry disband callback, since the puller has
+	 * already moved the player onto their new team.
+	 */
+	leaveMatch(player: Player) {
+		const match = matchWithPlayer(player);
+		if (!match) {
+			return;
+		}
+		match.roster.delete(player);
+		lockGen.set(player, (lockGen.get(player) ?? 0) + 1);
+		hideTimerText(player);
+		player.SetAttribute(CONTROL_LOCK_ATTR, undefined);
+		player.SetAttribute("CB_Side", undefined);
+		player.SetAttribute("CB_PitchId", undefined);
+		pcall(() => {
+			const character = player.Character;
+			const humanoid = character && character.FindFirstChildOfClass("Humanoid");
+			if (humanoid) {
+				humanoid.Health = 0;
+			}
+			spawnVehicle.KillVehicle(player);
+		});
+		if (
+			(match.phase === "Play" || match.phase === "Kickoff" || match.phase === "Goal") &&
+			!match.teamsReady()
+		) {
+			if (match.roster.size() > 0) {
+				warn(`[Football] ${player.Name} pulled to a lobby — ${match.pitch.folder.Name} falls back to free play`);
+				match.enterFreePlay(false);
+			} else {
+				match.enterWaiting();
+			}
+		}
 	},
 };
 

@@ -9,6 +9,8 @@
 // per-round assignments owned by the match layer (footballMatch/PitchMatch),
 // per resolved decision D1.
 
+import { ProductIds } from "shared/Monetization";
+
 const Players = game.GetService("Players");
 const TeamsService = game.GetService("Teams");
 const TextService = game.GetService("TextService");
@@ -16,29 +18,43 @@ const TextService = game.GetService("TextService");
 /** Developer product for renaming a team (repeatable). PLACEHOLDER — create
  * the product in the Roblox dashboard and paste its id here (Phase 2 wires
  * the purchase prompt + popup). */
-export const RENAME_PRODUCT_ID = 0;
+export const RENAME_PRODUCT_ID: number = ProductIds.RenameTeam;
 
 const MAX_MEMBERS = 3;
 
 // Preset pool (resolved decision D3): names are drawn from here; "Team N"
 // when exhausted. The rename product lets teams pick a custom (filtered) name.
 const NAME_POOL = [
-	"Turbo Strikers",
-	"Piston United",
-	"Nitro Netters",
-	"Boost Ballers",
-	"Drift Dynamos",
-	"Octane Owls",
-	"Bumper Bandits",
-	"Redline Rovers",
-	"Exhaust Eagles",
-	"Clutch City",
-	"Gearbox Galacticos",
-	"Skid Marks FC",
-	"Handbrake Hooligans",
-	"Overdrive Olympians",
-	"Torque Town",
-	"Fuel Injected FC",
+	"Gearchester United",
+	"Gearchester City",
+	"Liverfuel",
+	"Car-senal",
+	"Chelsea Chassis",
+	"Aston Motor Villa",
+	"Crystal Pistons",
+	"Newcastle Turbo",
+	"Brighton Road Runners",
+	"Wolverhampton Wheelers",
+	"Nottingham Torque",
+	"Real Motorid",
+	"Barcarona",
+	"Atlético Motorid",
+	"Sevilla Speed",
+	"Valencia Velocity",
+	"Inter Mileage",
+	"AC Mileage",
+	"Nitro Napoli",
+	"Turbo Juventus",
+	"Bayern Motorworks",
+	"Borussia Driftmund",
+	"Paris Saint Gearmain",
+	"Auto Ajax",
+	"Turbo Porto",
+	"Celtic Cruisers",
+	"Road Rangers",
+	"LA Garage",
+	"Boca Cruisers",
+	"River Racers",
 ];
 
 // Distinct player-list colors. White is reserved for the muckabout dressing;
@@ -69,6 +85,11 @@ export interface LadderTeam {
 	position: number;
 	lastMuckRound?: number;
 	joinedMidRound: boolean;
+	/** False while the team is still forming in the mini lobby; flips true the
+	 * first time a member spawns into a match and never flips back — a playing
+	 * team stays "in play" through shop phases until it disbands. Invites can
+	 * only be accepted while false; joinRandom only fills teams where true. */
+	inPlay: boolean;
 }
 
 const teams = new Map<string, LadderTeam>();
@@ -121,10 +142,13 @@ function pickColor(): string {
 	return COLOR_POOL[math.random(1, COLOR_POOL.size()) - 1];
 }
 
+/** In-play teams only — lobby teams are invisible to ladder parity. */
 function teamCount(): number {
 	let count = 0;
-	for (const [] of teams) {
-		count += 1;
+	for (const [, team] of teams) {
+		if (team.inPlay) {
+			count += 1;
+		}
 	}
 	return count;
 }
@@ -132,7 +156,9 @@ function teamCount(): number {
 function nextPosition(): number {
 	let highest = -1;
 	for (const [, team] of teams) {
-		highest = math.max(highest, team.position);
+		if (team.inPlay) {
+			highest = math.max(highest, team.position);
+		}
 	}
 	return highest + 1;
 }
@@ -180,10 +206,17 @@ function setPlayerTeam(player: Player, team: LadderTeam | undefined) {
 	player.SetAttribute("CB_TeamId", team ? team.id : undefined);
 }
 
+// Disband listeners (footballMatch rebalances the abandoned pitch; menu code
+// clears lobby vote state). Fired AFTER the registry forgets the team.
+const disbandCallbacks: Array<(team: LadderTeam) => void> = [];
+
 function disband(team: LadderTeam) {
 	teams.delete(team.id);
 	pcall(() => team.robloxTeam.Destroy());
 	warn(`[TeamRegistry] disbanded ${team.name}`);
+	for (const callback of disbandCallbacks) {
+		task.spawn(() => callback(team));
+	}
 }
 
 // ---- leaderstats (default player-list columns: Goals, Kills) --------------
@@ -226,18 +259,55 @@ const TeamRegistry = {
 		return teamOfPlayer.get(player);
 	},
 
+	/** Register a callback for when a team's last member leaves and the team
+	 * evaporates. Runs via task.spawn after the registry state is updated. */
+	onTeamDisbanded(callback: (team: LadderTeam) => void) {
+		disbandCallbacks.push(callback);
+	},
+
+	/** True while the team is still registered (an invite may hold a stale
+	 * reference after the team disbanded). */
+	teamExists(team: LadderTeam): boolean {
+		return teams.has(team.id);
+	},
+
+	/** THE LADDER: in-play teams sorted by position. Lobby teams (still
+	 * forming, `inPlay === false`) have no ladder position, no pitch, and no
+	 * rank until markInPlay seats them — resolve those via getTeamById. */
 	getTeams(): LadderTeam[] {
 		const list: LadderTeam[] = [];
 		for (const [, team] of teams) {
-			list.push(team);
+			if (team.inPlay) {
+				list.push(team);
+			}
 		}
 		list.sort((a, b) => a.position < b.position);
 		return list;
 	},
 
+	getTeamById(id: string): LadderTeam | undefined {
+		return teams.get(id);
+	},
+
+	/**
+	 * The lobby → ladder transition: called when the team's first member
+	 * spawns into a match. Seats the team on the ladder (overflow insertion
+	 * above Mud when applicable — the same rule new teams always used) and
+	 * flips inPlay, which permanently closes the team to invites.
+	 */
+	markInPlay(team: LadderTeam) {
+		if (team.inPlay || !teams.has(team.id)) {
+			return;
+		}
+		const insertedPosition = positionForNewTeam();
+		team.inPlay = true;
+		team.position = insertedPosition ?? nextPosition();
+		TeamRegistry.updateLeaderboardNames();
+		warn(`[TeamRegistry] ${team.name} entered the ladder at table ${team.position + 1}`);
+	},
+
 	createTeam(creator: Player, open: boolean): LadderTeam {
 		TeamRegistry.leaveTeam(creator);
-		const insertedPosition = positionForNewTeam();
 
 		const id = `T${nextTeamNumber}`;
 		nextTeamNumber += 1;
@@ -259,8 +329,10 @@ const TeamRegistry = {
 			colorName,
 			members: [creator],
 			open,
-			position: insertedPosition ?? nextPosition(),
+			// No ladder seat until the team enters play (markInPlay).
+			position: -1,
 			joinedMidRound: false,
+			inPlay: false,
 		};
 		teams.set(id, team);
 		teamOfPlayer.set(creator, team);
@@ -295,7 +367,9 @@ const TeamRegistry = {
 
 		const open: LadderTeam[] = [];
 		for (const [, team] of teams) {
-			if (team.open && team.members.size() < MAX_MEMBERS) {
+			// Never drop a random into a still-forming lobby team: landing PLAY
+			// promises immediate play, and a lobby must only grow via invites.
+			if (team.open && team.inPlay && team.members.size() < MAX_MEMBERS) {
 				open.push(team);
 			}
 		}
@@ -397,12 +471,13 @@ const TeamRegistry = {
 		return result;
 	},
 
-	/** Player-list ordering: prefix every Roblox Team name with its table
-	 * rank so the default leaderboard reads top-table-first. */
+	/** Player-list ordering: prefix every LADDER team's Roblox Team name with
+	 * its table rank so the default leaderboard reads top-table-first. Lobby
+	 * teams have no rank yet and keep their plain name. */
 	updateLeaderboardNames() {
 		for (const [, team] of teams) {
 			pcall(() => {
-				team.robloxTeam.Name = `${team.position + 1} · ${team.name}`;
+				team.robloxTeam.Name = team.inPlay ? `${team.position + 1} · ${team.name}` : team.name;
 			});
 		}
 	},

@@ -98,6 +98,30 @@ function translateFolder(folder: Instance, offset: Vector3) {
 	}
 }
 
+// The ball-containment walls are query surfaces only: BallSim's include-list
+// sweeps hit them regardless of CanCollide (RespectCanCollide defaults to
+// false), so they can be fully invisible and engine-collide with nothing —
+// cars, wheels and characters drive straight through.
+const BALL_WALL_NAME = "PartWallForBallProtection";
+
+function neutralizeBallWalls(folder: Instance) {
+	const wall = folder.FindFirstChild(BALL_WALL_NAME, true);
+	if (wall === undefined) {
+		return;
+	}
+	const parts = wall.GetDescendants();
+	if (wall.IsA("BasePart")) {
+		parts.push(wall);
+	}
+	for (const part of parts) {
+		if (part.IsA("BasePart")) {
+			part.Transparency = 1;
+			part.CanCollide = false;
+			part.CanTouch = false;
+		}
+	}
+}
+
 const PitchManager = {
 	getPitches(): Pitch[] {
 		return pitches;
@@ -129,6 +153,7 @@ const PitchManager = {
 			}
 			const clone = source.Clone();
 			clone.Name = muckabout ? `Pitch${i}_Muckabout` : `Pitch${i}_${variantName}`;
+			neutralizeBallWalls(clone);
 
 			const bounds = computeBounds(clone);
 			if (bounds === undefined) {
@@ -178,6 +203,7 @@ const PitchManager = {
 		const index = nextSlot;
 		const clone = source.Clone();
 		clone.Name = isMuck ? `Pitch${index}_Muckabout` : `Pitch${index}_${variant}`;
+		neutralizeBallWalls(clone);
 		const bounds = computeBounds(clone);
 		if (bounds === undefined) {
 			warn(`[PitchManager] ${source.Name} has no BaseParts — addPitch aborted`);

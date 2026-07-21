@@ -1,12 +1,13 @@
 // TEMP emit test — delete before finishing.
 import type { MultiplierEntry } from "./Modules/dataTypes";
+import { PassIds } from "shared/Monetization";
 
 const MarketplaceService = game.GetService("MarketplaceService");
 
 export function testUser(player: Player) {
 	let hasVip = false;
 	const [success, message] = pcall(() => {
-		hasVip = MarketplaceService.UserOwnsGamePassAsync(player.UserId as unknown as User, 243133519);
+		hasVip = MarketplaceService.UserOwnsGamePassAsync(player.UserId as unknown as User, PassIds.Vip);
 	});
 	return hasVip;
 }

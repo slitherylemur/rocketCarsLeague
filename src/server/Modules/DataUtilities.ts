@@ -48,9 +48,15 @@ const DataUtilities = {
 		const bindsTable = keyBindsDS.Get(DSDefaults["keyBinds"]) as Record<string, SerializedEnum | undefined>;
 		if (bindsTable[action] !== undefined) {
 			return DeserializeEnum(bindsTable[action]!);
-		} else {
-			return undefined;
 		}
+		// Saved tables predate actions added later (e.g. BallCam): fall back to
+		// the code default rather than returning nil, which the keybind menus
+		// can't render.
+		const defaultBinds = DSDefaults["keyBinds"] as Record<string, SerializedEnum | undefined>;
+		if (defaultBinds[action] !== undefined) {
+			return DeserializeEnum(defaultBinds[action]!);
+		}
+		return undefined;
 	},
 
 	SetKeyBinding(player: Player, action: string, key: EnumItem) {

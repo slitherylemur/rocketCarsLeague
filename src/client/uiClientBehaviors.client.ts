@@ -131,6 +131,24 @@ function attachLandingBehaviors(landingGui: Instance) {
 	}
 }
 
+// Team page: hover sound on every button, including the invite rows the
+// server builds after mount (hence DescendantAdded).
+function attachTeamPageBehaviors(teamGui: Instance) {
+	const sound = teamGui.WaitForChild("HoverSound") as Sound;
+	const attach = (descendant: Instance) => {
+		if (descendant.IsA("TextButton")) {
+			descendant.MouseEnter.Connect(() => {
+				sound.TimePosition = 0;
+				sound.Play();
+			});
+		}
+	};
+	for (const descendant of teamGui.GetDescendants()) {
+		attach(descendant);
+	}
+	teamGui.DescendantAdded.Connect(attach);
+}
+
 // ---- attachment ----------------------------------------------------------
 
 const GAME_CONTROL_BUTTONS = ["Boost", "Drift", "Horn", "Jump", "RollLeft", "RollRight"];
@@ -199,6 +217,8 @@ function onGuiAdded(child: Instance) {
 		attachGarageBehaviors(child);
 	} else if (child.Name === "Landing") {
 		attachLandingBehaviors(child);
+	} else if (child.Name === "CreateTeam") {
+		attachTeamPageBehaviors(child);
 	}
 }
 

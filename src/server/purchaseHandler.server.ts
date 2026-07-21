@@ -4,6 +4,7 @@ import DataStore2 from "./Modules/DataStore2";
 import crateModule from "./Modules/CrateModule";
 import { Globals } from "./Globals";
 import TeamRegistry, { RENAME_PRODUCT_ID } from "./Modules/TeamRegistry";
+import { ProductIds } from "shared/Monetization";
 
 const MarketplaceService = game.GetService("MarketplaceService");
 const DataStoreService = game.GetService("DataStoreService");
@@ -26,7 +27,7 @@ if (RENAME_PRODUCT_ID !== 0) {
 }
 
 //2k gold
-productFunctions.set(1625756130, (receipt, player) => {
+productFunctions.set(ProductIds.Gold2000, (receipt, player) => {
 	const playerMoneyDS = DataStore2("money", player);
 	playerMoneyDS.Increment(2000, 0);
 	playerMoneyDS.Save();
@@ -34,7 +35,7 @@ productFunctions.set(1625756130, (receipt, player) => {
 });
 
 // 6250 gold
-productFunctions.set(1625754871, (receipt, player) => {
+productFunctions.set(ProductIds.Gold6250, (receipt, player) => {
 	const playerMoneyDS = DataStore2("money", player);
 	playerMoneyDS.Increment(6250, 0);
 	playerMoneyDS.Save();
@@ -43,7 +44,7 @@ productFunctions.set(1625754871, (receipt, player) => {
 });
 
 //16k gold
-productFunctions.set(1625754874, (receipt, player) => {
+productFunctions.set(ProductIds.Gold16000, (receipt, player) => {
 	const playerMoneyDS = DataStore2("money", player);
 	playerMoneyDS.Increment(16000, 0);
 	playerMoneyDS.Save();
@@ -52,7 +53,7 @@ productFunctions.set(1625754874, (receipt, player) => {
 });
 
 //55k gold
-productFunctions.set(1625754875, (receipt, player) => {
+productFunctions.set(ProductIds.Gold55000, (receipt, player) => {
 	const playerMoneyDS = DataStore2("money", player);
 	playerMoneyDS.Increment(55000, 0);
 	playerMoneyDS.Save();
@@ -61,7 +62,7 @@ productFunctions.set(1625754875, (receipt, player) => {
 });
 
 //280k gold
-productFunctions.set(1625754876, (receipt, player) => {
+productFunctions.set(ProductIds.Gold280000, (receipt, player) => {
 	const playerMoneyDS = DataStore2("money", player);
 	playerMoneyDS.Increment(280000, 0);
 	playerMoneyDS.Save();
@@ -73,15 +74,8 @@ productFunctions.set(1625754876, (receipt, player) => {
 // product ids 1625754877 / 1625756131 / 1625756132 / 1625756133 in the
 // Creator Dashboard — with no handler here they would sit NotProcessedYet.
 
-//Respawn
-productFunctions.set(1625756134, (receipt, player) => {
-	Globals.SpawnInPlayer(player);
-	(player.WaitForChild("survivalTime") as NumberValue).Value = -1;
-	return true;
-});
-
 //Nuke
-productFunctions.set(1625756136, (receipt, player) => {
+productFunctions.set(ProductIds.Nuke, (receipt, player) => {
 	const nuke = (
 		game.GetService("ServerStorage") as unknown as { Nuke: BasePart & { Mesh: SpecialMesh } }
 	).Nuke.Clone();
@@ -103,7 +97,7 @@ productFunctions.set(1625756136, (receipt, player) => {
 	return true;
 });
 
-productFunctions.set(1625756135, (receipt, player) => {
+productFunctions.set(ProductIds.OverdriveCrate, (receipt, player) => {
 	task.spawn(() => {
 		crateModule.actuallyOpen(player, -1);
 	});
@@ -112,7 +106,7 @@ productFunctions.set(1625756135, (receipt, player) => {
 });
 
 //Low Gravity
-productFunctions.set(1625756139, (receipt, player) => {
+productFunctions.set(ProductIds.LowGravity, (receipt, player) => {
 	game.Workspace.Gravity = 80;
 
 	task.delay(120, () => {

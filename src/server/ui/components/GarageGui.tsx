@@ -7,6 +7,7 @@
 /* eslint-disable */
 
 import React from "@rbxts/react";
+import { ProductIds } from "shared/Monetization";
 
 export function GarageGui(): React.Element {
 	return (
@@ -3139,7 +3140,7 @@ export function GarageGui(): React.Element {
 							SelectionOrder: 0,
 							Size: new UDim2(0.508712709, 0, 0.23829025, 0),
 							SizeConstraint: Enum.SizeConstraint.RelativeXY,
-							Text: "60R$",
+							Text: "R$ …",
 							TextColor3: new Color3(0, 1, 0.0823529437),
 							TextDirection: Enum.TextDirection.Auto,
 							TextScaled: true,
@@ -4001,7 +4002,7 @@ export function GarageGui(): React.Element {
 						SelectionOrder: 0,
 						Size: new UDim2(0.939999998, 0, 0.229529053, 0),
 						SizeConstraint: Enum.SizeConstraint.RelativeXY,
-						Text: "360r$",
+						Text: "R$ …",
 						TextColor3: new Color3(1, 1, 1),
 						TextDirection: Enum.TextDirection.Auto,
 						TextScaled: true,
@@ -4234,7 +4235,7 @@ export function GarageGui(): React.Element {
 						SelectionOrder: 0,
 						Size: new UDim2(0.939999998, 0, 0.229529053, 0),
 						SizeConstraint: Enum.SizeConstraint.RelativeXY,
-						Text: "60r$",
+						Text: "R$ …",
 						TextColor3: new Color3(1, 1, 1),
 						TextDirection: Enum.TextDirection.Auto,
 						TextScaled: true,
@@ -4427,7 +4428,7 @@ export function GarageGui(): React.Element {
 						SelectionOrder: 0,
 						Size: new UDim2(0.939999998, 0, 0.229529053, 0),
 						SizeConstraint: Enum.SizeConstraint.RelativeXY,
-						Text: "800r$",
+						Text: "R$ …",
 						TextColor3: new Color3(1, 1, 1),
 						TextDirection: Enum.TextDirection.Auto,
 						TextScaled: true,
@@ -4852,7 +4853,7 @@ export function GarageGui(): React.Element {
 							SelectionOrder: 0,
 							Size: new UDim2(1.00000012, 0, 1.01495016, 0),
 							SizeConstraint: Enum.SizeConstraint.RelativeXY,
-							Text: "80 R$",
+							Text: "R$ …",
 							TextColor3: new Color3(1, 1, 1),
 							TextDirection: Enum.TextDirection.Auto,
 							TextScaled: true,
@@ -4887,7 +4888,7 @@ export function GarageGui(): React.Element {
 					]),
 					React.createElement("IntValue", {
 						Name: "ID",
-						Value: 1625756130,
+						Value: ProductIds.Gold2000,
 					} as never),
 					React.createElement("ImageLabel", {
 						Name: "ImageLabel",
@@ -5144,7 +5145,7 @@ export function GarageGui(): React.Element {
 							SelectionOrder: 0,
 							Size: new UDim2(1.00000012, 0, 1.01495016, 0),
 							SizeConstraint: Enum.SizeConstraint.RelativeXY,
-							Text: "250 R$",
+							Text: "R$ …",
 							TextColor3: new Color3(1, 1, 1),
 							TextDirection: Enum.TextDirection.Auto,
 							TextScaled: true,
@@ -5179,7 +5180,7 @@ export function GarageGui(): React.Element {
 					]),
 					React.createElement("IntValue", {
 						Name: "ID",
-						Value: 1625754871,
+						Value: ProductIds.Gold6250,
 					} as never),
 					React.createElement("ImageLabel", {
 						Name: "ImageLabel",
@@ -5436,7 +5437,7 @@ export function GarageGui(): React.Element {
 							SelectionOrder: 0,
 							Size: new UDim2(1.00000012, 0, 1.01495016, 0),
 							SizeConstraint: Enum.SizeConstraint.RelativeXY,
-							Text: "600 R$",
+							Text: "R$ …",
 							TextColor3: new Color3(1, 1, 1),
 							TextDirection: Enum.TextDirection.Auto,
 							TextScaled: true,
@@ -5471,7 +5472,7 @@ export function GarageGui(): React.Element {
 					]),
 					React.createElement("IntValue", {
 						Name: "ID",
-						Value: 1625754874,
+						Value: ProductIds.Gold16000,
 					} as never),
 					React.createElement("TextLabel", {
 						Name: "TextLabel",
@@ -5792,7 +5793,7 @@ export function GarageGui(): React.Element {
 							SelectionOrder: 0,
 							Size: new UDim2(1.00000012, 0, 1.01495016, 0),
 							SizeConstraint: Enum.SizeConstraint.RelativeXY,
-							Text: "2000 R$",
+							Text: "R$ …",
 							TextColor3: new Color3(1, 1, 1),
 							TextDirection: Enum.TextDirection.Auto,
 							TextScaled: true,
@@ -5827,7 +5828,7 @@ export function GarageGui(): React.Element {
 					]),
 					React.createElement("IntValue", {
 						Name: "ID",
-						Value: 1625754875,
+						Value: ProductIds.Gold55000,
 					} as never),
 					React.createElement("TextLabel", {
 						Name: "TextLabel",
@@ -6300,7 +6301,7 @@ export function GarageGui(): React.Element {
 							SelectionOrder: 0,
 							Size: new UDim2(1.00000012, 0, 1.01495016, 0),
 							SizeConstraint: Enum.SizeConstraint.RelativeXY,
-							Text: "10000 R$",
+							Text: "R$ …",
 							TextColor3: new Color3(1, 1, 1),
 							TextDirection: Enum.TextDirection.Auto,
 							TextScaled: true,
@@ -6335,7 +6336,7 @@ export function GarageGui(): React.Element {
 					]),
 					React.createElement("IntValue", {
 						Name: "ID",
-						Value: 1625754876,
+						Value: ProductIds.Gold280000,
 					} as never),
 					React.createElement("TextLabel", {
 						Name: "TextLabel",
@@ -6862,7 +6863,7 @@ export function GarageGui(): React.Element {
 				TextWrapped: true,
 				TextXAlignment: Enum.TextXAlignment.Center,
 				TextYAlignment: Enum.TextYAlignment.Center,
-				Visible: true,
+				Visible: false,
 				ZIndex: 1,
 			} as never, [
 				React.createElement("UICorner", {
@@ -6996,7 +6997,7 @@ export function GarageGui(): React.Element {
 				MaxVisibleGraphemes: -1,
 				Modal: false,
 				OpenTypeFeatures: "",
-				Position: new UDim2(0.746088922, 0, 0.0305931102, 0),
+				Position: new UDim2(0.5, 0, 0.0305931102, 0),
 				RichText: false,
 				Rotation: 0,
 				Selectable: false,
@@ -7007,7 +7008,7 @@ export function GarageGui(): React.Element {
 				SelectionBehaviorUp: Enum.SelectionBehavior.Escape,
 				SelectionGroup: false,
 				SelectionOrder: 0,
-				Size: new UDim2(0.46639055, 0, 0.945552468, 0),
+				Size: new UDim2(0.94, 0, 0.945552468, 0),
 				SizeConstraint: Enum.SizeConstraint.RelativeXY,
 				Style: Enum.ButtonStyle.Custom,
 				Text: "",

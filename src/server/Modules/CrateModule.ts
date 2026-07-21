@@ -11,6 +11,7 @@ import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import type { CrateItem } from "./dataTypes";
 import type { LootSlot } from "./dataTypes";
 import type { VehicleModel } from "../Classes/VehicleClass";
+import { ProductIds } from "shared/Monetization";
 
 const MarketplaceService = game.GetService("MarketplaceService");
 const ServerStorage = game.GetService("ServerStorage");
@@ -87,7 +88,7 @@ const crateModule = {
 				return;
 			}
 		} else {
-			MarketplaceService.PromptProductPurchase(player, 1625756135);
+			MarketplaceService.PromptProductPurchase(player, ProductIds.OverdriveCrate);
 			return;
 		}
 

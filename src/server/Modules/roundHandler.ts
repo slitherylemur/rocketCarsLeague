@@ -5,6 +5,7 @@ import DataStore2 from "./DataStore2";
 import spawnVehicle from "./spawnVehicle";
 import ballSpawner from "./ballSpawner";
 import footballMatch from "./footballMatch";
+import { PassIds } from "shared/Monetization";
 import type { RoundResult } from "./footballMatch";
 import PitchManager from "./PitchManager";
 import TeamRegistry from "./TeamRegistry";
@@ -107,7 +108,7 @@ let moneyAwarded = new Map<Player, number>();
 // then: 25, 25, 2, 28, 30
 //Money prices: 80R$ for 2000, 250R$ for 6250, 600R$ for 16k (+1000), 2000R$ for 55k (+5000), 10000R$ for 280k (+30k)
 //Mult prices: 180R$, 180R$, 800R$, __960R$__ 750R$
-Globals.VIP_PASS_ID = 243133519;
+Globals.VIP_PASS_ID = PassIds.Vip;
 const VIP_MULTIPLIER = 1.3;
 
 Globals.calculateMultMoney = (player: Player, amount: number): number => {
@@ -363,9 +364,30 @@ function loadMap(): import("./PitchManager").Pitch[] {
 	return built;
 }
 
+/** Landing page, Friends Team lobby, or the garage reached FROM the landing
+ * page — players outside the play loop. The round-end menu remount must skip
+ * them: destroying a mid-vote lobby dumped its members onto the shop page,
+ * where the auto-spawn would launch the team without a completed vote. */
+function isInMenus(player: Player): boolean {
+	const playerGui = player.FindFirstChild("PlayerGui");
+	if (!playerGui) {
+		return false;
+	}
+	for (const screenName of ["Landing", "CreateTeam", "Garage"]) {
+		const screen = playerGui.FindFirstChild(screenName);
+		if (screen !== undefined && screen.IsA("ScreenGui") && screen.Enabled) {
+			return true;
+		}
+	}
+	return false;
+}
+
 function sendToMenu() {
 	for (const player of PlayerService.GetPlayers()) {
 		pcall(() => {
+			if (isInMenus(player)) {
+				return;
+			}
 			(
 				ServerStorage as unknown as { Events: { InitialisePlayerMenuUi: BindableEvent } }
 			).Events.InitialisePlayerMenuUi.Fire(player);

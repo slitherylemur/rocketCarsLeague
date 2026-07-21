@@ -99,7 +99,9 @@ function param(ball: BasePart, key: keyof typeof ballTunables): number {
 // engine resolves no contacts — these queries ARE the entire collision
 // system, and they run as FilterType.Include over exactly:
 //   - the ball's own pitch: STADIUM.collisionBottom + STADIUM.outer (the
-//     arena shell) and the pitch's groundPart (the floor);
+//     arena shell), the pitch's groundPart (the floor), and every part under
+//     the pitch's PartWallForBallProtection model (invisible containment
+//     walls, optional per pitch);
 //   - every car's Hitboxes.HitboxMain box (the car overlap query).
 // Nothing else — goal parts, decor, detailed car bodies, wheels, player
 // characters — can ever collide with the ball.
@@ -119,6 +121,7 @@ const PITCH_ATTRIBUTE = "CB_PitchId";
 const STADIUM_NAME = "STADIUM";
 const STADIUM_COLLIDER_NAMES = ["collisionBottom", "outer"];
 const GROUND_PART_NAME = "groundPart";
+const BALL_WALL_NAME = "PartWallForBallProtection";
 const HITBOX_FOLDER_NAME = "Hitboxes";
 const HITBOX_MAIN_NAME = "HitboxMain";
 
@@ -155,10 +158,17 @@ function buildWorldFilter(ball: BasePart): WorldFilter | undefined {
 	if (ground !== undefined) {
 		include.push(ground);
 	}
-	if (include.size() < STADIUM_COLLIDER_NAMES.size() + 1 && !missingFilterWarned.has(pitchId)) {
+	const requiredCount = include.size();
+	// FilterDescendantsInstances includes descendants, so listing the model
+	// covers every wall part under it. Optional — not counted in the warning.
+	const ballWall = pitch.FindFirstChild(BALL_WALL_NAME, true);
+	if (ballWall !== undefined) {
+		include.push(ballWall);
+	}
+	if (requiredCount < STADIUM_COLLIDER_NAMES.size() + 1 && !missingFilterWarned.has(pitchId)) {
 		missingFilterWarned.add(pitchId);
 		warn(
-			`[BallSim] pitch ${pitchId}: expected ${STADIUM_NAME}.collisionBottom/${STADIUM_NAME}.outer + ${GROUND_PART_NAME}, found ${include.size()} — ball collides with those only`,
+			`[BallSim] pitch ${pitchId}: expected ${STADIUM_NAME}.collisionBottom/${STADIUM_NAME}.outer + ${GROUND_PART_NAME}, found ${requiredCount} — ball collides with those only`,
 		);
 	}
 	if (include.size() === 0) {

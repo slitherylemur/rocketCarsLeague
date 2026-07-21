@@ -65,6 +65,29 @@ function hasMatchVehicle(player: Player): boolean {
 	return vehiclesFolder !== undefined && model.IsDescendantOf(vehiclesFolder);
 }
 
+/** True while the player is on the landing page or in the Friends Team mini
+ * lobby — deliberately outside the play loop, so the shop-phase countdown and
+ * auto-spawn must not touch them (design rule: the auto start only ever moves
+ * players who are in the shop because they played). EXCEPTION: a lobby whose
+ * vote completed while no round was spawnable is "STARTING SOON" — its
+ * members carry CB_PendingLaunch and ride the countdown + auto start. */
+function isInMenuFlow(player: Player): boolean {
+	if (player.GetAttribute("CB_PendingLaunch") === true) {
+		return false;
+	}
+	const playerGui = player.FindFirstChild("PlayerGui");
+	if (!playerGui) {
+		return false;
+	}
+	for (const screenName of ["CreateTeam", "Landing"]) {
+		const screen = playerGui.FindFirstChild(screenName);
+		if (screen !== undefined && screen.IsA("ScreenGui") && screen.Enabled) {
+			return true;
+		}
+	}
+	return false;
+}
+
 function hideTimer(player: Player) {
 	pcall(() => {
 		const playerGui = player.FindFirstChild("PlayerGui");
@@ -233,8 +256,9 @@ const MatchDirector = {
 					// Players who spawned in early (landing buttons still work
 					// during the shop) already drive — leave their HUD alone.
 					// NOT a plain vehiclesTable check: the menu display car
-					// registers there too (see hasMatchVehicle).
-					if (!hasMatchVehicle(player)) {
+					// registers there too (see hasMatchVehicle). Landing/lobby
+					// players are outside the play loop: no countdown for them.
+					if (!hasMatchVehicle(player) && !isInMenuFlow(player)) {
 						showTimer(player, `NEXT ROUND ${i}S`);
 					}
 				}
@@ -247,7 +271,7 @@ const MatchDirector = {
 			const toSpawn: Player[] = [];
 			for (const player of Players.GetPlayers()) {
 				hideTimer(player);
-				if (TeamRegistry.getTeamOf(player) && !hasMatchVehicle(player)) {
+				if (TeamRegistry.getTeamOf(player) && !hasMatchVehicle(player) && !isInMenuFlow(player)) {
 					toSpawn.push(player);
 				}
 			}
