@@ -340,7 +340,10 @@ const spawnVehicleModule = {
 			// Release the car to physics only now: the client has received the
 			// anchored (server-authoritative) spawn state, so it starts
 			// simulating from the correct position when it takes ownership.
-			if (newModel.Base.Anchored) {
+			// Classic-mode only — release ONLY the anchor set above (drivable
+			// && !isServerAuthority()); never unanchor a part someone else
+			// anchored while this spawn was inside its internal waits.
+			if (!isServerAuthority() && newModel.Base.Anchored) {
 				newModel.Base.Anchored = false;
 				RunService.Stepped.Wait();
 			}

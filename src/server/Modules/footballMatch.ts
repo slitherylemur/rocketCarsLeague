@@ -52,10 +52,10 @@ const FREE_PLAY_INTRO_TIME = 1.8;
 const BLUE_HEX = "#4FA8FF";
 const RED_HEX = "#FF5050";
 
-// Clearance between the car's lowest point and the floor when it's held for a
-// spawn/kickoff — enough that wheels never start embedded in the ground, small
-// enough that releasing the anchor is not a visible drop.
-const HOLD_FLOOR_MARGIN = 0.5;
+// Clearance between the car's lowest point and the floor at spawn/kickoff
+// placement — enough that wheels never start embedded in the ground, small
+// enough that the car settles instantly instead of dropping and twisting.
+const SPAWN_FLOOR_MARGIN = 0.5;
 
 export const FootballAttr = {
 	Phase: "FB_Phase",
@@ -167,21 +167,6 @@ function zeroVehicleInputs(player: Player) {
 	}
 }
 
-/** Spawn/kickoff holds anchor the car's Base (holdVehicle below) so it cannot
- * drop, bounce, or twist off its ball-facing spawn CFrame while waiting. The
- * anchor is tied to the control lock: every unlock path releases it here. */
-function releaseVehicle(player: Player) {
-	const vehicle = Globals.vehiclesTable[player.UserId];
-	const model = vehicle && vehicle.model;
-	if (!model || model.Parent === undefined) {
-		return;
-	}
-	const base = model.FindFirstChild("Base");
-	if (base && base.IsA("BasePart") && base.Anchored) {
-		base.Anchored = false;
-	}
-}
-
 /** While set on the Player, the sim's fresh-sit context enable
  * (VehicleSim.setOwnerContextEnabled) leaves controls disabled — closing the
  * ~2s window where a respawned car was drivable before the phase lock landed
@@ -220,7 +205,6 @@ function unlockPlayer(player: Player) {
 	hideTimerText(player);
 	player.SetAttribute(CONTROL_LOCK_ATTR, undefined);
 	setContextEnabled(player, true);
-	releaseVehicle(player);
 }
 
 // ---- goal parts (discovery helpers live in ./goalParts) ------------------
@@ -446,11 +430,10 @@ class PitchMatch {
 		return result ? result.Position.Y : undefined;
 	}
 
-	/** Place the car on its spawn CFrame with its lowest point
-	 * HOLD_FLOOR_MARGIN above the floor and anchor the Base: no drop, no
-	 * bounce, no twisting away from the ball while the car waits for controls.
-	 * unlockPlayer (GO / respawn countdown / free play) releases the anchor. */
-	holdVehicle(model: Model, spawnCFrame: CFrame) {
+	/** Place the car at rest on its spawn CFrame with its lowest point
+	 * SPAWN_FLOOR_MARGIN above the floor: with next to no drop height it
+	 * settles in place instead of bouncing and twisting off the ball line. */
+	placeVehicle(model: Model, spawnCFrame: CFrame) {
 		pcall(() => {
 			const primary = model.PrimaryPart;
 			if (!primary) {
@@ -464,23 +447,26 @@ class PitchMatch {
 				// translation-invariant, so it can be measured pre-move.
 				const [bbCFrame, bbSize] = model.GetBoundingBox();
 				const lift = primary.Position.Y - (bbCFrame.Position.Y - bbSize.Y / 2);
-				targetY = floorY + HOLD_FLOOR_MARGIN + lift;
+				targetY = floorY + SPAWN_FLOOR_MARGIN + lift;
 			} else {
 				targetY = position.Y + model.GetExtentsSize().Y / 2;
 			}
 			model.SetPrimaryPartCFrame(spawnCFrame.Rotation.add(new Vector3(position.X, targetY, position.Z)));
-			const base = model.FindFirstChild("Base");
-			if (base && base.IsA("BasePart")) {
-				base.AssemblyLinearVelocity = new Vector3(0, 0, 0);
-				base.AssemblyAngularVelocity = new Vector3(0, 0, 0);
-				base.Anchored = true;
+			// Wheels are SEPARATE assemblies (springs/hinges, not welds): zero
+			// every assembly, not just the body, or a wheel keeps its
+			// goal-blast velocity and yanks the suspension around on arrival.
+			for (const part of model.GetDescendants()) {
+				if (part.IsA("BasePart")) {
+					part.AssemblyLinearVelocity = new Vector3(0, 0, 0);
+					part.AssemblyAngularVelocity = new Vector3(0, 0, 0);
+				}
 			}
 		});
 	}
 
-	/** Re-place and hold ONE player's car (mid-round spawns while the phase
-	 * lock is on); the full-roster path is repositionVehicles. */
-	holdVehicleFor(player: Player) {
+	/** Re-place ONE player's car (mid-round spawns while the phase lock is
+	 * on); the full-roster path is repositionVehicles. */
+	placeVehicleFor(player: Player) {
 		const entry = this.roster.get(player);
 		const vehicle = Globals.vehiclesTable[player.UserId];
 		const model = vehicle && vehicle.model;
@@ -489,7 +475,7 @@ class PitchMatch {
 		}
 		const spawnCFrame = this.spawnCFrameFor(entry);
 		if (spawnCFrame !== undefined) {
-			this.holdVehicle(model, spawnCFrame);
+			this.placeVehicle(model, spawnCFrame);
 		}
 	}
 
@@ -504,7 +490,7 @@ class PitchMatch {
 			if (spawnCFrame === undefined) {
 				continue;
 			}
-			this.holdVehicle(model, spawnCFrame);
+			this.placeVehicle(model, spawnCFrame);
 		}
 	}
 
@@ -1402,15 +1388,15 @@ const footballMatch = {
 		match.assignSide(player);
 		if (match.phase === "Play") {
 			lockPlayer(player, RESPAWN_LOCK);
-			// Held anchored at the ball-facing spawn until the countdown
-			// unlocks — SpawnVehicle's free-fall placement can't twist it.
-			match.holdVehicleFor(player);
+			// Re-place at floor level facing the ball — SpawnVehicle's
+			// free-fall placement drops from height and can twist the car.
+			match.placeVehicleFor(player);
 			return;
 		}
 		if (match.phase === "Kickoff" || match.phase === "Goal") {
 			// startKickoff's GO / the goal-pause resolution unlocks the roster.
 			lockPlayer(player);
-			match.holdVehicleFor(player);
+			match.placeVehicleFor(player);
 			return;
 		}
 		// Waiting / FreePlay: either this spawn completes the pairing (kickoff)
