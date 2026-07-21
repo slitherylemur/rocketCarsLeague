@@ -1304,6 +1304,12 @@ const footballMatch = {
 	 * winner's goal. No lineup for ties.
 	 */
 	playVictoryScene(flipWinners?: Map<number, string>) {
+		// Winner cars get their controls back for the scene — pinned on X/Z by
+		// the showcase lock so they can jump/boost/spin on the lineup without
+		// leaving it. Undone after the scene so the ladder map / summary play
+		// out over a still lineup.
+		const winnerBases: BasePart[] = [];
+		const winnerPlayers: Player[] = [];
 		for (const match of matches) {
 			// No winner presentation for free-play-only pitches (muckabout /
 			// opponent never arrived) — there was no match to win.
@@ -1321,11 +1327,11 @@ const footballMatch = {
 				}
 			}
 
+			const lineupFolder = match.pitch.folder.FindFirstChild("VictoryLineup");
 			if (winner) {
 				// Winning cars onto the VictoryLineup/<side> parts (Red/Blue
 				// subfolders), fallback: spread across the goal mouth.
 				const lineup: BasePart[] = [];
-				const lineupFolder = match.pitch.folder.FindFirstChild("VictoryLineup");
 				let lineupSource: Instance | undefined = lineupFolder;
 				const sideFolder = lineupFolder && lineupFolder.FindFirstChild(winner);
 				if (sideFolder) {
@@ -1333,7 +1339,9 @@ const footballMatch = {
 				}
 				if (lineupSource) {
 					for (const descendant of lineupSource.GetDescendants()) {
-						if (descendant.IsA("BasePart")) {
+						// The side models also hold the authored camera shot —
+						// never pose a car on it.
+						if (descendant.IsA("BasePart") && descendant.Name !== "CameraPart") {
 							lineup.push(descendant);
 						}
 					}
@@ -1357,31 +1365,49 @@ const footballMatch = {
 						target = goal.CFrame.mul(new CFrame((placed - 1) * 14, 2, -18));
 					}
 					if (target) {
-						pcall(() => {
+						const [posed, lockPos] = pcall(() => {
 							const size = model.GetExtentsSize();
-							model.SetPrimaryPartCFrame(target!.add(new Vector3(0, size.Y / 2, 0)));
+							const lifted = target!.add(new Vector3(0, size.Y / 2, 0));
+							model.SetPrimaryPartCFrame(lifted);
 							const base = model.FindFirstChild("Base");
 							if (base && base.IsA("BasePart")) {
 								base.AssemblyLinearVelocity = new Vector3(0, 0, 0);
 								base.AssemblyAngularVelocity = new Vector3(0, 0, 0);
 							}
+							return lifted.Position;
 						});
+						if (posed) {
+							const base = model.FindFirstChild("Base");
+							if (base && base.IsA("BasePart")) {
+								VehicleSim.setShowcaseLock(base, lockPos as Vector3);
+								winnerBases.push(base);
+							}
+							// Only the winners celebrate with live controls.
+							unlockPlayer(player);
+							winnerPlayers.push(player);
+						}
 					}
 					placed += 1;
 				}
 			}
 
-			// Use the exact authored shot for the winning side. CFrame is a
-			// supported attribute type, so the client reproduces the part's
-			// complete position and rotation without recalculating either.
+			// Use the exact authored shot for the winning side: the CameraPart
+			// inside the VictoryLineup side model (legacy CameraWinParts kept as
+			// a fallback). CFrame is a supported attribute type, so the client
+			// reproduces the part's complete position and rotation without
+			// recalculating either.
 			const camSide: TeamName = winner ?? flipSide ?? "Blue";
-			const cameraWinParts = match.pitch.folder.FindFirstChild("CameraWinParts", true);
-			const cameraPart = cameraWinParts && cameraWinParts.FindFirstChild(camSide);
+			const sideModel = lineupFolder ? lineupFolder.FindFirstChild(camSide) : undefined;
+			let cameraPart: Instance | undefined = sideModel ? sideModel.FindFirstChild("CameraPart", true) : undefined;
+			if (!(cameraPart && cameraPart.IsA("BasePart"))) {
+				const cameraWinParts = match.pitch.folder.FindFirstChild("CameraWinParts", true);
+				cameraPart = cameraWinParts ? cameraWinParts.FindFirstChild(camSide) : undefined;
+			}
 			if (cameraPart && cameraPart.IsA("BasePart")) {
 				match.pitch.folder.SetAttribute("FB_VictoryCamCFrame", cameraPart.CFrame);
 			} else {
 				match.pitch.folder.SetAttribute("FB_VictoryCamCFrame", undefined);
-				warn(`[Football] ${match.pitch.folder.Name} is missing CameraWinParts/${camSide}`);
+				warn(`[Football] ${match.pitch.folder.Name} is missing VictoryLineup/${camSide}/CameraPart`);
 			}
 
 			// Camera first, THEN the winner text.
@@ -1408,6 +1434,16 @@ const footballMatch = {
 			}
 		}
 		task.wait(VICTORY_SCENE_TIME);
+		for (const base of winnerBases) {
+			if (base.Parent !== undefined) {
+				VehicleSim.setShowcaseLock(base, undefined);
+			}
+		}
+		for (const player of winnerPlayers) {
+			if (player.Parent !== undefined) {
+				lockPlayer(player);
+			}
+		}
 	},
 
 	/** Full-screen per-player round summary (design §9): a stats column per
