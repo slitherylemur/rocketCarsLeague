@@ -12,6 +12,7 @@ import type { CrateItem } from "./dataTypes";
 import type { LootSlot } from "./dataTypes";
 import type { VehicleModel } from "../Classes/VehicleClass";
 import { ProductIds } from "shared/Monetization";
+import paidRandomItemsPolicy from "./paidRandomItemsPolicy";
 
 const MarketplaceService = game.GetService("MarketplaceService");
 const ServerStorage = game.GetService("ServerStorage");
@@ -82,6 +83,13 @@ const typeToDataStoreName: Record<string, string> = {
 
 const crateModule = {
 	openCrate: (player: Player, crateName: number) => {
+		// Crates are paid random items (bought with Robux or Robux-purchasable
+		// gold) — blocked in countries where lootboxes are illegal.
+		if (paidRandomItemsPolicy.isRestricted(player)) {
+			paidRandomItemsPolicy.showRestrictedPopup(player);
+			return;
+		}
+
 		if (crateName > 0) {
 			if (!DataUtilities.PlayerCanAfford(player, cratePrices[crateName - 1])) {
 				selectedFunctions.openCashPurchaceMenu(player);

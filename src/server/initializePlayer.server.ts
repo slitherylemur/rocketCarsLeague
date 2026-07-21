@@ -12,9 +12,11 @@ import crateModule from "./Modules/CrateModule";
 import selectedFunctions from "./Modules/UiModules/itemSelectedFunctions";
 import populateCrateFrameModule from "shared/PopulateCrateFrame";
 import ContentModule from "./Modules/Content";
+import paidRandomItemsPolicy from "./Modules/paidRandomItemsPolicy";
 import { Globals } from "./Globals";
 import footballMatch from "./Modules/footballMatch";
 import TeamRegistry, { CarBallRemotes, RENAME_PRODUCT_ID } from "./Modules/TeamRegistry";
+import MatchDirector from "./Modules/MatchDirector";
 import { ProductIds } from "shared/Monetization";
 import type { LadderTeam } from "./Modules/TeamRegistry";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
@@ -343,6 +345,12 @@ function openCrate(player: Player) {
 }
 
 Globals.openCrateMenu = (player: Player, crateName: number) => {
+	// Lootbox compliance: don't even show the crate menu in restricted countries.
+	if (paidRandomItemsPolicy.isRestricted(player)) {
+		paidRandomItemsPolicy.showRestrictedPopup(player);
+		return;
+	}
+
 	if (!uiConnections.get(player)) {
 		uiConnections.set(player, new Map());
 	}
@@ -551,6 +559,11 @@ function showLanding(player: Player) {
 	const landing = player.WaitForChild("PlayerGui").WaitForChild("Landing") as LandingGuiShape;
 	gui.Garage.Enabled = false;
 	landing.Enabled = true;
+
+	// Landing is outside the play loop — the shop-phase countdown skips
+	// menu-flow players, so a label shown in the shop would otherwise freeze
+	// on screen here (EXIT TEAM / Leave mid-countdown).
+	MatchDirector.hideTimer(player);
 
 	// Aim the menu camera at the garage car. setTab.Inventory used to do this
 	// as a side effect of OpenInventory on join; the landing page must send a

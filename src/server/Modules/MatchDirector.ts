@@ -260,6 +260,12 @@ const MatchDirector = {
 					// players are outside the play loop: no countdown for them.
 					if (!hasMatchVehicle(player) && !isInMenuFlow(player)) {
 						showTimer(player, `NEXT ROUND ${i}S`);
+					} else if (isInMenuFlow(player)) {
+						// Entered the landing/lobby mid-countdown (EXIT TEAM from
+						// the shop): without this the last text freezes on screen.
+						// Match players are exempt — footballMatch owns their
+						// TimerGui for kickoff countdowns.
+						hideTimer(player);
 					}
 				}
 				task.wait(1);
@@ -289,6 +295,14 @@ const MatchDirector = {
 
 	cancelShopPhase() {
 		shopGen += 1;
+	},
+
+	/** Immediately clear the shop-phase countdown label for one player. The
+	 * countdown loop stops UPDATING menu-flow players but only re-checks once
+	 * a second — callers that move a player onto a menu screen (showLanding)
+	 * use this so the frozen text never flashes there. */
+	hideTimer(player: Player) {
+		hideTimer(player);
 	},
 };
 
