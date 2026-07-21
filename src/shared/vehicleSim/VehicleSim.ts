@@ -121,6 +121,7 @@ const AERIAL_TORQUE_PER_MASS = 378; // aerial control authority per unit total m
 const UPRIGHT_RESPONSIVENESS = 20; // slope hug + post-jump upright hold
 const FLIP_RESPONSIVENESS = 15; // flip righting rotation
 const FLIP_LIFT_RESPONSIVENESS = 15; // flip vertical lift (old BodyPosition P/D)
+const SHOWCASE_LOCK_RESPONSIVENESS = 50; // showcase X/Z pin — stiff hold against drive/boost force
 
 // ---- gears (percentage of max speed) ----
 const GEAR_LIMITS = [0.4, 0.7, 1];
@@ -226,6 +227,8 @@ export const VehicleAttr = {
 	FlipReadyAt: "FlipReadyAt",
 	FlipTarget: "FlipTarget", // CFrame
 	FlipLiftPos: "FlipLiftPos", // Vector3
+	ShowcaseLockActive: "ShowcaseLockActive",
+	ShowcaseLockPos: "ShowcaseLockPos", // Vector3
 	PrevBoostHeld: "PrevBoostHeld",
 	PrevJumpHeld: "PrevJumpHeld",
 	PrevRollLeft: "PrevRollLeft",
@@ -304,6 +307,7 @@ interface SimEntry {
 	upright: AlignOrientation;
 	flipAlign: AlignOrientation;
 	flipLift: AlignPosition;
+	showcaseLock: AlignPosition;
 	jumpThrust: VectorForce;
 	driftThrust: VectorForce;
 	// Ackermann geometry
@@ -334,6 +338,7 @@ interface SimEntry {
 	pendingFlip?: boolean;
 	pendingRolls?: Array<{ direction: -1 | 1; begin: boolean }>;
 	pendingTuning?: Partial<VehicleTuning>; // tuning HUD edits, applied inside the next sim step
+	pendingShowcaseLock?: { position?: Vector3 }; // showcase X/Z pin engage/disengage, applied inside the next sim step
 	inputActions?: {
 		context: InputContext;
 		throttleForward?: InputAction;
@@ -540,6 +545,20 @@ function createMovers(base: VehicleBase) {
 	flipLift.Responsiveness = FLIP_LIFT_RESPONSIVENESS;
 	flipLift.Parent = base;
 
+	// Showcase X/Z pin (face-off / victory scenes): holds the car at a point in
+	// the ground plane while Y and all rotation stay free, so jump/boost/aerial
+	// keep working but driving can't move the car away.
+	const showcaseLock = new Instance("AlignPosition");
+	showcaseLock.Name = "ShowcaseLock";
+	showcaseLock.Mode = Enum.PositionAlignmentMode.OneAttachment;
+	showcaseLock.Attachment0 = centerAttachment;
+	showcaseLock.ApplyAtCenterOfMass = true;
+	showcaseLock.ForceLimitMode = Enum.ForceLimitMode.PerAxis;
+	showcaseLock.MaxAxesForce = new Vector3(0, 0, 0);
+	showcaseLock.MaxVelocity = math.huge;
+	showcaseLock.Responsiveness = SHOWCASE_LOCK_RESPONSIVENESS;
+	showcaseLock.Parent = base;
+
 	// Torque-free jump force: applied at the center of mass so an off-center
 	// vertical push can't flip the car.
 	const jumpAttachment = new Instance("Attachment");
@@ -565,7 +584,7 @@ function createMovers(base: VehicleBase) {
 	driftThrust.Force = new Vector3(0, 0, 0);
 	driftThrust.Parent = base;
 
-	return { aerial, driftYaw, upright, flipAlign, flipLift, jumpThrust, driftThrust };
+	return { aerial, driftYaw, upright, flipAlign, flipLift, showcaseLock, jumpThrust, driftThrust };
 }
 
 // ---- registration ----
@@ -576,6 +595,7 @@ interface MoverSet {
 	upright: AlignOrientation;
 	flipAlign: AlignOrientation;
 	flipLift: AlignPosition;
+	showcaseLock: AlignPosition;
 	jumpThrust: VectorForce;
 	driftThrust: VectorForce;
 }
@@ -603,6 +623,7 @@ function buildEntry(model: VehicleModel, tuning: VehicleTuning, movers: MoverSet
 		upright: movers.upright,
 		flipAlign: movers.flipAlign,
 		flipLift: movers.flipLift,
+		showcaseLock: movers.showcaseLock,
 		jumpThrust: movers.jumpThrust,
 		driftThrust: movers.driftThrust,
 		t: fl.Position.sub(fr.Position).Magnitude,
@@ -699,9 +720,10 @@ export function registerReplica(model: VehicleModel, owner: Player): boolean {
 	const upright = findMover<AlignOrientation>("UprightAlign");
 	const flipAlign = findMover<AlignOrientation>("FlipAlign");
 	const flipLift = findMover<AlignPosition>("FlipLift");
+	const showcaseLock = findMover<AlignPosition>("ShowcaseLock");
 	const jumpThrust = findMover<VectorForce>("JumpThrust");
 	const driftThrust = findMover<VectorForce>("DriftThrust");
-	if (!aerial || !driftYaw || !upright || !flipAlign || !flipLift || !jumpThrust || !driftThrust) {
+	if (!aerial || !driftYaw || !upright || !flipAlign || !flipLift || !showcaseLock || !jumpThrust || !driftThrust) {
 		return false;
 	}
 	if (!driftThrust.IsA("VectorForce")) {
@@ -731,7 +753,7 @@ export function registerReplica(model: VehicleModel, owner: Player): boolean {
 		gripYawTorque: attrNumber(base, VehicleTuningAttr.GripYawTorque, GRIP_YAW_TORQUE),
 	};
 	const [ok, err] = pcall(() => {
-		const movers: MoverSet = { aerial, driftYaw, upright, flipAlign, flipLift, jumpThrust, driftThrust };
+		const movers: MoverSet = { aerial, driftYaw, upright, flipAlign, flipLift, showcaseLock, jumpThrust, driftThrust };
 		registry.set(model, buildEntry(model, tuning, movers, owner));
 	});
 	if (!ok) {
@@ -886,6 +908,20 @@ export function applyTuningForPlayer(player: Player, partial: Partial<VehicleTun
 		}
 	}
 	return false;
+}
+
+// Showcase lock (server): pins the car's X/Z to lockPosition while Y and all
+// rotation stay free — jump/boost/aerial keep working, driving can't move the
+// car away. undefined disengages. Queued and consumed inside the next sim
+// step — attributes on predicted instances may only be written from within
+// BindToSimulation.
+export function setShowcaseLock(base: BasePart, lockPosition: Vector3 | undefined) {
+	for (const [, entry] of registry) {
+		if (entry.base === base) {
+			entry.pendingShowcaseLock = { position: lockPosition };
+			return;
+		}
+	}
 }
 
 // The old requestFlip body, run INSIDE the sim step so the flip state
@@ -1360,6 +1396,27 @@ function stepVehicle(entry: SimEntry, dt: number) {
 		if (t.jumpForceTime !== undefined) base.SetAttribute(VehicleTuningAttr.JumpForceTime, t.jumpForceTime);
 		if (t.jumpGravityMult !== undefined) base.SetAttribute(VehicleTuningAttr.JumpGravityMult, t.jumpGravityMult);
 		if (t.gripYawTorque !== undefined) base.SetAttribute(VehicleTuningAttr.GripYawTorque, t.gripYawTorque);
+	}
+
+	// Showcase lock engage/disengage (server only), before the occupancy gate
+	// so scene choreography works on an empty car too.
+	if (IS_SERVER && entry.pendingShowcaseLock) {
+		const lock = entry.pendingShowcaseLock;
+		entry.pendingShowcaseLock = undefined;
+		base.SetAttribute(VehicleAttr.ShowcaseLockActive, lock.position !== undefined);
+		if (lock.position !== undefined) {
+			base.SetAttribute(VehicleAttr.ShowcaseLockPos, lock.position);
+		}
+	}
+	// Re-asserted from the attribute every tick — a rollback restores the
+	// attribute but not the constraint properties (the setWheelFriction rule).
+	// PerAxis with Y at zero: gravity, jumpThrust and aerial boost stay free
+	// while the huge X/Z authority out-muscles every finite drive/boost force.
+	if (attrBool(base, VehicleAttr.ShowcaseLockActive)) {
+		entry.showcaseLock.Position = attrVector3(base, VehicleAttr.ShowcaseLockPos, base.Position);
+		entry.showcaseLock.MaxAxesForce = new Vector3(math.huge, 0, math.huge);
+	} else {
+		entry.showcaseLock.MaxAxesForce = new Vector3(0, 0, 0);
 	}
 
 	// Both peers rebuild the tuning from the attributes every tick so live

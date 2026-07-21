@@ -41,6 +41,7 @@ const TEAM_NAMES: TeamName[] = ["Blue", "Red"];
 
 const MATCH_TIME = 3 * 60;
 const KICKOFF_COUNTDOWN = 3;
+const FACE_OFF_TIME = 10;
 const RESPAWN_DELAY = 1.5;
 const RESPAWN_LOCK = 5;
 const GOAL_PAUSE = 2.5;
@@ -63,12 +64,16 @@ export const FootballAttr = {
 	RedScore: "FB_RedScore",
 	TimeLeft: "FB_TimeLeft", // global (ReplicatedStorage) — one shared clock
 	Announce: "FB_Announce",
+	// Face-off segment: overlay team names + the stage camera shot.
+	BlueName: "FB_BlueName",
+	RedName: "FB_RedName",
+	FaceOffCamCFrame: "FB_FaceOffCamCFrame",
 } as const;
 
 // "FreePlay" (design §muckabout): ≥1 rostered player but no opponent yet —
 // everyone on the pitch drives freely, goals count on the pitch scoreboard
 // for fun, and the shared clock does NOT run off it.
-type Phase = "Idle" | "Waiting" | "FreePlay" | "Kickoff" | "Play" | "Goal" | "Ended";
+type Phase = "Idle" | "Waiting" | "FreePlay" | "Kickoff" | "FaceOff" | "Play" | "Goal" | "Ended";
 
 interface RosterEntry {
 	team: TeamName; // pitch SIDE (D1), not the ladder team
@@ -220,6 +225,96 @@ function ballInPart(ball: BasePart, part: BasePart): boolean {
 	);
 }
 
+// ---- face-off stage (Studio-authored, discovered by structure) -----------
+//
+// The stage is a Model/Folder with a BasePart named "CameraPart" plus "Red"
+// and "Blue" sub-containers holding the podium parts. Its name is unknown
+// (it only exists in the place file), so it is found structurally. The
+// VictoryLineup Red/Blue models ALSO contain CameraPart parts now, so
+// anything named/inside "VictoryLineup" never counts.
+
+function insideVictoryLineup(instance: Instance, root: Instance): boolean {
+	let current: Instance | undefined = instance.Parent;
+	while (current !== undefined && current !== root) {
+		if (current.Name === "VictoryLineup") {
+			return true;
+		}
+		current = current.Parent;
+	}
+	return false;
+}
+
+function stageCameraPart(stage: Instance): BasePart | undefined {
+	for (const descendant of stage.GetDescendants()) {
+		if (descendant.Name === "CameraPart" && descendant.IsA("BasePart") && !insideVictoryLineup(descendant, stage)) {
+			return descendant;
+		}
+	}
+	return undefined;
+}
+
+function stageSideParts(stage: Instance, side: TeamName): BasePart[] {
+	const parts: BasePart[] = [];
+	for (const container of stage.GetDescendants()) {
+		if (container.Name !== side || insideVictoryLineup(container, stage)) {
+			continue;
+		}
+		for (const descendant of container.GetDescendants()) {
+			if (descendant.IsA("BasePart")) {
+				parts.push(descendant);
+			}
+		}
+		if (parts.size() > 0) {
+			break;
+		}
+	}
+	parts.sort((a, b) => a.Name < b.Name);
+	return parts;
+}
+
+function isFaceOffStage(candidate: Instance): boolean {
+	if (candidate.Name === "VictoryLineup") {
+		return false;
+	}
+	if (!candidate.IsA("Model") && !candidate.IsA("Folder")) {
+		return false;
+	}
+	if (stageCameraPart(candidate) === undefined) {
+		return false;
+	}
+	for (const side of TEAM_NAMES) {
+		if (stageSideParts(candidate, side).size() === 0) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function findFaceOffStage(pitchFolder: Instance): Instance | undefined {
+	for (const descendant of pitchFolder.GetDescendants()) {
+		if (insideVictoryLineup(descendant, pitchFolder)) {
+			continue;
+		}
+		if (isFaceOffStage(descendant)) {
+			return descendant;
+		}
+	}
+	const mapFolder = game.Workspace.FindFirstChild("Map");
+	const vehiclesFolder = game.Workspace.FindFirstChild("Vehicles");
+	for (const child of game.Workspace.GetChildren()) {
+		if (child === mapFolder || child === vehiclesFolder) {
+			continue;
+		}
+		if (child.Name === "VictoryStage" || child.Name === "VictoryLineup") {
+			continue;
+		}
+		if (isFaceOffStage(child)) {
+			return child;
+		}
+	}
+	return undefined;
+}
+
 // ---- one match on one pitch ----------------------------------------------
 
 class PitchMatch {
@@ -232,6 +327,9 @@ class PitchMatch {
 	readonly goalParts = new Map<TeamName, BasePart>();
 	flowGen = 0;
 	private shownFreePlayIntro = false;
+	private faceOffStage?: Instance;
+	private faceOffStageWarned = false;
+	private faceOffDone = false;
 
 	constructor(pitch: Pitch) {
 		this.pitch = pitch;
@@ -494,6 +592,128 @@ class PitchMatch {
 		}
 	}
 
+	/** Cached per round; re-resolved if the cached model went away. */
+	faceOffStageModel(): Instance | undefined {
+		if (this.faceOffStage !== undefined && this.faceOffStage.Parent !== undefined) {
+			return this.faceOffStage;
+		}
+		this.faceOffStage = findFaceOffStage(this.pitch.folder);
+		return this.faceOffStage;
+	}
+
+	/** Pre-countdown face-off (~10s): both teams posed on the stage podiums,
+	 * camera on the stage's CameraPart, controls live but pinned on X/Z so the
+	 * cars can jump/boost on the spot without driving away. Skipped when no
+	 * stage model exists. Returns false when the flow was cancelled
+	 * mid-segment (locks and camera already cleaned up). */
+	runFaceOff(gen: number, localMatchGen: number): boolean {
+		if (this.faceOffDone) {
+			return true;
+		}
+		this.faceOffDone = true;
+		const stage = this.faceOffStageModel();
+		if (!stage) {
+			if (!this.faceOffStageWarned) {
+				this.faceOffStageWarned = true;
+				warn(`[Football] ${this.pitch.folder.Name}: no face-off stage model — skipping face-off`);
+			}
+			return true;
+		}
+		// Names and camera BEFORE the phase flip so the client sees a complete
+		// scene the moment FB_Phase lands.
+		this.setAttr(FootballAttr.BlueName, this.ladderTeamNameForSide("Blue") ?? "BLUE TEAM");
+		this.setAttr(FootballAttr.RedName, this.ladderTeamNameForSide("Red") ?? "RED TEAM");
+		const cameraPart = stageCameraPart(stage);
+		if (cameraPart) {
+			this.pitch.folder.SetAttribute(FootballAttr.FaceOffCamCFrame, cameraPart.CFrame);
+		}
+		this.setPhase("FaceOff");
+		this.announce("");
+
+		const lockedBases: BasePart[] = [];
+		for (const side of TEAM_NAMES) {
+			const stageParts = stageSideParts(stage, side);
+			if (stageParts.size() === 0) {
+				continue;
+			}
+			let placed = 0;
+			for (const [player, entry] of this.roster) {
+				if (entry.team !== side) {
+					continue;
+				}
+				const vehicle = Globals.vehiclesTable[player.UserId];
+				const model = vehicle && vehicle.model;
+				if (!model || model.Parent === undefined) {
+					continue;
+				}
+				const part = stageParts[placed % stageParts.size()];
+				placed += 1;
+				// Direct placement (no floor raycast — the floor here is the
+				// stage's own geometry, not the pitch groundPart): podium part
+				// orientation, lifted by half the model height like
+				// placeVehicle's no-floor fallback.
+				const target = part.CFrame.Rotation.add(
+					part.Position.add(new Vector3(0, model.GetExtentsSize().Y / 2, 0)),
+				);
+				pcall(() => {
+					model.SetPrimaryPartCFrame(target);
+					for (const descendant of model.GetDescendants()) {
+						if (descendant.IsA("BasePart")) {
+							descendant.AssemblyLinearVelocity = new Vector3(0, 0, 0);
+							descendant.AssemblyAngularVelocity = new Vector3(0, 0, 0);
+						}
+					}
+				});
+				const base = model.FindFirstChild("Base");
+				if (base && base.IsA("BasePart")) {
+					VehicleSim.setShowcaseLock(base, target.Position);
+					lockedBases.push(base);
+				}
+				// The kickoff lock loop just ran — free the inputs so
+				// jump/boost/aerial work; the X/Z pin keeps the car in place.
+				unlockPlayer(player);
+			}
+		}
+
+		let cancelled = false;
+		for (let i = 0; i < FACE_OFF_TIME; i++) {
+			task.wait(1);
+			if (this.flowGen !== gen || matchGen !== localMatchGen) {
+				cancelled = true;
+				break;
+			}
+		}
+		for (const base of lockedBases) {
+			if (base.Parent !== undefined) {
+				VehicleSim.setShowcaseLock(base, undefined);
+			}
+		}
+		this.pitch.folder.SetAttribute(FootballAttr.FaceOffCamCFrame, undefined);
+		if (cancelled) {
+			return false;
+		}
+		for (const [player] of this.roster) {
+			lockPlayer(player);
+		}
+		this.setPhase("Kickoff");
+		this.repositionVehicles();
+		return true;
+	}
+
+	/** Teardown safety (endMatch/stop can land mid-face-off): no showcase
+	 * lock or face-off camera may outlive the segment. */
+	clearFaceOffScene() {
+		this.pitch.folder.SetAttribute(FootballAttr.FaceOffCamCFrame, undefined);
+		for (const [player] of this.roster) {
+			const vehicle = Globals.vehiclesTable[player.UserId];
+			const model = vehicle && vehicle.model;
+			const base = model && model.FindFirstChild("Base");
+			if (base && base.IsA("BasePart")) {
+				VehicleSim.setShowcaseLock(base, undefined);
+			}
+		}
+	}
+
 	/** `introText` (free-play → match transition): brief announce while the
 	 * free-players are still driving, then the normal reposition + 3-2-1. */
 	startKickoff(introText?: string) {
@@ -512,6 +732,9 @@ class PitchMatch {
 			this.repositionVehicles();
 			for (const [player] of this.roster) {
 				lockPlayer(player);
+			}
+			if (!this.runFaceOff(gen, localMatchGen)) {
+				return;
 			}
 			for (let i = KICKOFF_COUNTDOWN; i >= 1; i--) {
 				if (this.flowGen !== gen || matchGen !== localMatchGen) {
@@ -585,6 +808,9 @@ class PitchMatch {
 	resetScores() {
 		this.scores.Blue = 0;
 		this.scores.Red = 0;
+		// Fresh pairing → fresh face-off (post-goal kickoffs never reset scores,
+		// so they skip it).
+		this.faceOffDone = false;
 		this.publishScores();
 	}
 
@@ -661,6 +887,7 @@ class PitchMatch {
 			return;
 		}
 		this.flowGen += 1;
+		this.clearFaceOffScene();
 		this.setPhase("Ended");
 		for (const [player] of this.roster) {
 			lockPlayer(player);
@@ -705,7 +932,7 @@ function startClock() {
 			for (const match of matches) {
 				if (match.phase === "Play") {
 					anyPlaying = true;
-				} else if (match.phase === "Kickoff" || match.phase === "Goal") {
+				} else if (match.phase === "Kickoff" || match.phase === "FaceOff" || match.phase === "Goal") {
 					anyTransient = true;
 				}
 			}
@@ -1077,6 +1304,12 @@ const footballMatch = {
 	 * winner's goal. No lineup for ties.
 	 */
 	playVictoryScene(flipWinners?: Map<number, string>) {
+		// Winner cars get their controls back for the scene — pinned on X/Z by
+		// the showcase lock so they can jump/boost/spin on the lineup without
+		// leaving it. Undone after the scene so the ladder map / summary play
+		// out over a still lineup.
+		const winnerBases: BasePart[] = [];
+		const winnerPlayers: Player[] = [];
 		for (const match of matches) {
 			// No winner presentation for free-play-only pitches (muckabout /
 			// opponent never arrived) — there was no match to win.
@@ -1094,11 +1327,11 @@ const footballMatch = {
 				}
 			}
 
+			const lineupFolder = match.pitch.folder.FindFirstChild("VictoryLineup");
 			if (winner) {
 				// Winning cars onto the VictoryLineup/<side> parts (Red/Blue
 				// subfolders), fallback: spread across the goal mouth.
 				const lineup: BasePart[] = [];
-				const lineupFolder = match.pitch.folder.FindFirstChild("VictoryLineup");
 				let lineupSource: Instance | undefined = lineupFolder;
 				const sideFolder = lineupFolder && lineupFolder.FindFirstChild(winner);
 				if (sideFolder) {
@@ -1106,7 +1339,9 @@ const footballMatch = {
 				}
 				if (lineupSource) {
 					for (const descendant of lineupSource.GetDescendants()) {
-						if (descendant.IsA("BasePart")) {
+						// The side models also hold the authored camera shot —
+						// never pose a car on it.
+						if (descendant.IsA("BasePart") && descendant.Name !== "CameraPart") {
 							lineup.push(descendant);
 						}
 					}
@@ -1130,31 +1365,49 @@ const footballMatch = {
 						target = goal.CFrame.mul(new CFrame((placed - 1) * 14, 2, -18));
 					}
 					if (target) {
-						pcall(() => {
+						const [posed, lockPos] = pcall(() => {
 							const size = model.GetExtentsSize();
-							model.SetPrimaryPartCFrame(target!.add(new Vector3(0, size.Y / 2, 0)));
+							const lifted = target!.add(new Vector3(0, size.Y / 2, 0));
+							model.SetPrimaryPartCFrame(lifted);
 							const base = model.FindFirstChild("Base");
 							if (base && base.IsA("BasePart")) {
 								base.AssemblyLinearVelocity = new Vector3(0, 0, 0);
 								base.AssemblyAngularVelocity = new Vector3(0, 0, 0);
 							}
+							return lifted.Position;
 						});
+						if (posed) {
+							const base = model.FindFirstChild("Base");
+							if (base && base.IsA("BasePart")) {
+								VehicleSim.setShowcaseLock(base, lockPos as Vector3);
+								winnerBases.push(base);
+							}
+							// Only the winners celebrate with live controls.
+							unlockPlayer(player);
+							winnerPlayers.push(player);
+						}
 					}
 					placed += 1;
 				}
 			}
 
-			// Use the exact authored shot for the winning side. CFrame is a
-			// supported attribute type, so the client reproduces the part's
-			// complete position and rotation without recalculating either.
+			// Use the exact authored shot for the winning side: the CameraPart
+			// inside the VictoryLineup side model (legacy CameraWinParts kept as
+			// a fallback). CFrame is a supported attribute type, so the client
+			// reproduces the part's complete position and rotation without
+			// recalculating either.
 			const camSide: TeamName = winner ?? flipSide ?? "Blue";
-			const cameraWinParts = match.pitch.folder.FindFirstChild("CameraWinParts", true);
-			const cameraPart = cameraWinParts && cameraWinParts.FindFirstChild(camSide);
+			const sideModel = lineupFolder ? lineupFolder.FindFirstChild(camSide) : undefined;
+			let cameraPart: Instance | undefined = sideModel ? sideModel.FindFirstChild("CameraPart", true) : undefined;
+			if (!(cameraPart && cameraPart.IsA("BasePart"))) {
+				const cameraWinParts = match.pitch.folder.FindFirstChild("CameraWinParts", true);
+				cameraPart = cameraWinParts ? cameraWinParts.FindFirstChild(camSide) : undefined;
+			}
 			if (cameraPart && cameraPart.IsA("BasePart")) {
 				match.pitch.folder.SetAttribute("FB_VictoryCamCFrame", cameraPart.CFrame);
 			} else {
 				match.pitch.folder.SetAttribute("FB_VictoryCamCFrame", undefined);
-				warn(`[Football] ${match.pitch.folder.Name} is missing CameraWinParts/${camSide}`);
+				warn(`[Football] ${match.pitch.folder.Name} is missing VictoryLineup/${camSide}/CameraPart`);
 			}
 
 			// Camera first, THEN the winner text.
@@ -1181,6 +1434,16 @@ const footballMatch = {
 			}
 		}
 		task.wait(VICTORY_SCENE_TIME);
+		for (const base of winnerBases) {
+			if (base.Parent !== undefined) {
+				VehicleSim.setShowcaseLock(base, undefined);
+			}
+		}
+		for (const player of winnerPlayers) {
+			if (player.Parent !== undefined) {
+				lockPlayer(player);
+			}
+		}
 	},
 
 	/** Full-screen per-player round summary (design §9): a stats column per
@@ -1254,6 +1517,7 @@ const footballMatch = {
 		}
 		for (const match of matches) {
 			match.flowGen += 1;
+			match.clearFaceOffScene();
 			for (const [player] of match.roster) {
 				lockGen.set(player, (lockGen.get(player) ?? 0) + 1);
 				hideTimerText(player);
@@ -1374,7 +1638,7 @@ const footballMatch = {
 		if (!match) {
 			return;
 		}
-		if (match.phase === "Play" || match.phase === "Kickoff" || match.phase === "Goal") {
+		if (match.phase === "Play" || match.phase === "Kickoff" || match.phase === "FaceOff" || match.phase === "Goal") {
 			player.SetAttribute(CONTROL_LOCK_ATTR, true);
 			setContextEnabled(player, false);
 		}
@@ -1393,7 +1657,7 @@ const footballMatch = {
 			match.placeVehicleFor(player);
 			return;
 		}
-		if (match.phase === "Kickoff" || match.phase === "Goal") {
+		if (match.phase === "Kickoff" || match.phase === "FaceOff" || match.phase === "Goal") {
 			// startKickoff's GO / the goal-pause resolution unlocks the roster.
 			lockPlayer(player);
 			match.placeVehicleFor(player);
@@ -1479,7 +1743,7 @@ const footballMatch = {
 			spawnVehicle.KillVehicle(player);
 		});
 		if (
-			(match.phase === "Play" || match.phase === "Kickoff" || match.phase === "Goal") &&
+			(match.phase === "Play" || match.phase === "Kickoff" || match.phase === "FaceOff" || match.phase === "Goal") &&
 			!match.teamsReady()
 		) {
 			if (match.roster.size() > 0) {
@@ -1497,7 +1761,10 @@ PlayerService.PlayerRemoving.Connect((player) => {
 	for (const match of matches) {
 		if (match.roster.has(player)) {
 			match.roster.delete(player);
-			if ((match.phase === "Play" || match.phase === "Kickoff" || match.phase === "Goal") && !match.teamsReady()) {
+			if (
+				(match.phase === "Play" || match.phase === "Kickoff" || match.phase === "FaceOff" || match.phase === "Goal") &&
+				!match.teamsReady()
+			) {
 				if (match.roster.size() > 0) {
 					warn(`[Football] ${player.Name} left — ${match.pitch.folder.Name} falls back to free play`);
 					match.enterFreePlay(false);
