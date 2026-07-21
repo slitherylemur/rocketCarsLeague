@@ -62,24 +62,17 @@ const DRIFT_SPEED_SCRUB = 0.35; // handbrake drag per unit mass per stud/s of tr
 // steering implies (steer × v / turnRadius). Below that rate it assists the
 // tyres into the turn; above it (rear stepping out over a kerb, a bump, a hit)
 // it pulls the car straight — spin-outs are clamped away instead of caught late.
-const GRIP_YAW_TORQUE = 80; // yaw authority per unit total mass for the grip servo (50 let occasional spin-outs through)
-const TURN_RADIUS_MULT = 0.8; // global tightening of the Ackermann turn circle (1 = a5318d46 baseline; 0.75 caused spin-outs)
-// Friction circle: holding a turn of radius r at speed v demands v²/r of
-// lateral (centripetal) acceleration from the tyres, and they can only supply
-// about μg (grip 1.2 × gravity 196.2 ≈ 235). Commanding more — the top-speed
-// spin-out: hold a turn at speed, the yaw servo rotates the nose faster than
-// the velocity direction can follow, the slip angle grows and the rear lets
-// go — so the EFFECTIVE turn radius is floored at v²/this. Quadratic in
-// speed: no effect below ~110 studs/s, barely at the 120 top speed, and
-// progressively wider (but spin-free) at boost speeds. Applied to the yaw
-// servo AND the Ackermann wheel angles so they always agree. Slightly above
-// the raw μg because the yaw servo actively damps the incipient slide (220
-// felt too conservative; the spin-out demanded ~470).
-const MAX_TURN_LATERAL_ACCEL = 270;
-// While DRIFTING the point is a controlled slide — the drift yaw mover and
-// sliding wheel friction own stability, not the tyre grip budget — so the
-// friction-circle floor loosens to this and the wheels keep steering tight.
-const DRIFT_MAX_TURN_LATERAL_ACCEL = 550;
+// SIMPLIFIED turning (2026-07-21): the turn radius is CONSTANT — steer
+// commands the per-car minTurnRadius at every speed, the Ackermann wheel
+// angles come from it, and the yaw servo below drives the assembly at the
+// kinematic rate v/radius. The speed→radius lerp, friction-circle floor,
+// lateral tire-grip force, and tap-sharp blend were all removed: their
+// interactions were fighting each other (roll-over onto two wheels, mushy
+// high-speed steering). Dial "Min turn radius" in the tuning HUD to find the
+// arc that feels right; spin-out control is then ONE knob — the servo's
+// GRIP_YAW_TORQUE budget. (maxTurnRadius / minAngularSpeed tuning fields are
+// currently unused by the sim.)
+const GRIP_YAW_TORQUE = 110; // yaw authority per unit total mass for the grip servo (50 let occasional spin-outs through). Per-vehicle tunable.
 // Overspeed brake: how hard the drive servo pulls the car back DOWN to its
 // target speed once it is above it (post-boost decay, mostly). A multiple of
 // forceAtt, so decel ≈ mult × acceleration — 2 gives ~125 studs/s²: firm
@@ -182,6 +175,7 @@ export interface VehicleTuning {
 	driftWheelFriction?: number;
 	jumpForceTime?: number;
 	jumpGravityMult?: number;
+	gripYawTorque?: number;
 }
 
 // ---- synchronized state: attributes on the vehicle Base ----
@@ -239,6 +233,7 @@ export const VehicleTuningAttr = {
 	DriftWheelFriction: "TuneDriftWheelFriction",
 	JumpForceTime: "TuneJumpForceTime",
 	JumpGravityMult: "TuneJumpGravityMult",
+	GripYawTorque: "TuneGripYawTorque",
 } as const;
 
 // Attributes on the vehicle MODEL (game state, written by the server
@@ -647,10 +642,20 @@ export function register(model: VehicleModel, tuning: VehicleTuning, owner?: Pla
 	base.SetAttribute(VehicleTuningAttr.MinAngularSpeed, tuning.minAngularSpeed);
 	base.SetAttribute(VehicleTuningAttr.BoostAmount, tuning.boostAmount);
 	base.SetAttribute(VehicleTuningAttr.DriftingMult, tuning.driftingMult);
-	base.SetAttribute(VehicleTuningAttr.DriveWheelFriction, tuning.driveWheelFriction ?? DRIVE_WHEEL_FRICTION);
-	base.SetAttribute(VehicleTuningAttr.DriftWheelFriction, tuning.driftWheelFriction ?? DRIFT_WHEEL_FRICTION);
-	base.SetAttribute(VehicleTuningAttr.JumpForceTime, tuning.jumpForceTime ?? JUMP_FORCE_TIME);
-	base.SetAttribute(VehicleTuningAttr.JumpGravityMult, tuning.jumpGravityMult ?? JUMP_FORCE_GRAVITY_MULT);
+	// Optional tuning fields are only WRITTEN when a subclass actually sets
+	// them (none do today) — every reader falls back to the module default on
+	// a missing attribute. Unconditional default writes pushed the Base over
+	// the predicted-instance 1024-byte attribute payload cap, which made
+	// register() throw and killed every car spawn. The tuning HUD still
+	// writes them on live edits (pendingTuning), which stays under the cap.
+	if (tuning.driveWheelFriction !== undefined)
+		base.SetAttribute(VehicleTuningAttr.DriveWheelFriction, tuning.driveWheelFriction);
+	if (tuning.driftWheelFriction !== undefined)
+		base.SetAttribute(VehicleTuningAttr.DriftWheelFriction, tuning.driftWheelFriction);
+	if (tuning.jumpForceTime !== undefined) base.SetAttribute(VehicleTuningAttr.JumpForceTime, tuning.jumpForceTime);
+	if (tuning.jumpGravityMult !== undefined)
+		base.SetAttribute(VehicleTuningAttr.JumpGravityMult, tuning.jumpGravityMult);
+	if (tuning.gripYawTorque !== undefined) base.SetAttribute(VehicleTuningAttr.GripYawTorque, tuning.gripYawTorque);
 	model.SetAttribute(VehicleModelAttr.OwnerUserId, owner ? owner.UserId : 0);
 
 	setWheelFriction(entry, false);
@@ -705,6 +710,7 @@ export function registerReplica(model: VehicleModel, owner: Player): boolean {
 		driftWheelFriction: attrNumber(base, VehicleTuningAttr.DriftWheelFriction, DRIFT_WHEEL_FRICTION),
 		jumpForceTime: attrNumber(base, VehicleTuningAttr.JumpForceTime, JUMP_FORCE_TIME),
 		jumpGravityMult: attrNumber(base, VehicleTuningAttr.JumpGravityMult, JUMP_FORCE_GRAVITY_MULT),
+		gripYawTorque: attrNumber(base, VehicleTuningAttr.GripYawTorque, GRIP_YAW_TORQUE),
 	};
 	const [ok, err] = pcall(() => {
 		const movers: MoverSet = { aerial, driftYaw, upright, flipAlign, flipLift, jumpThrust, driftThrust };
@@ -1257,42 +1263,11 @@ function turnWheels(entry: SimEntry, throttle: number, steerFloat: number, onGro
 	const fl = entry.flHinge;
 	const fr = entry.frHinge;
 
-	let turnRadius = entry.tuning.minTurnRadius;
+	// Simplified turning (see the GRIP_YAW_TORQUE comment): ONE constant
+	// radius at every speed, wheels always steering at full angular speed.
+	const turnRadius = entry.tuning.minTurnRadius;
 	fl.AngularSpeed = entry.tuning.maxAngularSpeed;
 	fr.AngularSpeed = entry.tuning.maxAngularSpeed;
-
-	if (entry.propVelocity > 0.5) {
-		turnRadius += math.clamp(
-			entry.propVelocity * (entry.tuning.maxTurnRadius - turnRadius),
-			0,
-			2 * (entry.tuning.maxTurnRadius - turnRadius),
-		);
-
-		fl.AngularSpeed -= math.clamp(
-			entry.propVelocity * (fl.AngularSpeed - entry.tuning.minAngularSpeed),
-			0,
-			fl.AngularSpeed - entry.tuning.minAngularSpeed,
-		);
-		fr.AngularSpeed -= math.clamp(
-			entry.propVelocity * (fr.AngularSpeed - entry.tuning.minAngularSpeed),
-			0,
-			fr.AngularSpeed - entry.tuning.minAngularSpeed,
-		);
-	}
-
-	turnRadius *= TURN_RADIUS_MULT;
-
-	// Friction-circle floor on the turn radius (see MAX_TURN_LATERAL_ACCEL).
-	// drift() above has already decided DriftEngaged for this tick, so the
-	// looser drift budget applies exactly while the slide is live.
-	const speed = math.abs(entry.velocity);
-	const latAccelLimit = attrBool(entry.base, VehicleAttr.DriftEngaged)
-		? DRIFT_MAX_TURN_LATERAL_ACCEL
-		: MAX_TURN_LATERAL_ACCEL;
-	const gripRadius = (speed * speed) / latAccelLimit;
-	if (gripRadius > turnRadius) {
-		turnRadius = gripRadius;
-	}
 
 	// Grip yaw servo (see GRIP_YAW_TORQUE). drift() owns the yaw mover while a
 	// slide is engaged; undrift() above already zeroed it, so airborne ticks
@@ -1300,7 +1275,7 @@ function turnWheels(entry: SimEntry, throttle: number, steerFloat: number, onGro
 	if (onGround && !attrBool(entry.base, VehicleAttr.DriftEngaged)) {
 		const dir = entry.velocity >= 0 ? 1 : -1;
 		const kinematicYaw = (math.abs(entry.velocity) / turnRadius) * steerFloat * dir;
-		entry.driftYaw.MaxTorque = entry.totalMass * GRIP_YAW_TORQUE;
+		entry.driftYaw.MaxTorque = entry.totalMass * (entry.tuning.gripYawTorque ?? GRIP_YAW_TORQUE);
 		entry.driftYaw.AngularVelocity = new Vector3(0, -kinematicYaw, 0);
 	}
 
@@ -1363,6 +1338,7 @@ function stepVehicle(entry: SimEntry, dt: number) {
 			base.SetAttribute(VehicleTuningAttr.DriftWheelFriction, t.driftWheelFriction);
 		if (t.jumpForceTime !== undefined) base.SetAttribute(VehicleTuningAttr.JumpForceTime, t.jumpForceTime);
 		if (t.jumpGravityMult !== undefined) base.SetAttribute(VehicleTuningAttr.JumpGravityMult, t.jumpGravityMult);
+		if (t.gripYawTorque !== undefined) base.SetAttribute(VehicleTuningAttr.GripYawTorque, t.gripYawTorque);
 	}
 
 	// Both peers rebuild the tuning from the attributes every tick so live
@@ -1396,6 +1372,7 @@ function stepVehicle(entry: SimEntry, dt: number) {
 			VehicleTuningAttr.JumpGravityMult,
 			prevTuning.jumpGravityMult ?? JUMP_FORCE_GRAVITY_MULT,
 		),
+		gripYawTorque: attrNumber(base, VehicleTuningAttr.GripYawTorque, prevTuning.gripYawTorque ?? GRIP_YAW_TORQUE),
 	};
 
 	// Occupancy gate — the old drive() while-condition, evaluated per tick.

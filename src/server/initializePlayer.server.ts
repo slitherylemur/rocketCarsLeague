@@ -335,6 +335,47 @@ Globals.clearPlayerGarage = (player: Player) => {
 	}
 };
 
+// Menu-camera join handshake. The initial ToggleMenuCamera /
+// SetMenuCameraCFrame fires happen inside PlayerAdded, which can beat the
+// client's LocalScripts connecting their handlers — fires in that window are
+// lost and the player joins staring at the sky. The client pings this remote
+// once its connections exist; we re-send whatever menu camera state the join
+// flow established. (Created in code, like GeneralUtilFunc — the
+// FunctionsAndEvents folder itself is a place-file instance.)
+const menuCameraReady = (() => {
+	const existing = FunctionsAndEvents.FindFirstChild("MenuCameraReady");
+	if (existing && existing.IsA("RemoteEvent")) {
+		return existing;
+	}
+	const remote = new Instance("RemoteEvent");
+	remote.Name = "MenuCameraReady";
+	remote.Parent = FunctionsAndEvents;
+	return remote;
+})();
+
+function resendMenuCameraState(player: Player) {
+	const playerGarage = Globals.findPlayerGarage(player);
+	// No garage yet: initialisePlayerUi hasn't assigned one, and its own fires
+	// will land on the now-connected client handlers. A character means the
+	// player already spawned into play — never re-force the menu camera then.
+	if (!playerGarage || player.Character !== undefined) {
+		return;
+	}
+	FunctionsAndEvents.ToggleMenuCamera.FireClient(player, true, playerGarage);
+	const bodyCamera = playerGarage.Cameras.FindFirstChild("Body");
+	if (bodyCamera && bodyCamera.IsA("BasePart")) {
+		if (Globals.shopPhaseActive === true) {
+			// Mirrors setTab.Inventory's shot for the shop-phase Cars page.
+			FunctionsAndEvents.SetMenuCameraCFrame.FireClient(player, bodyCamera.CFrame);
+		} else {
+			// Mirrors showLanding's offset landing shot.
+			FunctionsAndEvents.SetMenuCameraCFrame.FireClient(player, bodyCamera.CFrame.mul(new CFrame(-5, 1, 0)), 55);
+		}
+	}
+}
+
+menuCameraReady.OnServerEvent.Connect((player) => resendMenuCameraState(player));
+
 //Ui
 function openCrate(player: Player) {
 	if (!crateDebounces.get(player)) {
@@ -583,7 +624,7 @@ function showLanding(player: Player) {
 	// a side effect; the landing page shows the equipped car itself).
 	if (playerGarage) {
 		task.spawn(() => {
-			pcall(() => {
+			const [okSpawn, errSpawn] = pcall(() => {
 				spawnVehicle.SpawnVehicle(
 					player,
 					false,
@@ -592,6 +633,9 @@ function showLanding(player: Player) {
 					true,
 				);
 			});
+			if (!okSpawn) {
+				warn(`[Landing] garage display SpawnVehicle failed: ${errSpawn}`);
+			}
 		});
 	}
 
@@ -633,7 +677,7 @@ function spawnIntoMatch(player: Player) {
 	task.spawn(() => {
 		const [ok, result] = pcall(() => Globals.SpawnInPlayer(player));
 		if (!ok || result !== true) {
-			warn(`[Landing] SpawnInPlayer failed (ok=${ok}) — returning to menu`);
+			warn(`[Landing] SpawnInPlayer failed (ok=${ok} result=${tostring(result)}) — returning to menu`);
 			ResetAndInitialisePlayerMenuUI(player);
 			return;
 		}
@@ -1413,6 +1457,22 @@ function initialisePlayerUi(player: Player) {
 		DataStore2.SaveAll(player);
 	});
 	let playerGarage: ReturnType<typeof Globals.addPlayerToGarage> | undefined = Globals.addPlayerToGarage(player);
+
+	// Break the streaming deadlock: with CharacterAutoLoads off there is no
+	// character to anchor streaming near the garage, and the client camera only
+	// moves there after the garage has streamed in. Explicitly pull the area
+	// around the garage to this client.
+	{
+		const garageForStream = playerGarage;
+		task.spawn(() => {
+			pcall(() => {
+				const bodyCamera = garageForStream.Cameras.FindFirstChild("Body");
+				if (bodyCamera && bodyCamera.IsA("BasePart")) {
+					player.RequestStreamAroundAsync(bodyCamera.Position, 10);
+				}
+			});
+		});
+	}
 
 	const playerMoney = DataStore2("money", player);
 

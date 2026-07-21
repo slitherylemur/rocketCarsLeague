@@ -15,6 +15,22 @@ const RunService = game.GetService("RunService");
 
 Globals.vehiclesTable = {};
 
+// Startup diagnostic: every car template AND the shop grid come from this one
+// folder (subclass modelTemplate lookups are non-recursive), so an empty or
+// missing folder silently breaks both car spawning and the cars menu.
+{
+	const vehicleModels = game.GetService("ServerStorage").FindFirstChild("VehicleModels");
+	if (!vehicleModels) {
+		warn(`[SpawnVehicle] diag: ServerStorage.VehicleModels is MISSING — no car can spawn`);
+	} else {
+		const children = vehicleModels.GetChildren();
+		const folders = children.filter((c) => c.IsA("Folder")).size();
+		warn(
+			`[SpawnVehicle] diag: ServerStorage.VehicleModels has ${children.size()} children (${folders} are Folders — car models must be DIRECT children, not nested in category folders)`,
+		);
+	}
+}
+
 // Which character the player's current vehicle was spawned for. The deferred
 // CharacterRemoving handler below can fire AFTER SpawnInPlayer has already
 // LoadCharacter'd and spawned the next round's car — killing the new car
@@ -171,13 +187,30 @@ const spawnVehicleModule = {
 		// requireModule preserves the original's lazy, name-based dynamic require.
 		const subClassFolder = (script.Parent!.Parent as unknown as { Classes: { VehicleSubClass: Folder } }).Classes
 			.VehicleSubClass;
-		const VehicleClass = requireModule(
-			subClassFolder.FindFirstChild(vehicleName, true) as ModuleScript,
-		) as VehicleSubClassModule;
+		const subClassScript = subClassFolder.FindFirstChild(vehicleName, true) as ModuleScript | undefined;
+		if (!subClassScript) {
+			warn(`[SpawnVehicle] ABORT no VehicleSubClass module named "${vehicleName}"`);
+			return;
+		}
+		const VehicleClass = requireModule(subClassScript) as VehicleSubClassModule;
 
 		spawnVehicleModule.KillVehicle(player);
 
-		const [newVehicle, model] = VehicleClass.new(player);
+		// VehicleClass.new throws (rather than returning nil) when the car's
+		// template is missing from ServerStorage.VehicleModels or the model
+		// shape is wrong — surface the error instead of letting the callers'
+		// pcalls swallow it (the silent no-car / bounced-to-menu failure mode).
+		let newVehicle: VehicleClass | undefined;
+		let model: VehicleModel | undefined;
+		const [okNew, errNew] = pcall(() => {
+			const [v, m] = VehicleClass.new(player);
+			newVehicle = v;
+			model = m;
+		});
+		if (!okNew || !newVehicle) {
+			warn(`[SpawnVehicle] ABORT VehicleClass.new(${vehicleName}) threw: ${tostring(errNew)}`);
+			return;
+		}
 		Globals.vehiclesTable[player.UserId] = newVehicle;
 		const ownerCharacter = player.Character;
 		if (ownerCharacter) {

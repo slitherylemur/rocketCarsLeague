@@ -72,25 +72,42 @@ function UpdateCamera() {
 	// before SetMenuCameraCFrame arrives) — nothing to aim at. Also bail when
 	// the menu no longer owns the camera, so nothing here can steal it back
 	// from gameplay.
-	if (!menuActive || cameraCFrame === undefined || playerGarage === undefined) {
+	if (!menuActive || cameraCFrame === undefined) {
 		return;
 	}
+	// Camera FIRST, garage cosmetics second. Under StreamingEnabled the garage's
+	// BaseParts routinely haven't streamed in at join; the old order forced
+	// Scriptable, then threw on a spawnPlate dot-access before ever assigning
+	// CFrame — a Scriptable camera frozen at the default sky shot, permanently
+	// (every later call threw the same way, and streaming follows the camera,
+	// so the garage never streamed in either).
 	SetCameraMode();
-	const cameraRotationCFrame = CFrame.Angles(0, cameraRotation.X, 0).mul(CFrame.Angles(cameraRotation.Y, 0, 0));
-
-	playerGarage!.spawnPlateModel.Orientation = new Vector3(0, math.deg(cameraRotation.X), -90);
-	playerGarage!.spawnPlate.Orientation = new Vector3(0, math.deg(cameraRotation.X), 0);
+	const camera = currentCamera();
+	camera.CFrame = cameraCFrame!; // cameraRotationCFrame + cameraPosition + cameraRotationCFrame * Vector3.new(0, 0, cameraZoom)
+	//camera.Focus = camera.CFrame - Vector3.new(0, camera.CFrame.p.Y, 0)
+	camera.FieldOfView = cameraFOV;
+	// Tells the ReplicatedFirst loading screen it can fade out.
+	if (player.GetAttribute("MenuCameraApplied") !== true) {
+		player.SetAttribute("MenuCameraApplied", true);
+	}
 
 	rotationDifference = cameraRotation.X - lastCameraRotation;
 
+	// Turntable cosmetics — every part access via FindFirstChild, so a
+	// not-yet-streamed garage degrades to "plate doesn't spin" instead of
+	// killing the camera update above.
+	const spawnPlateModel = playerGarage?.FindFirstChild("spawnPlateModel");
+	const spawnPlate = playerGarage?.FindFirstChild("spawnPlate");
+	if (spawnPlateModel !== undefined && spawnPlateModel.IsA("BasePart")) {
+		spawnPlateModel.Orientation = new Vector3(0, math.deg(cameraRotation.X), -90);
+	}
+	if (spawnPlate !== undefined && spawnPlate.IsA("BasePart")) {
+		spawnPlate.Orientation = new Vector3(0, math.deg(cameraRotation.X), 0);
+	}
 	if (playersCar && playersCar.PrimaryPart) {
 		const carCFrame = playersCar.GetPrimaryPartCFrame();
 		playersCar.SetPrimaryPartCFrame(carCFrame.mul(CFrame.Angles(0, rotationDifference, 0)));
 		//playersCar:SetPrimaryPartCFrame(changeCframePos (playerGarage.spawnPlate.CFrame, playersCar.PrimaryPart.Position) )
-	} else {
-		//cameraRotation = default_CameraRotation
-		playerGarage!.spawnPlateModel.Orientation = new Vector3(0, math.deg(cameraRotation.X), -90);
-		playerGarage!.spawnPlate.Orientation = new Vector3(0, math.deg(cameraRotation.X), 0);
 	}
 	//	local tweenInfo = TweenInfo.new(0.1, Enum.EasingStyle.Linear)
 
@@ -98,11 +115,6 @@ function UpdateCamera() {
 	//	tween1:Play()
 
 	//workspace.garageModel.spawnPlateModel.HingeConstraint.TargetAngle = math.deg(cameraRotation.X)
-	const camera = currentCamera();
-	camera.CFrame = cameraCFrame!; // cameraRotationCFrame + cameraPosition + cameraRotationCFrame * Vector3.new(0, 0, cameraZoom)
-	//camera.Focus = camera.CFrame - Vector3.new(0, camera.CFrame.p.Y, 0)
-	camera.FieldOfView = cameraFOV;
-
 	lastCameraRotation = cameraRotation.X;
 }
 
@@ -209,10 +221,37 @@ const comnections = new Map<number, RBXScriptConnection>();
 
 // Determine whether the user is on a mobile device
 
+// The server passes the garage Model by reference over the remote. Under
+// StreamingEnabled an instance argument the client hasn't received yet
+// arrives as nil — so when that happens, resolve it ourselves from
+// workspace.PlayerGarages (the Model containers and their Player NumberValue
+// replicate eagerly; only BaseParts stream).
+function resolveGarageLocally() {
+	task.spawn(() => {
+		const garagesFolder = game.Workspace.WaitForChild("PlayerGarages", 30);
+		while (menuActive && playerGarage === undefined && garagesFolder !== undefined) {
+			for (const garage of garagesFolder.GetChildren()) {
+				const owner = garage.FindFirstChild("Player");
+				if (owner !== undefined && owner.IsA("NumberValue") && owner.Value === player.UserId) {
+					playerGarage = garage as never;
+					UpdateCamera();
+					break;
+				}
+			}
+			if (playerGarage === undefined) {
+				task.wait(0.5);
+			}
+		}
+	});
+}
+
 function toggleCamera(toggle: boolean, playerGarageParam?: Model & { spawnPlate: BasePart; spawnPlateModel: BasePart }) {
 	menuActive = toggle;
 	if (toggle) {
-		playerGarage = playerGarageParam;
+		playerGarage = playerGarageParam ?? playerGarage;
+		if (playerGarage === undefined) {
+			resolveGarageLocally();
+		}
 		for (const [, comenction] of pairs(comnections)) {
 			comenction.Disconnect();
 		}
@@ -270,4 +309,18 @@ FunctionsAndEvents.SetMenuCameraCFrame.OnClientEvent.Connect((...args: unknown[]
 	// from carrying into the garage pages.
 	cameraFOV = (args[1] as number | undefined) ?? default_CameraFOV;
 	UpdateCamera();
+});
+
+// Join handshake: the server fires ToggleMenuCamera/SetMenuCameraCFrame from
+// PlayerAdded, i.e. potentially before this script's connections above exist —
+// fires in that window can be lost. Now that everything is connected, ask the
+// server to re-send the current menu camera state. Runs in its own thread so
+// the WaitForChild (the remote is created by initializePlayer at runtime)
+// can't delay the connections above. Both sides are idempotent, so receiving
+// the state twice is harmless.
+task.spawn(() => {
+	const menuCameraReady = FunctionsAndEvents.WaitForChild("MenuCameraReady", 30);
+	if (menuCameraReady !== undefined && menuCameraReady.IsA("RemoteEvent")) {
+		menuCameraReady.FireServer();
+	}
 });

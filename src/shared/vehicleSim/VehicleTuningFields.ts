@@ -26,6 +26,7 @@ export const CAR_FIELDS: ReadonlyArray<CarFieldSpec> = [
 	{ key: "minAngularSpeed", label: "Min angular speed", attr: VehicleTuningAttr.MinAngularSpeed, min: 0.01, max: 50 },
 	{ key: "boostAmount", label: "Boost amount", attr: VehicleTuningAttr.BoostAmount, min: 0, max: 100 },
 	{ key: "driftingMult", label: "Drifting mult", attr: VehicleTuningAttr.DriftingMult, min: 0, max: 10 },
+	{ key: "gripYawTorque", label: "Grip yaw torque", attr: VehicleTuningAttr.GripYawTorque, min: 0, max: 1000 },
 	{
 		key: "driveWheelFriction",
 		label: "Wheel grip (normal)",

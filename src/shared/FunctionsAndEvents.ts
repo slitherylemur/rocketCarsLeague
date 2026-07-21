@@ -1,6 +1,8 @@
 // Typed access to the pre-existing remote instances in
 // ReplicatedStorage.FunctionsAndEvents (these are instances in the place file,
-// not created by code — except GeneralUtilFunc, created by ConnectClientFunction).
+// not created by code — except GeneralUtilFunc, created by ConnectClientFunction,
+// and MenuCameraReady, created by initializePlayer; access those via
+// FindFirstChild/WaitForChild, not the typed dot-access below).
 
 interface FunctionsAndEventsFolder extends Folder {
 	KeyHandler: RemoteEvent;

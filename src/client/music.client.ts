@@ -17,8 +17,15 @@ const menuMusicId = 1836805380;
 
 const inGameMusicIds = [1839703786, 1839703828, 1839834408, 1845821031];
 
+// The join handshake can deliver the same toggle twice (original fire +
+// resend) — dedupe so menu music doesn't audibly restart.
+let lastToggle: boolean | undefined = undefined;
 FunctionsAndEvents.ToggleMenuCamera.OnClientEvent.Connect((...args: unknown[]) => {
 	const toggle = args[0] as boolean;
+	if (toggle === lastToggle) {
+		return;
+	}
+	lastToggle = toggle;
 	if (toggle) {
 		menuMusic();
 	} else {
