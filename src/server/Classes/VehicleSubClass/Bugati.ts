@@ -17,7 +17,7 @@ const Params: VehicleParams = {
 	targetVelocity: 200,
 
 	//TURNING
-	minTurnRadius: 30,
+	minTurnRadius: 43,
 	maxTurnRadius: 60,
 	maxAngularSpeed: math.pi,
 	minAngularSpeed: 0.6,

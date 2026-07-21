@@ -53,8 +53,8 @@ const DRIFT_MAX_SIDE_SPEED = 0.45; // cap on sideways drift speed (× targetVelo
 const DRIFT_MIN_PROP_VEL = 0.15; // below this fraction of top speed drift disengages (no stationary launches)
 const DRIFT_SIDE_FORCE_FWD = 30; // centripetal assist per unit mass while drifting forward
 const DRIFT_SIDE_FORCE_REV = 15; // centripetal assist per unit mass while drifting in reverse
-const DRIFT_YAW_RATE = 5.5; // rad/s of commanded yaw at full steer and full speed (grip turning peaks ~2.5)
-const DRIFT_YAW_TORQUE = 90; // yaw authority per unit total mass — how hard the slide rotation is enforced
+const DRIFT_YAW_RATE = 8; // rad/s of commanded yaw at full steer and full speed — a handbrake whip. Must stay clearly above grip turning's kinematic rate (v/minTurnRadius, ~4 rad/s at top speed) or the handbrake feels like nothing.
+const DRIFT_YAW_TORQUE = 400; // yaw authority per unit total mass — how hard the slide rotation is enforced; high so the handbrake whip decisively out-muscles the grip servo
 const DRIFT_ENGINE_FORCE_MULT = 0.25; // engine force while sliding — a handbrake brakes; boost punches through
 const DRIFT_SPEED_SCRUB = 0.35; // handbrake drag per unit mass per stud/s of travel speed while sliding
 // Grip-mode yaw servo: while grounded and not sliding, the drift yaw mover is
@@ -72,7 +72,20 @@ const DRIFT_SPEED_SCRUB = 0.35; // handbrake drag per unit mass per stud/s of tr
 // arc that feels right; spin-out control is then ONE knob — the servo's
 // GRIP_YAW_TORQUE budget. (maxTurnRadius / minAngularSpeed tuning fields are
 // currently unused by the sim.)
-const GRIP_YAW_TORQUE = 110; // yaw authority per unit total mass for the grip servo (50 let occasional spin-outs through). Per-vehicle tunable.
+const GRIP_YAW_TORQUE = 130; // yaw authority per unit total mass for the grip servo — enforces the arc and damps roll/spin (110 let spin-outs through; 300 felt too strong; playtest-walked down from 180). Per-vehicle tunable.
+// While boosting (BoostHeld with meter > 0) the servo torque DROPS to this —
+// slightly below the normal budget, so boost-speed steering is a little
+// looser instead of forced. Friction is not changed by boost.
+const BOOST_GRIP_YAW_TORQUE = 110;
+// NOTE (2026-07-21): a lateral centripetal servo (LinearVelocity holding
+// sideways velocity at 0, capped ~500 studs/s²) was playtested at THREE mount
+// heights — COM, Base underside, and one chassis-height above the Base — and
+// every variant increased side tilt / two-wheeling and was removed. The
+// suspension geometry reacts worse to the injected side force than the
+// tipping-axis math predicts, so DO NOT re-add a lateral force; if high-speed
+// cornering must tighten later, try an explicit anti-roll/upright torque or
+// accept the friction-limited arc. Tires cap at μ=2 (Roblox max) ≈ 392
+// studs/s², so the high-speed radius floor is ≈ v²/392 (~147 studs at boost).
 // Overspeed brake: how hard the drive servo pulls the car back DOWN to its
 // target speed once it is above it (post-boost decay, mostly). A multiple of
 // forceAtt, so decel ≈ mult × acceleration — 2 gives ~125 studs/s²: firm
@@ -80,10 +93,11 @@ const GRIP_YAW_TORQUE = 110; // yaw authority per unit total mass for the grip s
 // still a smooth bleed, not a snap. Grounded only — airborne overspeed keeps
 // the old gentle 1× so jump/boost flight momentum isn't eaten mid-air.
 const OVERSPEED_BRAKE_MULT = 2;
-// Wheel grip defaults (per-vehicle tunable). Normal grip raised 0.75 → 1.2:
-// cars were skidding out of grip turns at speed.
-const DRIVE_WHEEL_FRICTION = 1.2;
-const DRIFT_WHEEL_FRICTION = 0.15; // wheel friction while sliding; normal grip is restored on release
+// Wheel grip defaults (per-vehicle tunable). Trying 1: the 2.0 (Roblox cap)
+// grip made cornering tip the car onto two wheels — less contact grip trades
+// some slide for staying flat.
+const DRIVE_WHEEL_FRICTION = 1;
+const DRIFT_WHEEL_FRICTION = 0.05; // wheel friction while sliding — near-ice so the handbrake slide really carries; normal grip is restored on release
 const JUMP_FORCE_TIME = 0.16; // seconds the jump force stays on (default; per-vehicle tunable; 0.18 felt a touch long)
 // Jump force as a multiple of gravity; net accel along the launch dir during
 // the window ≈ (mult - 1) × g (default; per-vehicle tunable). Jump height
@@ -448,6 +462,10 @@ function createMovers(base: VehicleBase) {
 	if (existingJump) {
 		existingJump.Destroy();
 	}
+	// Removes a stale GripVelocity/GripAttachment pair (earlier mount-height
+	// experiments) so re-registration always rebuilds at the current height.
+	base.FindFirstChild("GripVelocity")?.Destroy();
+	base.FindFirstChild("GripAttachment")?.Destroy();
 
 	const centerAttachment = new Instance("Attachment");
 	centerAttachment.Name = "MoverAttachment";
@@ -1275,7 +1293,10 @@ function turnWheels(entry: SimEntry, throttle: number, steerFloat: number, onGro
 	if (onGround && !attrBool(entry.base, VehicleAttr.DriftEngaged)) {
 		const dir = entry.velocity >= 0 ? 1 : -1;
 		const kinematicYaw = (math.abs(entry.velocity) / turnRadius) * steerFloat * dir;
-		entry.driftYaw.MaxTorque = entry.totalMass * (entry.tuning.gripYawTorque ?? GRIP_YAW_TORQUE);
+		const boosting =
+			attrBool(entry.base, VehicleAttr.BoostHeld) && attrNumber(entry.base, VehicleAttr.BoostAmount, 0) > 0;
+		entry.driftYaw.MaxTorque =
+			entry.totalMass * (boosting ? BOOST_GRIP_YAW_TORQUE : entry.tuning.gripYawTorque ?? GRIP_YAW_TORQUE);
 		entry.driftYaw.AngularVelocity = new Vector3(0, -kinematicYaw, 0);
 	}
 
