@@ -14,6 +14,7 @@ const Players = game.GetService("Players");
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
 const RunService = game.GetService("RunService");
 const SoundService = game.GetService("SoundService");
+const TweenService = game.GetService("TweenService");
 const Debris = game.GetService("Debris");
 const ContentProvider = game.GetService("ContentProvider");
 const LocalPlayer = Players.LocalPlayer;
@@ -27,6 +28,9 @@ const ATTR_TIME = "FB_TimeLeft";
 const ATTR_ANNOUNCE = "FB_Announce";
 const ATTR_VCAM_CFRAME = "FB_VictoryCamCFrame";
 const ATTR_GAME_END_CUE = "FB_GameEndCue";
+const ATTR_FOCAM_CFRAME = "FB_FaceOffCamCFrame";
+const ATTR_BLUE_NAME = "FB_BlueName";
+const ATTR_RED_NAME = "FB_RedName";
 // Session round counter (Phase 5) — footballMatch.beginRound sets both.
 const ATTR_ROUND = "CB_Round";
 const ATTR_ROUND_MAX = "CB_SessionRounds";
@@ -252,6 +256,154 @@ function rebuildTeamRows() {
 	rebuildRow(hud.TopBar.RedTeam, playersOnSide("Red"), Color3.fromRGB(255, 80, 80));
 }
 
+// ---- face-off overlay + camera ------------------------------------------
+//
+// While FB_Phase is "FaceOff" the server poses both teams on the stage and
+// publishes the stage camera shot as FB_FaceOffCamCFrame. The overlay shows
+// the two team name plates (FB_BlueName/FB_RedName) sliding in from the
+// screen edges with the VS fading in between them. Unlike the victory camera
+// (whose scene flows into the ladder map / menu camera), the face-off hands
+// control straight back to the driving camera, so leaving the phase restores
+// CameraType.Custom here.
+
+interface FaceOffShape extends ScreenGui {
+	Banner: Frame & {
+		BluePlate: Frame & { TeamName: TextLabel };
+		RedPlate: Frame & { TeamName: TextLabel };
+		Vs: TextLabel;
+	};
+}
+
+function currentFaceOff(): FaceOffShape | undefined {
+	const playerGui = LocalPlayer.FindFirstChild("PlayerGui");
+	const gui = playerGui && playerGui.FindFirstChild("FaceOff");
+	if (gui && gui.IsA("ScreenGui") && gui.FindFirstChild("Banner")) {
+		return gui as FaceOffShape;
+	}
+	return undefined;
+}
+
+// Rest positions authored in FaceOffGui.tsx — the entrance tween returns to
+// them, and hiding resets them for the (possibly remounted) next show.
+const FACEOFF_BLUE_POS = new UDim2(0.04, 0, 0.5, 0);
+const FACEOFF_RED_POS = new UDim2(0.96, 0, 0.5, 0);
+const FACEOFF_SLIDE = new TweenInfo(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
+const FACEOFF_VS_FADE = new TweenInfo(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
+
+let faceOffShown = false;
+
+function vsStrokeOf(gui: FaceOffShape): UIStroke | undefined {
+	return gui.Banner.Vs.FindFirstChildOfClass("UIStroke");
+}
+
+function showFaceOff(gui: FaceOffShape, pitch: Instance) {
+	const blueName = attrStringOn(pitch, ATTR_BLUE_NAME);
+	const redName = attrStringOn(pitch, ATTR_RED_NAME);
+	gui.Banner.BluePlate.TeamName.Text = blueName !== "" ? blueName : "BLUE TEAM";
+	gui.Banner.RedPlate.TeamName.Text = redName !== "" ? redName : "RED TEAM";
+	gui.Enabled = true;
+	if (faceOffShown) {
+		return;
+	}
+	faceOffShown = true;
+	gui.Banner.BluePlate.Position = new UDim2(-0.35, 0, 0.5, 0);
+	gui.Banner.RedPlate.Position = new UDim2(1.35, 0, 0.5, 0);
+	gui.Banner.Vs.TextTransparency = 1;
+	const stroke = vsStrokeOf(gui);
+	if (stroke) {
+		stroke.Transparency = 1;
+	}
+	TweenService.Create(gui.Banner.BluePlate, FACEOFF_SLIDE, { Position: FACEOFF_BLUE_POS }).Play();
+	TweenService.Create(gui.Banner.RedPlate, FACEOFF_SLIDE, { Position: FACEOFF_RED_POS }).Play();
+	task.delay(0.25, () => {
+		const current = currentFaceOff();
+		if (!faceOffShown || !current) {
+			return;
+		}
+		TweenService.Create(current.Banner.Vs, FACEOFF_VS_FADE, { TextTransparency: 0 }).Play();
+		const currentStroke = vsStrokeOf(current);
+		if (currentStroke) {
+			TweenService.Create(currentStroke, FACEOFF_VS_FADE, { Transparency: 0 }).Play();
+		}
+	});
+}
+
+function hideFaceOff(gui: FaceOffShape) {
+	faceOffShown = false;
+	gui.Enabled = false;
+	gui.Banner.BluePlate.Position = FACEOFF_BLUE_POS;
+	gui.Banner.RedPlate.Position = FACEOFF_RED_POS;
+	gui.Banner.Vs.TextTransparency = 0;
+	const stroke = vsStrokeOf(gui);
+	if (stroke) {
+		stroke.Transparency = 0;
+	}
+}
+
+function refreshFaceOff() {
+	const gui = currentFaceOff();
+	if (!gui) {
+		faceOffShown = false;
+		return;
+	}
+	const pitch = currentPitch();
+	if (pitch && attrStringOn(pitch, ATTR_PHASE) === "FaceOff") {
+		showFaceOff(gui, pitch);
+	} else {
+		hideFaceOff(gui);
+	}
+}
+
+let faceOffCamConnection: RBXScriptConnection | undefined;
+
+function stopFaceOffCamera() {
+	if (faceOffCamConnection) {
+		faceOffCamConnection.Disconnect();
+		faceOffCamConnection = undefined;
+		// Hand the camera back to the driving/character camera (the victory
+		// scene never does this — its scene flows into the menu camera).
+		const camera = game.Workspace.CurrentCamera;
+		if (camera) {
+			camera.CameraType = Enum.CameraType.Custom;
+		}
+	}
+}
+
+function applyFaceOffCamera(pitch: Instance): boolean {
+	const camera = game.Workspace.CurrentCamera;
+	if (!camera) {
+		return false;
+	}
+	const camCFrame = pitch.GetAttribute(ATTR_FOCAM_CFRAME);
+	if (typeIs(camCFrame, "CFrame")) {
+		camera.CameraType = Enum.CameraType.Scriptable;
+		camera.CFrame = camCFrame;
+		return true;
+	}
+	return false;
+}
+
+function handleFaceOffCamera() {
+	const pitch = currentPitch();
+	if (!pitch || attrStringOn(pitch, ATTR_PHASE) !== "FaceOff") {
+		stopFaceOffCamera();
+		return;
+	}
+	if (!applyFaceOffCamera(pitch)) {
+		// Cam attribute hasn't replicated yet — the FB_FaceOffCamCFrame signal
+		// (bindPitch) re-runs this the moment it arrives.
+		return;
+	}
+	if (!faceOffCamConnection) {
+		faceOffCamConnection = RunService.RenderStepped.Connect(() => {
+			const current = currentPitch();
+			if (!current || attrStringOn(current, ATTR_PHASE) !== "FaceOff" || !applyFaceOffCamera(current)) {
+				stopFaceOffCamera();
+			}
+		});
+	}
+}
+
 // Victory scene camera: when our pitch's match ends, aim at its
 // VictoryCamera shot (winners are posed in front of their goal). The server
 // sets FB_Phase="Ended" FIRST and the cam attributes only ~0.2s later, so this
@@ -320,6 +472,8 @@ function refreshAll() {
 	refreshRound();
 	refreshAnnounce();
 	rebuildTeamRows();
+	refreshFaceOff();
+	handleFaceOffCamera();
 	handleVictoryCamera();
 }
 
@@ -349,6 +503,8 @@ function bindPitch() {
 			}),
 		);
 		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_PHASE).Connect(refreshAll));
+		// The face-off camera arrives just before Phase="FaceOff" — react to both.
+		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_FOCAM_CFRAME).Connect(handleFaceOffCamera));
 		// The victory camera arrives AFTER Phase="Ended" — react when it does.
 		pitchConnections.push(
 			pitch.GetAttributeChangedSignal(ATTR_VCAM_CFRAME).Connect(() => {
@@ -380,7 +536,7 @@ Players.PlayerRemoving.Connect(() => task.defer(rebuildTeamRows));
 
 // Repaint every fresh mount (the server remounts PlayerGui on each respawn).
 LocalPlayer.WaitForChild("PlayerGui").ChildAdded.Connect((child) => {
-	if (child.Name === "MatchHud") {
+	if (child.Name === "MatchHud" || child.Name === "FaceOff") {
 		task.defer(refreshAll);
 	}
 });

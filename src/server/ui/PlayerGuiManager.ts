@@ -32,6 +32,7 @@ import { GarageGui } from "./components/GarageGui";
 import { CrateMenuGui } from "./components/CrateMenuGui";
 import { TimerGui } from "./components/TimerGui";
 import { MatchHudGui } from "./components/MatchHudGui";
+import { FaceOffGui } from "./components/FaceOffGui";
 import { LandingGui } from "./components/LandingGui";
 import { CreateTeamGui, InvitePopupGui, RenamePopupGui } from "./components/CarBallMenusGui";
 import { RoundSummaryGui } from "./components/RoundSummaryGui";
@@ -71,6 +72,8 @@ function buildTree(): React.Element {
 		React.createElement(TimerGui, { key: "TimerGui" }),
 		// Football match HUD (new, not from the original place file).
 		React.createElement(MatchHudGui, { key: "MatchHud" }),
+		// Round-start face-off overlay (blue vs red name plates).
+		React.createElement(FaceOffGui, { key: "FaceOff" }),
 		// Car Ball landing page (Top Table Phase 1).
 		React.createElement(LandingGui, { key: "Landing" }),
 		// Top Table Phase 2 menus.
