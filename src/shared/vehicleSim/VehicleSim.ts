@@ -345,6 +345,9 @@ interface SimEntry {
 	pendingRolls?: Array<{ direction: -1 | 1; begin: boolean }>;
 	pendingTuning?: Partial<VehicleTuning>; // tuning HUD edits, applied inside the next sim step
 	pendingShowcaseLock?: { position?: Vector3 }; // showcase X/Z pin engage/disengage, applied inside the next sim step
+	// Server-only: a deferred InputContext.Enabled reconcile write is already
+	// queued (see reconcileOwnerContextEnabled) — don't stack another.
+	contextSyncPending?: boolean;
 	inputActions?: {
 		context: InputContext;
 		throttleForward?: InputAction;
@@ -1087,6 +1090,50 @@ function setOwnerContextEnabled(entry: SimEntry, enabled: boolean) {
 	entry.base.SetAttribute(VehicleAttr.InputLocked, enabled && !stayLocked ? undefined : true);
 }
 
+// Self-heal for the one-shot sit-edge enable above: the player's InputContext
+// is built ASYNCHRONOUSLY on join (vehicleInputActions.ensureContext yields on
+// DataStore keybind reads, which throttle under real load), so a car can start
+// driving before the context exists — setOwnerContextEnabled's deferred write
+// then finds nothing and no-ops, and since the enable only ever fired on the
+// drive-start EDGE the player stayed controlless for the whole drive. Runs
+// every server tick while driving: Enabled must equal "no control lock", which
+// holds because every intentional mid-drive disable (footballMatch lockPlayer
+// / preSpawnLock) sets the CB_ControlLock attribute before disabling, and
+// unlockPlayer clears it before enabling. Also recovers a lock/unlock that
+// landed while the context was missing, and a stale lock left behind by an
+// aborted countdown once footballMatch.stop() clears the attribute.
+function reconcileOwnerContextEnabled(entry: SimEntry) {
+	if (!IS_SERVER || entry.contextSyncPending) {
+		return;
+	}
+	const owner = entry.owner;
+	if (!owner) {
+		return;
+	}
+	const context = owner.FindFirstChild(VehicleInput.ContextName);
+	if (!context || !context.IsA("InputContext")) {
+		return; // not built yet — checked again next tick
+	}
+	const desired = owner.GetAttribute("CB_ControlLock") !== true;
+	if (context.Enabled === desired) {
+		return;
+	}
+	// Deferred out of the simulation step like setOwnerContextEnabled —
+	// InputContext.Enabled is not simulation-access. Re-derive inside the defer
+	// so a drive-end/lock that lands in between wins.
+	entry.contextSyncPending = true;
+	task.defer(() => {
+		entry.contextSyncPending = false;
+		if (owner.Parent === undefined || !attrBool(entry.base, VehicleAttr.Driving)) {
+			return;
+		}
+		const liveContext = owner.FindFirstChild(VehicleInput.ContextName);
+		if (liveContext && liveContext.IsA("InputContext")) {
+			liveContext.Enabled = owner.GetAttribute("CB_ControlLock") !== true;
+		}
+	});
+}
+
 // Reads the owner's InputActions and applies them exactly like the old
 // remote handlers did: floats into the attributes, held-abilities on edges.
 function readPlayerInputs(entry: SimEntry, now: number) {
@@ -1557,6 +1604,12 @@ function stepVehicle(entry: SimEntry, dt: number) {
 
 	if (IS_SERVER && !drivingNow) {
 		return;
+	}
+
+	if (IS_SERVER) {
+		// The sit-edge enable above is one-shot; keep the context reconciled
+		// with the lock state for the whole drive (context may arrive late).
+		reconcileOwnerContextEnabled(entry);
 	}
 
 	// Sim clock: advances by the fixed simulation delta while driving. Stored

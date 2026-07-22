@@ -31,6 +31,10 @@
 	     warns (with UserId + time-in-game debug info) and saves anyway.
 	  2. Save() success log includes the UserId.
 	  3. "player left, saved" log includes the UserId.
+	  4. Get() waits 1s between failed load attempts. Stock behaviour re-issues
+	     the next DataStore request the moment the previous one rejects — a
+	     production outage/throttle turned the retry-forever loop into a
+	     request-budget hammer that starved its own recovery.
 */
 
 import Constants from "./Constants";
@@ -185,6 +189,9 @@ class DataStore {
 					}
 
 					this.Debug("Get returned error:", err);
+					// Local modification 4 (see header): pace the retry loop so a
+					// DataStore outage doesn't burn the request budget.
+					task.wait(1);
 				}
 			}
 
