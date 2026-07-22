@@ -8,14 +8,11 @@
 // renders anchored, massless, collision-free clones of the body and wheels:
 //
 //   LOCAL CAR   — rendered EXACTLY at the simulated pose: zero added latency,
-//                 the whole point of prediction is preserved. Only when the
-//                 physical pose JUMPS farther than its velocity can explain
-//                 (a rollback correction landing) is the previous visual pose
-//                 captured as an error offset, which then decays to zero with
-//                 SmoothDamp — the correction becomes a glide instead of a
-//                 snap. Position never teleports in legitimate physics (even
-//                 a wall impact only flips velocity), so the jump detector
-//                 cannot mistake ordinary collisions for corrections.
+//                 the whole point of prediction is preserved. When Roblox's
+//                 Misprediction event reports a chassis CFrame mismatch, the
+//                 predicted-to-authoritative delta becomes a visual offset.
+//                 SmoothDamp decays that offset to zero, making the correction
+//                 a glide while normal physics stays pinned exactly.
 //   REMOTE CARS — PredictionMode.Off by design, so their replicated motion
 //                 arrives steppy. The shell continuously SmoothDamps toward
 //                 the authoritative pose: smooth believable motion at the
@@ -24,8 +21,8 @@
 //   TELEPORTS   — the sim bumps the TeleportGen attribute on intentional
 //                 relocations (kickoff placement, podium poses, respawns);
 //                 the shell SNAPS immediately instead of smearing a
-//                 map-scale "correction" across the pitch. A >TELEPORT_SNAP
-//                 jump snaps too (belt-and-braces for unmarked paths).
+//                 map-scale "correction" across the pitch. A mismatch beyond
+//                 TELEPORT_SNAP snaps too (belt-and-braces for unmarked paths).
 //
 // Wheels: every visible part's pose is copied RELATIVE TO THE CHASSIS each
 // render frame and re-expressed on the rendered chassis, so steering angle,
@@ -49,20 +46,30 @@ const RunService = game.GetService("RunService");
 const TweenService = game.GetService("TweenService");
 const Players = game.GetService("Players");
 const LocalPlayer = Players.LocalPlayer;
+const RENDER_BIND_NAME = "VehicleShellBeforeCamera";
 
-// Correction smoothing (local car): time constant of the error-offset decay.
-const LOCAL_SMOOTH_TIME = 0.14;
-const LOCAL_ROT_TAU = 0.1;
+// Correction smoothing (local car): time constants of the error-offset
+// decay. Deliberately long — a rollback correction should read as the car
+// gently re-converging on the corrected prediction over a couple of seconds,
+// not a quick snap-back (SmoothDamp at 0.8 reaches ~95% in roughly 2.5s).
+// The offset only affects RENDERING: input latency stays zero because new
+// motion still comes from the live predicted pose underneath.
+const LOCAL_SMOOTH_TIME = 0.8;
+const LOCAL_ROT_TAU = 0.35;
+// Cap on a captured error offset: a correction bigger than this starts its
+// glide from MAX_OFFSET studs away instead (and TELEPORT_SNAP still snaps
+// outright above it) so the shell can never trail absurdly far behind.
+const MAX_OFFSET = 40;
 // Remote interpolation: short enough to stay honest, long enough to bridge
 // ~2 replication intervals.
 const REMOTE_SMOOTH_TIME = 0.09;
 const REMOTE_ROT_TAU = 0.07;
-// Any single-frame jump beyond this snaps outright (unmarked teleport).
+// Any reported correction beyond this snaps outright (unmarked teleport).
 const TELEPORT_SNAP = 60;
-// Jump detector slack: legitimate per-frame travel is |v|·dt; corrections
-// land on top of that. The constant floor absorbs suspension jitter.
-const JUMP_SLACK = 1.25;
-const JUMP_VELOCITY_FACTOR = 2.5;
+// Ignore sub-pixel mismatch noise. These gates apply to the explicit engine
+// mismatch delta, not ordinary frame-to-frame movement.
+const LOCAL_POS_ENGAGE = 0.02;
+const LOCAL_ROT_ENGAGE = math.rad(0.1);
 
 const IDENTITY = new CFrame();
 
@@ -95,8 +102,6 @@ interface Shell {
 	posOffset: Vector3;
 	posOffsetVel: Vector3;
 	rotOffset: CFrame;
-	prevBasePos: Vector3;
-	prevBaseVel: Vector3;
 	// remote interpolation state
 	smoothPos: Vector3;
 	smoothPosVel: Vector3;
@@ -278,8 +283,6 @@ function trackVehicle(model: Instance) {
 			posOffset: new Vector3(),
 			posOffsetVel: new Vector3(),
 			rotOffset: IDENTITY,
-			prevBasePos: base.Position,
-			prevBaseVel: new Vector3(),
 			smoothPos: base.Position,
 			smoothPosVel: new Vector3(),
 			smoothRot: base.CFrame.Rotation,
@@ -298,6 +301,13 @@ function trackVehicle(model: Instance) {
 				buildRenderPart(shell, descendant);
 			}
 		}
+
+		// Register before adopting children that already replicated with the
+		// vehicle. adoptHighlight deliberately rejects stale shells, so doing
+		// this at the end meant the initial TeamHighlight always rejected the
+		// shell and only a highlight added later could ever be displayed.
+		container.Parent = game.Workspace;
+		shells.set(model, shell);
 
 		// Team-color highlight: the server adorns TeamHighlight to the vehicle
 		// model, which is hidden on this client — re-point it (locally) at the
@@ -324,9 +334,6 @@ function trackVehicle(model: Instance) {
 				}
 			}),
 		);
-
-		container.Parent = game.Workspace;
-		shells.set(model, shell);
 	});
 }
 
@@ -365,6 +372,125 @@ function updateCameraSubject(shell: Shell, driving: boolean) {
 	}
 }
 
+interface MispredictedValues {
+	Predicted?: unknown;
+	Authoritative?: unknown;
+}
+
+interface MispredictedEntry {
+	Instance?: unknown;
+	Properties?: unknown;
+	Attributes?: unknown;
+}
+
+function mismatchValues(container: unknown, name: string): MispredictedValues | undefined {
+	if (!typeIs(container, "table")) {
+		return undefined;
+	}
+	const rawValues = (container as Record<string, unknown>)[name];
+	return typeIs(rawValues, "table") ? (rawValues as MispredictedValues) : undefined;
+}
+
+function clearLocalCorrection(shell: Shell) {
+	shell.posOffset = new Vector3();
+	shell.posOffsetVel = new Vector3();
+	shell.rotOffset = IDENTITY;
+}
+
+// RunService supplies the predicted and authoritative values from the first
+// divergent simulation step. Their difference gives us a correction-specific
+// render offset without inferring one from ordinary movement. Applying that
+// predicted-authoritative offset on the corrected live chassis hides the
+// correction, while subsequent physical movement still has zero latency.
+function captureLocalMisprediction(entries: Array<unknown>) {
+	for (const rawEntry of entries) {
+		if (!typeIs(rawEntry, "table")) {
+			continue;
+		}
+		const entry = rawEntry as MispredictedEntry;
+		const instance = entry.Instance;
+		if (!typeIs(instance, "Instance")) {
+			continue;
+		}
+
+		for (const [, shell] of shells) {
+			if (!shell.isLocal || (instance !== shell.base && instance !== shell.base.AssemblyRootPart)) {
+				continue;
+			}
+
+			// TeleportGen is rollback state and can be reported in this same
+			// event as the pose. Never construct a smoothing offset for it.
+			if (
+				mismatchValues(entry.Attributes, VehicleAttr.TeleportGen) !== undefined ||
+				attrNumber(shell.base, VehicleAttr.TeleportGen, 0) !== shell.lastTeleportGen
+			) {
+				clearLocalCorrection(shell);
+				continue;
+			}
+
+			let posDelta = new Vector3();
+			let rotDelta = IDENTITY;
+			let hasPosition = false;
+			let hasRotation = false;
+
+			const cframeValues = mismatchValues(entry.Properties, "CFrame");
+			if (
+				cframeValues !== undefined &&
+				typeIs(cframeValues.Predicted, "CFrame") &&
+				typeIs(cframeValues.Authoritative, "CFrame")
+			) {
+				posDelta = cframeValues.Predicted.Position.sub(cframeValues.Authoritative.Position);
+				rotDelta = cframeValues.Authoritative.Rotation.Inverse().mul(cframeValues.Predicted.Rotation);
+				hasPosition = true;
+				hasRotation = true;
+			} else {
+				// Some engine builds report the translational component separately.
+				const positionValues = mismatchValues(entry.Properties, "Position");
+				if (
+					positionValues !== undefined &&
+					typeIs(positionValues.Predicted, "Vector3") &&
+					typeIs(positionValues.Authoritative, "Vector3")
+				) {
+					posDelta = positionValues.Predicted.sub(positionValues.Authoritative);
+					hasPosition = true;
+				}
+			}
+
+			const [, rotAngle] = rotDelta.ToAxisAngle();
+			if (
+				(!hasPosition || posDelta.Magnitude < LOCAL_POS_ENGAGE) &&
+				(!hasRotation || rotAngle < LOCAL_ROT_ENGAGE)
+			) {
+				continue;
+			}
+			if (posDelta.Magnitude > TELEPORT_SNAP) {
+				clearLocalCorrection(shell);
+				continue;
+			}
+
+			if (hasPosition) {
+				shell.posOffset = shell.posOffset.add(posDelta);
+				if (shell.posOffset.Magnitude > MAX_OFFSET) {
+					shell.posOffset = shell.posOffset.Unit.mul(MAX_OFFSET);
+				}
+				shell.posOffsetVel = new Vector3();
+			}
+			if (hasRotation) {
+				shell.rotOffset = rotDelta.mul(shell.rotOffset);
+			}
+		}
+	}
+}
+
+const [mispredictionConnected] = pcall(() => {
+	RunService.Misprediction.Connect((_time, entries) => captureLocalMisprediction(entries));
+});
+if (!mispredictionConnected) {
+	warn(
+		"[VehicleShell] RunService.Misprediction unavailable; local corrections will snap instead of risking false smoothing",
+	);
+}
+
 function stepShell(shell: Shell, dt: number) {
 	const base = shell.base;
 	const baseCF = base.CFrame;
@@ -380,31 +506,7 @@ function stepShell(shell: Shell, dt: number) {
 
 	if (shell.isLocal) {
 		if (!shell.initialized || teleported) {
-			shell.posOffset = new Vector3();
-			shell.posOffsetVel = new Vector3();
-			shell.rotOffset = IDENTITY;
-		} else {
-			// Rollback detector: physical position can only travel ~|v|·dt in
-			// one frame; anything beyond that is a correction landing.
-			const jump = basePos.sub(shell.prevBasePos).Magnitude;
-			const speed = math.max(shell.prevBaseVel.Magnitude, base.AssemblyLinearVelocity.Magnitude);
-			const allowance = JUMP_SLACK + speed * dt * JUMP_VELOCITY_FACTOR;
-			if (jump > TELEPORT_SNAP) {
-				// Unmarked map-scale relocation — treat as teleport.
-				shell.posOffset = new Vector3();
-				shell.posOffsetVel = new Vector3();
-				shell.rotOffset = IDENTITY;
-			} else if (jump > allowance) {
-				// Preserve the on-screen pose across the correction: the shell
-				// was at (basePrev + offset); recompute the offset against the
-				// corrected physical pose so the rendered pose is continuous,
-				// then let SmoothDamp bleed it off.
-				const prevRenderedPos = shell.prevBasePos.add(shell.posOffset);
-				shell.posOffset = prevRenderedPos.sub(basePos);
-				// Rotation continuity comes along with the same event.
-				const prevRenderedRot = shell.smoothRot.mul(shell.rotOffset);
-				shell.rotOffset = baseRot.Inverse().mul(prevRenderedRot);
-			}
+			clearLocalCorrection(shell);
 		}
 
 		// Decay the error offset toward zero (identity).
@@ -433,9 +535,6 @@ function stepShell(shell: Shell, dt: number) {
 		}
 
 		renderedCF = baseRot.mul(shell.rotOffset).add(basePos.add(shell.posOffset));
-		shell.prevBasePos = basePos;
-		shell.prevBaseVel = base.AssemblyLinearVelocity;
-		shell.smoothRot = baseRot; // reference for the next rotation-offset capture
 	} else {
 		// Remote car: continuous interpolation toward authoritative state.
 		if (!shell.initialized || teleported || basePos.sub(shell.smoothPos).Magnitude > TELEPORT_SNAP) {
@@ -492,7 +591,11 @@ for (const child of vehiclesFolder.GetChildren()) {
 	trackVehicle(child);
 }
 
-RunService.RenderStepped.Connect((dt) => {
+// The default camera consumes CameraSubject at the Camera render priority.
+// Move both the shell and its target immediately before that, so the camera
+// can never follow the previous-frame target while the geometry is already at
+// the current pose (the source of the ordinary-driving shake).
+RunService.BindToRenderStep(RENDER_BIND_NAME, Enum.RenderPriority.Camera.Value - 1, (dt) => {
 	for (const [model, shell] of shells) {
 		if (model.Parent === undefined || shell.base.Parent === undefined) {
 			destroyShell(model);

@@ -151,9 +151,11 @@ export class VehicleClass {
 				// billboard: the same ReplicatedStorage.Ui.PlayerIcon the
 				// match HUD rosters use (background = side color, Person =
 				// headshot), so the car overhead matches the HUD art.
-				// Square via RelativeYY, anchored just above the name tag.
+				// Square via RelativeYY. Keep it inside the BillboardGui canvas:
+				// GuiObjects above the canvas (the former negative-Y placement) are
+				// clipped by the billboard renderer and never become visible.
 				let sideIcon: (Frame & { Person: ImageLabel; Value: TextLabel }) | undefined;
-				pcall(() => {
+				const [iconCreated, iconError] = pcall(() => {
 					const template = (
 						game.GetService("ReplicatedStorage") as unknown as {
 							Ui: { PlayerIcon: Frame & { Person: ImageLabel; Value: TextLabel } };
@@ -163,13 +165,30 @@ export class VehicleClass {
 					icon.Name = "SideIcon";
 					icon.Value.Visible = false; // kill-count slot from the deathmatch row
 					icon.Person.Image = `rbxthumb://type=AvatarHeadShot&id=${this.owner!.UserId}&w=48&h=48`;
-					icon.AnchorPoint = new Vector2(0.5, 1);
-					icon.Position = new UDim2(0.5, 0, 0, -2);
-					icon.Size = new UDim2(1.1, 0, 1.1, 0);
+					icon.AnchorPoint = new Vector2(0.5, 0);
+					icon.Position = new UDim2(0.5, 0, 0.02, 0);
+					icon.Size = new UDim2(0.42, 0, 0.42, 0);
 					icon.SizeConstraint = Enum.SizeConstraint.RelativeYY;
-					icon.Parent = healthBar.PlayerTag;
+					icon.Parent = healthBar;
+
+					// Reserve the middle band for the name and the bottom band for
+					// health. These are explicit because the place-file template was
+					// authored before the overhead avatar icon existed.
+					healthBar.PlayerTag.Position = new UDim2(0, 0, 0.44, 0);
+					healthBar.PlayerTag.Size = new UDim2(1, 0, 0.36, 0);
+					const green = healthBar.FindFirstChild("Green");
+					const red = healthBar.FindFirstChild("Red");
+					for (const bar of [green, red]) {
+						if (bar && bar.IsA("GuiObject")) {
+							bar.Position = new UDim2(bar.Position.X.Scale, bar.Position.X.Offset, 0.82, 0);
+							bar.Size = new UDim2(bar.Size.X.Scale, bar.Size.X.Offset, 0.18, 0);
+						}
+					}
 					sideIcon = icon;
 				});
+				if (!iconCreated) {
+					warn(`[VehicleClass] Could not create overhead icon for ${this.owner.Name}: ${tostring(iconError)}`);
+				}
 				// Top Table D1: the outline shows the pitch SIDE (Red/Blue),
 				// not the ladder team's list color. CB_Side is set by the
 				// match layer before SpawnVehicle runs, and changes mid-round

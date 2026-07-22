@@ -15,6 +15,16 @@ const RunService = game.GetService("RunService");
 
 Globals.vehiclesTable = {};
 
+// Verbose spawn/seat-flow tracing from the launch-bug triage era. Off for
+// release: only ABORTs and real failures warn. Flip on when hunting spawn or
+// seat ordering bugs again.
+const SPAWN_DEBUG = false;
+function spawnLog(message: string) {
+	if (SPAWN_DEBUG) {
+		print(message);
+	}
+}
+
 // Startup diagnostic: every car template AND the shop grid come from this one
 // folder (subclass modelTemplate lookups are non-recursive), so an empty or
 // missing folder silently breaks both car spawning and the cars menu.
@@ -73,7 +83,7 @@ function GetSpawnCFrame(humanoidRootPart: BasePart, vehicleModel: Model): CFrame
 }
 
 function SeatPlayer(player: Player, newModel: Model) {
-	warn(`[SeatPlayer] ENTER player=${player.Name} vehicle=${newModel.GetFullName()}`);
+	spawnLog(`[SeatPlayer] ENTER player=${player.Name} vehicle=${newModel.GetFullName()}`);
 	const seat = newModel.FindFirstChildWhichIsA("VehicleSeat", true);
 	if (!seat) {
 		warn(`[SeatPlayer] ABORT no VehicleSeat on ${newModel.GetFullName()}`);
@@ -104,7 +114,7 @@ function SeatPlayer(player: Player, newModel: Model) {
 	// the car apart mid-spawn (the 10s-wait failure mode we observed).
 	root.Anchored = true;
 	root.CFrame = seat.CFrame.add(seat.CFrame.UpVector.mul(3));
-	warn(`[SeatPlayer] anchored+moved char to ${root.Position}; vehicle at ${newModel.GetPrimaryPartCFrame().Position}`);
+	spawnLog(`[SeatPlayer] anchored+moved char to ${root.Position}; vehicle at ${newModel.GetPrimaryPartCFrame().Position}`);
 
 	RunService.Stepped.Wait();
 	task.wait(0.1);
@@ -124,7 +134,7 @@ function SeatPlayer(player: Player, newModel: Model) {
 	// passenger (massless, invisible, no collision/touch/query) — see the
 	// driverless stage-1 notes above.
 	neutralizeSeatedCharacter(character, seat);
-	warn(`[SeatPlayer] EXIT vehiclePos=${newModel.GetPrimaryPartCFrame().Position} seated=${humanoid.Sit}`);
+	spawnLog(`[SeatPlayer] EXIT vehiclePos=${newModel.GetPrimaryPartCFrame().Position} seated=${humanoid.Sit}`);
 }
 
 // (InitialiseControl and its Humanoid.Seated → drive() trigger were removed
@@ -287,7 +297,7 @@ function makeWheelsUncollidable(vehicleModel: VehicleModel) {
 
 const spawnVehicleModule = {
 	SpawnVehicle(player: Player, drivable: boolean, vehicleName: string, spawnCFrame: CFrame, clientSided?: boolean) {
-		warn(
+		spawnLog(
 			`[SpawnVehicle] ENTER player=${player.Name} drivable=${drivable} clientSided=${clientSided === true} vehicleName=${vehicleName} spawnPos=${spawnCFrame.Position}`,
 		);
 		// Original: require(game.ServerStorage.Classes.VehicleSubClass:FindFirstChild(vehicleName, true))
@@ -332,7 +342,7 @@ const spawnVehicleModule = {
 			warn(`[SpawnVehicle] ABORT VehicleClass.new returned no model for ${vehicleName}`);
 			return;
 		}
-		warn(
+		spawnLog(
 			`[SpawnVehicle] created NEW clone (not menu car) model=${newModel.Name} parent=${newModel.Parent?.GetFullName() ?? "nil"}`,
 		);
 
@@ -380,7 +390,7 @@ const spawnVehicleModule = {
 			// SeatPlayer's Sit, and a sweep landing in that window used to
 			// destroy it mid-spawn (see killNotowned.server.ts).
 			newModel.SetAttribute("CB_SpawnedAt", os.clock());
-			warn(`[SpawnVehicle] parented match vehicle to ${newModel.GetFullName()}`);
+			spawnLog(`[SpawnVehicle] parented match vehicle to ${newModel.GetFullName()}`);
 		}
 
 		const modelSize = newModel.GetExtentsSize();
@@ -404,7 +414,7 @@ const spawnVehicleModule = {
 		}
 
 		newModel.SetPrimaryPartCFrame(spawnCFrame.add(new Vector3(0, modelSize.Y / 2, 0)));
-		warn(
+		spawnLog(
 			`[SpawnVehicle] placed at ${newModel.GetPrimaryPartCFrame().Position} (extentsY/2=${modelSize.Y / 2})`,
 		);
 
@@ -416,9 +426,9 @@ const spawnVehicleModule = {
 			// 	newModel:WaitForChild("Base")
 			// end)
 
-			warn(`[SpawnVehicle] WaitForChild Vehicles/${newModel.Name}`);
+			spawnLog(`[SpawnVehicle] WaitForChild Vehicles/${newModel.Name}`);
 			(game.Workspace as unknown as { Vehicles: Folder }).Vehicles.WaitForChild(newModel.Name);
-			warn(`[SpawnVehicle] InitialiseControl; Character=${player.Character?.GetFullName() ?? "nil"}`);
+			spawnLog(`[SpawnVehicle] InitialiseControl; Character=${player.Character?.GetFullName() ?? "nil"}`);
 
 			SeatPlayer(player, newModel);
 
@@ -468,14 +478,14 @@ const spawnVehicleModule = {
 			}
 		}
 
-		warn(
+		spawnLog(
 			`[SpawnVehicle] EXIT drivable=${drivable} clientSided=${clientSided === true} model=${newModel.GetFullName()}`,
 		);
 	},
 
 	KillVehicle(player: Player, doubleO?: boolean) {
 		const existing = Globals.vehiclesTable[player.UserId];
-		warn(
+		spawnLog(
 			`[KillVehicle] player=${player.Name} hasVehicle=${existing !== undefined} model=${existing?.model.GetFullName() ?? "nil"}`,
 		);
 		if (existing) {

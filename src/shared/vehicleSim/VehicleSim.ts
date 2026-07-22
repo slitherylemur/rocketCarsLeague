@@ -348,7 +348,6 @@ interface SimEntry {
 	// recurring (a permanently-swallowed error is silent divergence), without
 	// flooding at 30 Hz.
 	lastErrorWarnAt?: number;
-	diagTickCounter: number; // diagnostics only — not sim state
 	// Server-only pending ops from OUTSIDE the simulation (FeelHarness, the
 	// FlipVehicle remote): queued here and consumed INSIDE the next sim step,
 	// because attributes on predicted instances may only be written from
@@ -668,7 +667,6 @@ function buildEntry(model: VehicleModel, tuning: VehicleTuning, movers: MoverSet
 		totalMass: 0,
 		velocity: 0,
 		propVelocity: 0,
-		diagTickCounter: 0,
 	};
 	entry.totalMass = entry.baseMass;
 	return entry;
@@ -1165,18 +1163,20 @@ function setOwnerContextEnabled(entry: SimEntry, enabled: boolean) {
 	entry.base.SetAttribute(VehicleAttr.InputLocked, enabled && !stayLocked ? undefined : true);
 }
 
-// Self-heal for the one-shot sit-edge enable above: the player's InputContext
-// is built ASYNCHRONOUSLY on join (vehicleInputActions.ensureContext yields on
-// DataStore keybind reads, which throttle under real load), so a car can start
-// driving before the context exists — setOwnerContextEnabled's deferred write
-// then finds nothing and no-ops, and since the enable only ever fired on the
-// drive-start EDGE the player stayed controlless for the whole drive. Runs
-// every server tick while driving: Enabled must equal "no control lock", which
-// holds because every intentional mid-drive disable (footballMatch lockPlayer
-// / preSpawnLock) sets the CB_ControlLock attribute before disabling, and
-// unlockPlayer clears it before enabling. Also recovers a lock/unlock that
-// landed while the context was missing, and a stale lock left behind by an
-// aborted countdown once footballMatch.stop() clears the attribute.
+// Self-heal for the always-enabled InputContext: the context is built
+// ASYNCHRONOUSLY on join (vehicleInputActions.ensureContext yields on
+// DataStore keybind reads, which throttle under real load) and must stay
+// Enabled for the WHOLE session. This runs every server tick while driving
+// and only ever turns Enabled back ON if something left it off.
+//
+// It must NEVER disable the context: a disabled InputContext freezes
+// InputAction.GetState() and loses release transitions (the stuck-key /
+// stuck-boost latch — "let go of boost and it won't end"), and the re-enable
+// property replicates a full ping late. An earlier version of this reconcile
+// disabled the context while CB_ControlLock was set, quietly reintroducing
+// the exact latch the 2026-07 control rework removed. Control locks are the
+// InputLocked ATTRIBUTE alone (the sims zero movement inputs every locked
+// tick); the engine's input plumbing is never touched.
 function reconcileOwnerContextEnabled(entry: SimEntry) {
 	if (!IS_SERVER || entry.contextSyncPending) {
 		return;
@@ -1189,22 +1189,21 @@ function reconcileOwnerContextEnabled(entry: SimEntry) {
 	if (!context || !context.IsA("InputContext")) {
 		return; // not built yet — checked again next tick
 	}
-	const desired = owner.GetAttribute("CB_ControlLock") !== true;
-	if (context.Enabled === desired) {
+	if (context.Enabled) {
 		return;
 	}
-	// Deferred out of the simulation step like setOwnerContextEnabled —
-	// InputContext.Enabled is not simulation-access. Re-derive inside the defer
-	// so a drive-end/lock that lands in between wins.
+	// Deferred out of the simulation step — InputContext.Enabled is not
+	// simulation-access.
 	entry.contextSyncPending = true;
 	task.defer(() => {
 		entry.contextSyncPending = false;
-		if (owner.Parent === undefined || !attrBool(entry.base, VehicleAttr.Driving)) {
+		if (owner.Parent === undefined) {
 			return;
 		}
 		const liveContext = owner.FindFirstChild(VehicleInput.ContextName);
-		if (liveContext && liveContext.IsA("InputContext")) {
-			liveContext.Enabled = owner.GetAttribute("CB_ControlLock") !== true;
+		if (liveContext && liveContext.IsA("InputContext") && !liveContext.Enabled) {
+			warn(`[VehicleSim] ${owner.Name}'s VehicleControls context was disabled — re-enabling (locks are InputLocked-attribute only)`);
+			liveContext.Enabled = true;
 		}
 	});
 }
@@ -1682,7 +1681,7 @@ function stepVehicle(entry: SimEntry, dt: number) {
 		// on. A persistent gap means a structural change happened without a
 		// refreshMass call — find and flag that path.
 		if (IS_SERVER) {
-			warn(
+			print(
 				`[VehicleSim] ${model.Name}: drive start; measured=${string.format(
 					"%.0f",
 					getMassOfModel(model) + occupantsMass(model),
@@ -1691,7 +1690,7 @@ function stepVehicle(entry: SimEntry, dt: number) {
 		}
 	} else if (!drivingNow && drivingWas) {
 		// Drive ended: parking brake, exactly like the old loop exit.
-		warn(
+		print(
 			`[VehicleSim] ${model.Name}: drive end (occupant=${occupant !== undefined} ownerHumanoid=${
 				ownerHumanoid !== undefined
 			} parent=${model.Parent !== undefined})`,
@@ -1969,40 +1968,9 @@ function stepVehicle(entry: SimEntry, dt: number) {
 	base.LinearVelocity.MaxForce = force;
 	base.LinearVelocity.LineVelocity = targetVelocity;
 	base.slopeCounterVelocity.MaxForce = slopeCounterForce;
-
-	// Phase 4 diagnostics: throttled drive-state line on both peers (first
-	// driven tick prints immediately, then every ~150 sim steps).
-	entry.diagTickCounter += 1;
-	if (entry.diagTickCounter % 150 === 1) {
-		const rootPart = base.AssemblyRootPart;
-		const assemblyVel = base.AssemblyLinearVelocity;
-		print(
-			string.format(
-				"[VehicleSim][%s] %s t=%.2f thr=%d gnd=%s F=%.0f v=%.1f mass=%.0f y=%.1f velY=%.1f root=%s anch=%s",
-				IS_SERVER ? "S" : "C",
-				model.Name,
-				now,
-				throttle,
-				tostring(grounded),
-				force,
-				entry.velocity,
-				totalMass,
-				base.Position.Y,
-				assemblyVel.Y,
-				rootPart ? rootPart.Name : "nil",
-				tostring(rootPart ? rootPart.Anchored : false),
-			),
-		);
-	}
 }
 
-let diagFirstTick = true;
-
 function tick(dt: number) {
-	if (diagFirstTick) {
-		diagFirstTick = false;
-		print(`[VehicleSim] ${IS_SERVER ? "server" : "client"} first sim tick dt=${dt}`);
-	}
 	for (const [model, entry] of registry) {
 		if (entry.model.Parent === undefined || entry.base.Parent === undefined) {
 			registry.delete(model);

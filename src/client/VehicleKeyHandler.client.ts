@@ -143,30 +143,91 @@ function fireTouchAction(actionName: string, value: number) {
 let analogSteer = 0;
 let analogThrottle = 0;
 
-function mobileSteerFunction() {
-	if (Player.Character) {
-		const humanoid = Player.Character.FindFirstChildOfClass("Humanoid");
-		const root = Player.Character.FindFirstChild("HumanoidRootPart") as BasePart | undefined;
-		if (!humanoid || !root) {
-			return;
-		}
-		const MoveDirection = humanoid.MoveDirection;
-		const newMoveVector = root.CFrame.VectorToObjectSpace(MoveDirection);
+const JOYSTICK_DEADZONE = 0.1;
+let joystickInput: InputObject | undefined = undefined;
+let joystickBase: GuiObject | undefined = undefined;
+let joystickKnob: GuiObject | undefined = undefined;
 
-		if (math.abs(newMoveVector.X - analogSteer) > 0.2 || math.abs(-newMoveVector.Z - analogThrottle) > 0.2) {
-			analogSteer = newMoveVector.X;
-			analogThrottle = -newMoveVector.Z;
-			fireTouchAction(VehicleInput.SteerTouch, math.clamp(analogSteer, -1, 1));
-			fireTouchAction(VehicleInput.ThrottleTouch, math.clamp(analogThrottle, -1, 1));
-		}
+function moveJoystickKnob(direction: Vector2) {
+	if (!joystickBase || !joystickKnob) {
+		return;
 	}
+	// The knob is 42% of the base, leaving 29% of the base diameter as
+	// travel in every direction. Pixel offsets keep the motion circular.
+	const travel = math.min(joystickBase.AbsoluteSize.X, joystickBase.AbsoluteSize.Y) * 0.29;
+	joystickKnob.Position = new UDim2(0.5, direction.X * travel, 0.5, direction.Y * travel);
+}
+
+function publishTouchMovement(steer: number, throttle: number) {
+	const nextSteer = math.clamp(steer, -1, 1);
+	const nextThrottle = math.clamp(throttle, -1, 1);
+	if (math.abs(nextSteer - analogSteer) < 0.01 && math.abs(nextThrottle - analogThrottle) < 0.01) {
+		return;
+	}
+	analogSteer = nextSteer;
+	analogThrottle = nextThrottle;
+	fireTouchAction(VehicleInput.SteerTouch, analogSteer);
+	fireTouchAction(VehicleInput.ThrottleTouch, analogThrottle);
+}
+
+function updateJoystick(position: Vector3) {
+	const base = joystickBase;
+	if (!base) {
+		return;
+	}
+	const size = base.AbsoluteSize;
+	const radius = math.min(size.X, size.Y) * 0.5;
+	if (radius <= 0) {
+		return;
+	}
+	const center = base.AbsolutePosition.add(size.div(2));
+	const displacement = new Vector2(position.X - center.X, position.Y - center.Y).div(radius);
+	const magnitude = displacement.Magnitude;
+	const clampedDirection = magnitude > 1 ? displacement.div(magnitude) : displacement;
+	moveJoystickKnob(clampedDirection);
+
+	// Radial deadzone with the remaining range remapped back to 0..1. X and Y
+	// stay in screen space: right is always steer-right and up is always drive.
+	if (magnitude <= JOYSTICK_DEADZONE) {
+		publishTouchMovement(0, 0);
+		return;
+	}
+	const direction = displacement.div(magnitude);
+	const strength = math.clamp((magnitude - JOYSTICK_DEADZONE) / (1 - JOYSTICK_DEADZONE), 0, 1);
+	const output = direction.mul(strength);
+	publishTouchMovement(output.X, -output.Y);
 }
 
 function resetTouchMovement() {
+	joystickInput = undefined;
 	analogSteer = 0;
 	analogThrottle = 0;
+	moveJoystickKnob(new Vector2(0, 0));
 	fireTouchAction(VehicleInput.SteerTouch, 0);
 	fireTouchAction(VehicleInput.ThrottleTouch, 0);
+}
+
+function hookDriveJoystick(base: GuiObject, knob: GuiObject) {
+	joystickBase = base;
+	joystickKnob = knob;
+	moveJoystickKnob(new Vector2(0, 0));
+	const begin = (input: InputObject) => {
+		if (joystickBase !== base || joystickInput !== undefined) {
+			return;
+		}
+		if (
+			input.UserInputType !== Enum.UserInputType.Touch &&
+			input.UserInputType !== Enum.UserInputType.MouseButton1
+		) {
+			return;
+		}
+		joystickInput = input;
+		updateJoystick(input.Position);
+	};
+	// Listen on both objects so the centred knob cannot intercept the initial
+	// press on devices whose GUI hit-testing does not bubble to its parent.
+	base.InputBegan.Connect(begin);
+	knob.InputBegan.Connect(begin);
 }
 
 function fireBoolAction(actionName: string, held: boolean) {
@@ -179,13 +240,8 @@ function fireBoolAction(actionName: string, held: boolean) {
 	}
 }
 
-// Wire the MobileInterface buttons to Fire() the Bool actions — the same
-// programmatic path the mobile joystick uses (proven to reach the server's
-// input stream). Every touch button is named after the InputAction it drives:
-// the left MovePad cluster fires ThrottleForward/ThrottleBackward/SteerLeft/
-// SteerRight (the exact actions W/S/A/D bind to, so ground drive and aerial
-// pitch/yaw behave identically to keyboard) and the right side fires
-// Boost/Drift/Jump/RollLeft/RollRight.
+// Wire the MobileInterface ability buttons to their Bool actions. Movement is
+// handled separately by the fixed analog joystick above.
 //
 // Press semantics: press-and-hold, multi-touch safe (steer while
 // accelerating). Each press records its InputObject — touch InputObjects
@@ -194,15 +250,9 @@ function fireBoolAction(actionName: string, held: boolean) {
 // it (buttons must never stay latched), but small drift keeps the press.
 
 const TOUCH_HOLD_ACTIONS = [
-	VehicleInput.ThrottleForward,
-	VehicleInput.ThrottleBackward,
-	VehicleInput.SteerLeft,
-	VehicleInput.SteerRight,
 	VehicleInput.Drift,
 	VehicleInput.Boost,
 	VehicleInput.Jump,
-	VehicleInput.RollLeft,
-	VehicleInput.RollRight,
 ];
 
 // Current held-state per action, as produced by the touch buttons only.
@@ -280,6 +330,13 @@ function hookHoldButton(actionName: string, button: GuiButton) {
 }
 
 UserInputService.InputEnded.Connect((input) => {
+	if (
+		joystickInput === input ||
+		(input.UserInputType === Enum.UserInputType.MouseButton1 &&
+			joystickInput?.UserInputType === Enum.UserInputType.MouseButton1)
+	) {
+		resetTouchMovement();
+	}
 	for (let i = heldTouches.size() - 1; i >= 0; i--) {
 		const held = heldTouches[i];
 		// Touch: match the exact InputObject. Mouse (Studio touch-less
@@ -295,13 +352,19 @@ UserInputService.InputEnded.Connect((input) => {
 });
 
 UserInputService.InputChanged.Connect((input) => {
-	if (input.UserInputType !== Enum.UserInputType.Touch || heldTouches.size() === 0) {
-		return;
+	if (
+		joystickInput === input ||
+		(joystickInput?.UserInputType === Enum.UserInputType.MouseButton1 &&
+			input.UserInputType === Enum.UserInputType.MouseMovement)
+	) {
+		updateJoystick(input.Position);
 	}
-	for (let i = heldTouches.size() - 1; i >= 0; i--) {
-		const held = heldTouches[i];
-		if (held.input === input && !touchStillOverButton(held.button, input.Position)) {
-			releaseHeldTouch(i);
+	if (input.UserInputType === Enum.UserInputType.Touch && heldTouches.size() > 0) {
+		for (let i = heldTouches.size() - 1; i >= 0; i--) {
+			const held = heldTouches[i];
+			if (held.input === input && !touchStillOverButton(held.button, input.Position)) {
+				releaseHeldTouch(i);
+			}
 		}
 	}
 });
@@ -334,39 +397,23 @@ function wireTouchButtons(mobileInterface: ScreenGui) {
 	wiredMobileInterface = mobileInterface;
 	// The old instance (and its connections) is gone; nothing may stay held.
 	releaseAllTouches();
+	resetTouchMovement();
 
-	// The server React mount can parent the ScreenGui before its children
-	// finish building — wait for each button instead of dot-indexing.
-	const hook = (actionName: string, parent: Instance, buttonName: string) => {
-		task.spawn(() => {
-			const button = parent.WaitForChild(buttonName, 10);
-			if (wiredMobileInterface !== mobileInterface) {
-				return; // a newer interface replaced this one while waiting
-			}
-			if (button && button.IsA("GuiButton")) {
-				hookHoldButton(actionName, button);
-			} else {
-				warn(`[VehicleKeyHandler] MobileInterface button ${buttonName} missing — touch control dead`);
-			}
-		});
-	};
-	// Boost/Drift/Jump already resolved above (their presence gates the wire);
-	// the MovePad cluster and roll buttons may still be replicating — hook()
-	// waits for each.
+	// Boost/Drift/Jump already resolved above (their presence gates the wire).
 	hookHoldButton(VehicleInput.Boost, boost);
 	hookHoldButton(VehicleInput.Drift, drift);
 	hookHoldButton(VehicleInput.Jump, jump);
-	hook(VehicleInput.RollLeft, mobileInterface, VehicleInput.RollLeft);
-	hook(VehicleInput.RollRight, mobileInterface, VehicleInput.RollRight);
 	task.spawn(() => {
-		const movePad = mobileInterface.WaitForChild("MovePad", 10);
-		if (!movePad || wiredMobileInterface !== mobileInterface) {
+		const driveJoystick = mobileInterface.WaitForChild("DriveJoystick", 10);
+		if (!driveJoystick || !driveJoystick.IsA("GuiObject") || wiredMobileInterface !== mobileInterface) {
 			return;
 		}
-		hook(VehicleInput.ThrottleForward, movePad, VehicleInput.ThrottleForward);
-		hook(VehicleInput.ThrottleBackward, movePad, VehicleInput.ThrottleBackward);
-		hook(VehicleInput.SteerLeft, movePad, VehicleInput.SteerLeft);
-		hook(VehicleInput.SteerRight, movePad, VehicleInput.SteerRight);
+		const knob = driveJoystick.WaitForChild("Knob", 10);
+		if (knob && knob.IsA("GuiObject") && wiredMobileInterface === mobileInterface) {
+			hookDriveJoystick(driveJoystick, knob);
+		} else {
+			warn("[VehicleKeyHandler] MobileInterface joystick knob missing — touch movement unavailable");
+		}
 	});
 }
 
@@ -426,8 +473,7 @@ function syncActionStates(context: InputContext, toHardware: boolean) {
 		const action = context.FindFirstChild(name);
 		if (action && action.IsA("InputAction")) {
 			// A touch button counts as "hardware": a finger already holding
-			// the MovePad when the context re-enables (kickoff control-lock
-			// lifting) must keep working, exactly like a held key does.
+			// an ability when the context re-enables must keep working.
 			action.Fire(toHardware && (actionHardwareHeld(action) || touchHeld.get(name) === true));
 		}
 	}
@@ -450,12 +496,11 @@ function syncActionStates(context: InputContext, toHardware: boolean) {
 	}
 	fire(VehicleInput.ThrottleAxis, axisThrottle);
 	fire(VehicleInput.SteerStick, stick);
-	// The mobile joystick sampler re-fires these from MoveDirection once its
-	// deltas exceed the threshold — resetting its cache keeps it honest.
-	fire(VehicleInput.ThrottleTouch, 0);
-	fire(VehicleInput.SteerTouch, 0);
-	analogSteer = 0;
-	analogThrottle = 0;
+	// Preserve a currently-held touch stick across a harmless context re-sync.
+	// Its values are already camera-independent screen-space axes.
+	const touchActive = toHardware && joystickInput !== undefined;
+	fire(VehicleInput.ThrottleTouch, touchActive ? analogThrottle : 0);
+	fire(VehicleInput.SteerTouch, touchActive ? analogSteer : 0);
 }
 
 task.spawn(() => {
@@ -482,7 +527,10 @@ task.spawn(() => {
 	// its transition here. Neutral everything on focus loss, and re-sync to the
 	// real hardware state on focus gain (a key genuinely still held keeps
 	// working).
-	UserInputService.WindowFocusReleased.Connect(() => syncActionStates(adopted, false));
+	UserInputService.WindowFocusReleased.Connect(() => {
+		resetTouchMovement();
+		syncActionStates(adopted, false);
+	});
 	UserInputService.WindowFocused.Connect(() => syncActionStates(adopted, adopted.Enabled));
 });
 
@@ -503,10 +551,10 @@ let seatSession = 0;
 // the PlayerGui.ChildAdded re-mount below.
 let touchSeated = false;
 
-// While driving, the Roblox core touch controls (dynamic thumbstick + jump
-// button) steer the HUMANOID, not the car — next to the custom MovePad they
-// are pure noise. GuiService.TouchControlsEnabled hides them entirely,
-// client-side and instantly reversible, without touching DevTouchMovementMode
+// While driving, the Roblox core touch controls steer the Humanoid and use
+// camera-relative movement. The car uses its own fixed screen-space joystick,
+// so hide the core controls until the player gets out. This is client-side and
+// instantly reversible, without touching DevTouchMovementMode
 // (which would replicate/persist and still leaves the core jump button) or
 // the deprecated ModalEnabled. Walking around out of the car keeps the
 // normal joystick. pcall-guarded: purely cosmetic, must never kill seating.
@@ -599,15 +647,7 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 
 		if (UserInputService.TouchEnabled) {
 			touchSeated = true;
-			setCoreTouchControlsEnabled(false); // the humanoid thumbstick is useless in a car
-			// Idempotent re-bind: a missed exit edge (character destroyed while
-			// seated) can leave the old binding behind.
-			pcall(() => {
-				RunService.UnbindFromRenderStep("MobileSteer");
-			});
-			// The joystick sampler stays bound as a fallback: with the core
-			// controls hidden MoveDirection is always zero, so it fires nothing.
-			RunService.BindToRenderStep("MobileSteer", 1, mobileSteerFunction);
+			setCoreTouchControlsEnabled(false);
 			// The server destroys + re-mounts MobileInterface on every spawn and
 			// it can replicate AFTER the sit does — keep the UI enabled/wired
 			// from current state for the whole sit instead of sampling once.
@@ -645,9 +685,6 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 		if (UserInputService.TouchEnabled) {
 			touchSeated = false;
 			setCoreTouchControlsEnabled(true); // back on foot — restore the normal joystick
-			pcall(() => {
-				RunService.UnbindFromRenderStep("MobileSteer");
-			});
 			resetTouchMovement();
 			// A button still held while exiting must not stay latched.
 			releaseAllTouches();

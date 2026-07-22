@@ -138,7 +138,14 @@ const PROBED_ACTIONS = [
 interface ProbeState {
 	mismatchSince?: number;
 	warned: boolean;
+	forcedRelease?: boolean;
 }
+// Active unlatch: when the hardware is definitively UP but a Bool action is
+// still DOWN past this, the probe FIRES the action false instead of only
+// warning. IAS state is client-authoritative, so the repair replicates and
+// unlatches the server sim too — this is what ends a stuck boost. Skipped on
+// touch devices (UIButton bindings have no pollable hardware state).
+const FORCE_RELEASE_AFTER = 0.3;
 const iasProbe = new Map<string, ProbeState>();
 const attrProbe: ProbeState = { warned: false };
 let throttleEdgeAt: number | undefined;
@@ -161,7 +168,15 @@ function localVehicleBase(): BasePart | undefined {
 	return undefined;
 }
 
-function keyboardKeysDown(action: InputAction): boolean | undefined {
+// Hardware state across keyboard AND gamepad bindings — a held controller
+// button must never read as "released" or the unlatch watchdog would cut a
+// legitimate gamepad boost.
+function isGamepadKeyCode(keyCode: Enum.KeyCode): boolean {
+	const name = keyCode.Name;
+	return name.sub(1, 6) === "Button" || name.sub(1, 4) === "DPad";
+}
+
+function hardwareActionDown(action: InputAction): boolean | undefined {
 	let anyBinding = false;
 	for (const child of action.GetChildren()) {
 		if (!child.IsA("InputBinding")) {
@@ -171,12 +186,23 @@ function keyboardKeysDown(action: InputAction): boolean | undefined {
 		if (keyCode === undefined || keyCode === Enum.KeyCode.Unknown) {
 			continue;
 		}
-		anyBinding = true;
-		if (UserInputService.IsKeyDown(keyCode)) {
-			return true;
+		if (isGamepadKeyCode(keyCode)) {
+			anyBinding = true;
+			let down = false;
+			pcall(() => {
+				down = UserInputService.IsGamepadButtonDown(Enum.UserInputType.Gamepad1, keyCode);
+			});
+			if (down) {
+				return true;
+			}
+		} else {
+			anyBinding = true;
+			if (UserInputService.IsKeyDown(keyCode)) {
+				return true;
+			}
 		}
 	}
-	return anyBinding ? false : undefined; // no keyboard binding → not probeable
+	return anyBinding ? false : undefined; // no pollable binding → not probeable
 }
 
 function probeStage(name: string, state: ProbeState, mismatched: boolean, describe: () => string) {
@@ -210,7 +236,7 @@ RunService.Heartbeat.Connect(() => {
 		if (!action || !action.IsA("InputAction")) {
 			continue;
 		}
-		const hardwareDown = keyboardKeysDown(action);
+		const hardwareDown = hardwareActionDown(action);
 		if (hardwareDown === undefined) {
 			continue;
 		}
@@ -235,6 +261,21 @@ RunService.Heartbeat.Connect(() => {
 					? `key DOWN but action UP for ${STUCK_AFTER}s — key events not reaching the IAS`
 					: `key UP but action still DOWN for ${STUCK_AFTER}s — IAS latch (release transition lost)`,
 		);
+		// Active unlatch: repair a lost release instead of just reporting it.
+		if (!hardwareDown && actionDown) {
+			if (
+				!UserInputService.TouchEnabled &&
+				state.mismatchSince !== undefined &&
+				!state.forcedRelease &&
+				os.clock() - state.mismatchSince > FORCE_RELEASE_AFTER
+			) {
+				state.forcedRelease = true;
+				pcall(() => action.Fire(false));
+				warn(`[NetHealth] ${actionName}: hardware is up but the action latched down — force-released`);
+			}
+		} else {
+			state.forcedRelease = false;
+		}
 	}
 
 	// Attribute stage + latency (throttle only; -1/0/1 exact values).
@@ -390,9 +431,9 @@ if (!mispredictSupported) {
 	});
 }
 
-function mispredictSummary(intervalSeconds: number): string {
+function mispredictSummary(intervalSeconds: number): string | undefined {
 	if (!mispredictSupported) {
-		return "Misprediction API unavailable";
+		return undefined; // warned once at startup — no per-interval spam
 	}
 	const total = mispredictEvents;
 	mispredictEvents = 0;
@@ -494,8 +535,11 @@ task.spawn(() => {
 		}
 		const inputLatency = maxInputLatencyMs;
 		maxInputLatencyMs = 0;
+		const summary = mispredictSummary(DIAG_INTERVAL);
 		warn(
-			`[NetHealth] ping=${math.round(pingMs)}ms predicted=${predicted ?? "unavailable"} resimTicks/${DIAG_INTERVAL}s=${resimTicks} inputLat=${math.round(inputLatency)}ms → ${verdict}\n[NetHealth] ${mispredictSummary(DIAG_INTERVAL)}`,
+			`[NetHealth] ping=${math.round(pingMs)}ms predicted=${predicted ?? "unavailable"} resimTicks/${DIAG_INTERVAL}s=${resimTicks} inputLat=${math.round(inputLatency)}ms → ${verdict}${
+				summary !== undefined ? `\n[NetHealth] ${summary}` : ""
+			}`,
 		);
 	}
 });

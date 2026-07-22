@@ -350,11 +350,58 @@ function boxContact(ball: BasePart, part: BasePart, center: Vector3, radius: num
 	};
 }
 
+// A ball with no usable world filter is not simulated — but the ENGINE still
+// integrates it: with a stale/zero AntiGravity force an unanchored frozen
+// ball freefalls through the CanCollide=false floor until the spawner's
+// escape recovery respawns it, forever (the GoldPitch escape loop). Hold it
+// in place instead — gravity cancelled, velocity zeroed — and, after a few
+// seconds, say exactly WHY the filter is missing so broken pitch wiring is
+// visible instead of masked by the recovery cycle.
+const frozenSince = new Map<BasePart, number>();
+const frozenWarned = new Set<BasePart>();
+
+function describeFilterFailure(ball: BasePart): string {
+	const pitchId = ball.GetAttribute(PITCH_ATTRIBUTE);
+	if (!typeIs(pitchId, "string")) {
+		return `ball has no ${PITCH_ATTRIBUTE} attribute`;
+	}
+	const mapFolder = game.Workspace.FindFirstChild("Map");
+	if (mapFolder === undefined) {
+		return "Workspace.Map missing";
+	}
+	const pitch = mapFolder.FindFirstChild(pitchId);
+	if (pitch === undefined) {
+		return `Workspace.Map.${pitchId} missing`;
+	}
+	return `pitch ${pitchId} has no ${STADIUM_NAME} colliders / ${GROUND_PART_NAME}`;
+}
+
+function holdFrozenBall(ball: BasePart) {
+	if (!ball.Anchored) {
+		const antiGravity = ball.FindFirstChild("AntiGravity");
+		if (antiGravity !== undefined && antiGravity.IsA("VectorForce")) {
+			antiGravity.Force = new Vector3(0, ball.AssemblyMass * game.Workspace.Gravity, 0);
+		}
+		ball.AssemblyLinearVelocity = new Vector3(0, 0, 0);
+	}
+	const t0 = frozenSince.get(ball) ?? os.clock();
+	frozenSince.set(ball, t0);
+	if (IS_SERVER && !frozenWarned.has(ball) && os.clock() - t0 > 3) {
+		frozenWarned.add(ball);
+		warn(`[BallSim] ball frozen >3s — ${describeFilterFailure(ball)}; holding it in place instead of freefalling`);
+	}
+}
+
 function stepBall(ball: BasePart, dt: number) {
 	// No world filter yet (pitch not replicated / parts missing): freeze the
 	// sim rather than integrating gravity into a world with no floor.
 	if (!refreshFilters(ball)) {
+		holdFrozenBall(ball);
 		return;
+	}
+	if (frozenSince.has(ball)) {
+		frozenSince.delete(ball);
+		frozenWarned.delete(ball);
 	}
 
 	const now = attrNumber(ball, BallAttr.SimTime, 0) + dt;
@@ -560,6 +607,8 @@ function tick(dt: number) {
 		if (ball.Parent === undefined) {
 			balls.delete(ball);
 			worldFilterByBall.delete(ball);
+			frozenSince.delete(ball);
+			frozenWarned.delete(ball);
 			continue;
 		}
 		// A client simulates ONLY its own pitch's ball (the one it predicts —
