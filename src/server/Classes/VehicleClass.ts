@@ -180,7 +180,7 @@ export class VehicleClass {
 				mass: this.mass,
 				acceleration: this.acceleration,
 				targetVelocity: this.targetVelocity,
-				minTurnRadius: this.minTurnRadius + 3,
+				minTurnRadius: this.minTurnRadius + 5,
 				maxTurnRadius: this.maxTurnRadius,
 				maxAngularSpeed: this.maxAngularSpeed,
 				minAngularSpeed: this.minAngularSpeed,

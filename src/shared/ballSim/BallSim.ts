@@ -399,9 +399,25 @@ function stepBall(ball: BasePart, dt: number) {
 			}
 		}
 
-		// De-penetrate so the next tick starts outside the box.
+		// De-penetrate so the next tick starts outside the box — but never
+		// THROUGH a wall: a car pinching the ball against the arena shell (the
+		// goal mouth, classically) would otherwise push the centre past the
+		// wall, and the next tick's world sweep starts overlapping/behind it
+		// and reports no hit — the ball tunnels out of the pitch. Clamp the
+		// push at the first world collider and kill the into-wall velocity.
 		if (contact.penetration > 0) {
-			position = position.add(n.mul(contact.penetration + SKIN));
+			const push = n.mul(contact.penetration + SKIN);
+			const wallHit = game.Workspace.Spherecast(position, radius, push, worldParams);
+			if (wallHit !== undefined) {
+				position = position.add(push.Unit.mul(math.max(wallHit.Distance - SKIN, 0)));
+				const wallNormal = wallHit.Normal;
+				const intoWall = v.Dot(wallNormal);
+				if (intoWall < 0) {
+					v = v.sub(wallNormal.mul(intoWall));
+				}
+			} else {
+				position = position.add(push);
+			}
 			positionChanged = true;
 		}
 	}

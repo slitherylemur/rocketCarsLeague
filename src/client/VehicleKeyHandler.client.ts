@@ -46,6 +46,13 @@ const handleAction = (actionName: string, inputState: Enum.UserInputState, input
 
 let managedVehicle: Instance | undefined = undefined;
 let managedCharacter: Instance | undefined = undefined;
+// While seated: DescendantAdded watchers that mark late-streaming parts On.
+// The server used to mark the whole car at spawn, covering anything the
+// client hadn't streamed yet — SetPredictionMode is CLIENT-ONLY since the
+// 2026-07 engine update, so a part arriving after the seat-time deep mark
+// would otherwise stay unpredicted and get the WHOLE assembly refused
+// ("can't predict half an assembly" → Authoritative → input delay).
+let predictionWatchers: RBXScriptConnection[] = [];
 
 // Only these classes can be predicted — sweeping everything made the engine
 // warn about TouchTransmitter/Humanoid.Status and refuse the whole car.
@@ -333,6 +340,31 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 			if (managedCharacter) {
 				setPredictionDeep(managedCharacter, Enum.PredictionMode.On);
 			}
+			// Keep late arrivals marked, and re-assert the deep mark a couple of
+			// times — replication can land descendants for several seconds after
+			// the seat edge, and no server-side marking backstops this anymore.
+			for (const root of [vehicleModel, managedCharacter]) {
+				if (root === undefined) {
+					continue;
+				}
+				predictionWatchers.push(
+					root.DescendantAdded.Connect((descendant) => {
+						if (canPredict(descendant)) {
+							pcall(() => RunService.SetPredictionMode(descendant, Enum.PredictionMode.On));
+						}
+					}),
+				);
+			}
+			for (const delaySeconds of [1, 3]) {
+				task.delay(delaySeconds, () => {
+					if (managedVehicle === vehicleModel && vehicleModel.Parent !== undefined) {
+						setPredictionDeep(vehicleModel, Enum.PredictionMode.On);
+						if (managedCharacter && managedCharacter.Parent !== undefined) {
+							setPredictionDeep(managedCharacter, Enum.PredictionMode.On);
+						}
+					}
+				});
+			}
 			// One-shot diagnostic: the engine's predicted-instance count is the
 			// only trustworthy signal (GetPredictionStatus outside a resim pass
 			// reports Authoritative even for predicted instances). Expect
@@ -369,6 +401,10 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 		}
 	} else {
 		// When the player gets out:
+		for (const watcher of predictionWatchers) {
+			watcher.Disconnect();
+		}
+		predictionWatchers = [];
 		if (managedVehicle) {
 			setPredictionDeep(managedVehicle, Enum.PredictionMode.Automatic);
 			managedVehicle = undefined;

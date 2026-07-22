@@ -1,10 +1,12 @@
 // Server-authoritative ball spawner (mirrors spawnVehicle's Phase 4 setup).
 //
 // Called once per loadMap(). The server creates the part at the map's
-// center and marks it PredictionMode.On so clients are allowed to predict
-// it (each client re-asserts On locally in ballRenderer.client.ts). Under
-// Workspace.AuthorityMode = Server there is no SetNetworkOwner — the server
-// simulates the ball and clients predict/rollback against it.
+// center; each client marks it PredictionMode.On locally in
+// ballRenderer.client.ts (SetPredictionMode became a CLIENT-ONLY API in the
+// 2026-07 engine update — server calls are ignored with a "should not be
+// called on the server" warning, so the old server-side marking is gone).
+// Under Workspace.AuthorityMode = Server there is no SetNetworkOwner — the
+// server simulates the ball and clients predict/rollback against it.
 
 import { BALL_NAME, BALL_FIELDS, ballTunables, ballTuneAttr } from "shared/ballSim/BallConfig";
 import { BallAttr } from "shared/ballSim/BallSim";
@@ -30,25 +32,16 @@ let currentMap: Instance | undefined;
 // Multi-pitch: one live ball per map/pitch.
 const ballByMap = new Map<Instance, BasePart>();
 const recoveringMaps = new Set<Instance>();
+// Maps whose ball has been released to play (ReleaseBall). Tracked here —
+// not read off ball.Anchored — so the escape recovery can restore the
+// released state even when the escaped ball was already DESTROYED (fell
+// past FallenPartsDestroyHeight, so its properties are unreadable).
+const releasedMaps = new Set<Instance>();
 
 // (BallSim's world queries are a strict include list — STADIUM.collisionBottom
 // / STADIUM.outer / groundPart, plus each pitch's PartWallForBallProtection
 // model of invisible containment walls. The groundPart escape check below
 // stays as the safety net.)
-
-// Same rationale as spawnVehicle.markPredictable: client-side On alone left
-// vehicles Authoritative, so the server marks the whole assembly On at spawn.
-function markPredictable(root: Instance) {
-	const [ok, err] = pcall(() => {
-		RunService.SetPredictionMode(root, Enum.PredictionMode.On);
-		for (const descendant of root.GetDescendants()) {
-			RunService.SetPredictionMode(descendant, Enum.PredictionMode.On);
-		}
-	});
-	if (!ok) {
-		warn(`[BallSpawner] markPredictable failed: ${err}`);
-	}
-}
 
 // Maps are Folders, each with a ground part the ball spawns over. Prefer the
 // explicit ground part name; "ground" alone is a looser second pass.
@@ -128,12 +121,14 @@ spawner.DestroyBall = (map?: Instance) => {
 			existing.Destroy();
 			ballByMap.delete(map);
 		}
+		releasedMaps.delete(map);
 		return;
 	}
 	for (const [, ball] of ballByMap) {
 		ball.Destroy();
 	}
 	ballByMap.clear();
+	releasedMaps.clear();
 };
 
 spawner.SpawnBall = (map: Instance) => {
@@ -143,6 +138,7 @@ spawner.SpawnBall = (map: Instance) => {
 		if (ownerMap.Parent === undefined) {
 			ball.Destroy();
 			ballByMap.delete(ownerMap);
+			releasedMaps.delete(ownerMap);
 		}
 	}
 	currentMap = map;
@@ -205,7 +201,7 @@ spawner.SpawnBall = (map: Instance) => {
 
 	ball.Parent = game.Workspace;
 	ballByMap.set(map, ball);
-	markPredictable(ball);
+	releasedMaps.delete(map);
 
 	warn(`[BallSpawner] spawned ${BALL_NAME} at ${ballSpawn.Position} (assemblyMass=${math.round(ball.AssemblyMass)})`);
 };
@@ -216,6 +212,7 @@ spawner.ReleaseBall = (map: Instance) => {
 		ball.AssemblyLinearVelocity = new Vector3(0, 0, 0);
 		ball.AssemblyAngularVelocity = new Vector3(0, 0, 0);
 		ball.Anchored = false;
+		releasedMaps.add(map);
 	}
 };
 
@@ -245,26 +242,34 @@ RunService.Heartbeat.Connect((dt) => {
 	safetyAccumulator = 0;
 
 	for (const [map, ball] of ballByMap) {
-		if (recoveringMaps.has(map) || map.Parent === undefined || ball.Parent === undefined) {
-			continue;
-		}
-		const ground = findGroundPart(map);
-		if (ground === undefined) {
+		if (recoveringMaps.has(map) || map.Parent === undefined) {
 			continue;
 		}
 
-		const localPosition = ground.CFrame.PointToObjectSpace(ball.Position);
-		const half = ground.Size.div(2);
-		const outsideFootprint = math.abs(localPosition.X) > half.X || math.abs(localPosition.Z) > half.Z;
-		const belowGround = localPosition.Y < half.Y;
-		if (!outsideFootprint && !belowGround) {
-			continue;
+		// A destroyed ball (escaped past the walls, fell below
+		// Workspace.FallenPartsDestroyHeight, engine removed it) must ALSO
+		// recover — skipping it here left the pitch permanently ball-less.
+		const destroyed = ball.Parent === undefined;
+		let outsideFootprint = false;
+		let belowGround = false;
+		if (!destroyed) {
+			const ground = findGroundPart(map);
+			if (ground === undefined) {
+				continue;
+			}
+			const localPosition = ground.CFrame.PointToObjectSpace(ball.Position);
+			const half = ground.Size.div(2);
+			outsideFootprint = math.abs(localPosition.X) > half.X || math.abs(localPosition.Z) > half.Z;
+			belowGround = localPosition.Y < half.Y;
+			if (!outsideFootprint && !belowGround) {
+				continue;
+			}
 		}
 
-		const wasReleased = !ball.Anchored;
+		const wasReleased = destroyed ? releasedMaps.has(map) : !ball.Anchored;
 		recoveringMaps.add(map);
 		warn(
-			`[BallSpawner] recovering escaped ball on ${map.Name} (outside=${outsideFootprint}, below=${belowGround})`,
+			`[BallSpawner] recovering escaped ball on ${map.Name} (destroyed=${destroyed}, outside=${outsideFootprint}, below=${belowGround})`,
 		);
 		task.defer(() => {
 			if (map.Parent !== undefined) {

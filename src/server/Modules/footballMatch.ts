@@ -234,6 +234,45 @@ function ballInPart(ball: BasePart, part: BasePart): boolean {
 	);
 }
 
+/** Segment-vs-box sweep (slab clipping in the part's object space, box
+ * expanded by the ball radius). The goal watcher runs per Heartbeat, so a
+ * hard shot can cross the ENTIRE goal box between two checks — the pure
+ * point-in-box test let those tunnel through uncounted. */
+function ballCrossedPart(ball: BasePart, part: BasePart, fromPosition: Vector3, toPosition: Vector3): boolean {
+	const half = part.Size.div(2);
+	const r = ball.Size.X / 2;
+	const p0 = part.CFrame.PointToObjectSpace(fromPosition);
+	const delta = part.CFrame.PointToObjectSpace(toPosition).sub(p0);
+	let tMin = 0;
+	let tMax = 1;
+	const axes: Array<[number, number, number]> = [
+		[p0.X, delta.X, half.X + r],
+		[p0.Y, delta.Y, half.Y + r],
+		[p0.Z, delta.Z, half.Z + r],
+	];
+	for (const [origin, d, extent] of axes) {
+		if (math.abs(d) < 1e-6) {
+			if (math.abs(origin) > extent) {
+				return false;
+			}
+			continue;
+		}
+		let t1 = (-extent - origin) / d;
+		let t2 = (extent - origin) / d;
+		if (t1 > t2) {
+			const swap = t1;
+			t1 = t2;
+			t2 = swap;
+		}
+		tMin = math.max(tMin, t1);
+		tMax = math.min(tMax, t2);
+		if (tMin > tMax) {
+			return false;
+		}
+	}
+	return true;
+}
+
 // ---- face-off stage (Studio-authored, discovered by structure) -----------
 //
 // The stage is a Model/Folder with a BasePart named "CameraPart" plus "Red"
@@ -925,12 +964,26 @@ class PitchMatch {
 		this.announce(this.muckabout || this.sideByTeamId.size() < 2 ? "TIME!" : "FULL TIME!");
 	}
 
+	// Previous-Heartbeat ball position for the swept goal test. Keyed to the
+	// ball INSTANCE: every respawn creates a fresh part, so a stale segment
+	// can never bridge a respawn teleport into a phantom goal.
+	private lastBall?: BasePart;
+	private lastBallPosition?: Vector3;
+
 	checkBall(ball: BasePart) {
+		const fromPosition = this.lastBall === ball ? this.lastBallPosition : undefined;
+		const position = ball.Position;
+		this.lastBall = ball;
+		this.lastBallPosition = position;
 		for (const [team, part] of this.goalParts) {
 			if (part.Parent === undefined) {
 				continue;
 			}
-			if (ballInPart(ball, part)) {
+			const scored =
+				fromPosition !== undefined
+					? ballCrossedPart(ball, part, fromPosition, position)
+					: ballInPart(ball, part);
+			if (scored) {
 				this.onGoal(team, ball);
 				break;
 			}

@@ -72,7 +72,7 @@ const DRIFT_SPEED_SCRUB = 0.35; // handbrake drag per unit mass per stud/s of tr
 // arc that feels right; spin-out control is then ONE knob — the servo's
 // GRIP_YAW_TORQUE budget. (maxTurnRadius / minAngularSpeed tuning fields are
 // currently unused by the sim.)
-const GRIP_YAW_TORQUE = 125; // yaw authority per unit total mass for the grip servo — enforces the arc and damps roll/spin (110 let spin-outs through; 300 felt too strong; playtest-walked down from 180). Per-vehicle tunable.
+const GRIP_YAW_TORQUE = 116; // yaw authority per unit total mass for the grip servo — enforces the arc and damps roll/spin (110 let spin-outs through; 300 felt too strong; 125 turned too sharply; playtest-walked down from 180). Per-vehicle tunable.
 // While boosting (BoostHeld with meter > 0) the servo torque DROPS to this —
 // slightly below the normal budget, so boost-speed steering is a little
 // looser instead of forced. Friction is not changed by boost.

@@ -125,11 +125,21 @@ function createBallVisual(ballSize: Vector3, cframe: CFrame): BallVisual | undef
 }
 
 function setupBall(ball: BasePart) {
-	// The server already marks the ball On; re-assert locally the same way
-	// VehicleKeyHandler does for the seated car.
-	pcall(() => {
-		RunService.SetPredictionMode(ball, Enum.PredictionMode.On);
-	});
+	// SetPredictionMode is CLIENT-ONLY since the 2026-07 engine update — this
+	// is the ball's ONLY marking (the old server-side pass is gone). Mark
+	// DEEP: the AntiGravity VectorForce and its Attachment must be predicted
+	// with the part, or the engine refuses the half-marked assembly. A
+	// DescendantAdded watch covers children that replicate after the part.
+	const markOn = (instance: Instance) => {
+		pcall(() => {
+			RunService.SetPredictionMode(instance, Enum.PredictionMode.On);
+		});
+	};
+	markOn(ball);
+	for (const descendant of ball.GetDescendants()) {
+		markOn(descendant);
+	}
+	ball.DescendantAdded.Connect(markOn);
 
 	// Visual-only stand-in, built fresh (not Clone) so nothing physical
 	// comes along.

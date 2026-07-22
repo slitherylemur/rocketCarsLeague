@@ -60,36 +60,12 @@ function isServerAuthority(): boolean {
 	return readable ? result : SERVER_AUTHORITY;
 }
 
-// Phase 4: the car must be predictable on the owner's client. Client-side
-// SetPredictionMode(On) alone left the car Authoritative, so the server also
-// marks every predictable part/constraint of drivable cars On at spawn.
-// (Remote clients still set them Off locally in initVehicleSim.client.ts.)
-function canPredict(instance: Instance): boolean {
-	return (
-		instance.IsA("BasePart") ||
-		instance.IsA("Model") ||
-		instance.IsA("Folder") ||
-		instance.IsA("Attachment") ||
-		instance.IsA("Constraint") ||
-		instance.IsA("JointInstance")
-	);
-}
-
-function markPredictable(root: Instance) {
-	const [ok, err] = pcall(() => {
-		if (canPredict(root)) {
-			RunService.SetPredictionMode(root, Enum.PredictionMode.On);
-		}
-		for (const descendant of root.GetDescendants()) {
-			if (canPredict(descendant)) {
-				RunService.SetPredictionMode(descendant, Enum.PredictionMode.On);
-			}
-		}
-	});
-	if (!ok) {
-		warn(`[SpawnVehicle] markPredictable failed: ${err}`);
-	}
-}
+// Phase 4 note (updated 2026-07): SetPredictionMode became a CLIENT-ONLY
+// API — the server-side markPredictable that used to run here now just spams
+// "setPredictionMode() should not be called on the server" and does nothing.
+// Prediction marking is entirely client-side: the owner sets the car On in
+// initVehicleSim.client.ts / VehicleKeyHandler.client.ts, remote clients set
+// it Off, and the engine auto-predicts assemblies near the local character.
 
 function GetSpawnCFrame(humanoidRootPart: BasePart, vehicleModel: Model): CFrame {
 	const spawnCFrame = (game.Workspace as unknown as { spawnPartTemp: BasePart }).spawnPartTemp.CFrame;
@@ -307,10 +283,6 @@ const spawnVehicleModule = {
 			warn(`[SpawnVehicle] WaitForChild Vehicles/${newModel.Name}`);
 			(game.Workspace as unknown as { Vehicles: Folder }).Vehicles.WaitForChild(newModel.Name);
 			warn(`[SpawnVehicle] InitialiseControl; Character=${player.Character?.GetFullName() ?? "nil"}`);
-
-			if (isServerAuthority()) {
-				markPredictable(newModel);
-			}
 
 			SeatPlayer(player, newModel);
 
