@@ -49,6 +49,9 @@ const GOAL_BLAST_SPEED = 1000;
 const GOAL_BLAST_LIFT = 5500 / 9;
 const END_ANNOUNCE_TIME = 2;
 const FREE_PLAY_INTRO_TIME = 1.8;
+/** If no real match has reached Play this long after beginRound, start the
+ * shared clock anyway (see the watchdog in beginRound). */
+const CLOCK_WATCHDOG_TIME = 60;
 
 const BLUE_HEX = "#4FA8FF";
 const RED_HEX = "#FF5050";
@@ -1179,34 +1182,55 @@ function handleTeamGone(teamId: string) {
 		return;
 	}
 
-	// One team left behind mid-round. Muckabout rescue first.
-	const muck = matches.find((m) => m.muckabout);
+	// One team left behind mid-round. Rescue a partner for it: prefer the team
+	// waiting on the muckabout pitch; otherwise (rapid join/leave can strand
+	// two teams on two DIFFERENT real pitches within the same round) a team
+	// that is itself alone on another real pitch — pairing them is exactly
+	// what assignTeamToPitch does for a newly arriving team. Leaving both
+	// alone meant two "FREE PLAY — waiting for an opponent" pitches while a
+	// valid opponent existed — and, when no other match had reached Play yet,
+	// a shared clock that never started and a round that never ended.
+	let donor: PitchMatch | undefined;
 	let movedTeamId: string | undefined;
+	const muck = matches.find((m) => m.muckabout);
 	if (muck) {
 		for (const [id] of muck.sideByTeamId) {
+			donor = muck;
 			movedTeamId = id;
 			break;
 		}
 	}
-	if (muck && movedTeamId !== undefined) {
-		muck.sideByTeamId.delete(movedTeamId);
+	if (movedTeamId === undefined) {
+		for (const other of matches) {
+			if (other !== match && !other.muckabout && other.phase !== "Ended" && other.sideByTeamId.size() === 1) {
+				for (const [id] of other.sideByTeamId) {
+					donor = other;
+					movedTeamId = id;
+					break;
+				}
+				break;
+			}
+		}
+	}
+	if (donor !== undefined && movedTeamId !== undefined) {
+		donor.sideByTeamId.delete(movedTeamId);
 		matchByTeamId.set(movedTeamId, match);
 		match.sideForLadderTeam(movedTeamId);
 		const moving: Player[] = [];
-		for (const [rosterPlayer] of muck.roster) {
+		for (const [rosterPlayer] of donor.roster) {
 			const team = TeamRegistry.getTeamOf(rosterPlayer);
 			if (team && team.id === movedTeamId) {
 				moving.push(rosterPlayer);
 			}
 		}
 		for (const rosterPlayer of moving) {
-			muck.roster.delete(rosterPlayer);
+			donor.roster.delete(rosterPlayer);
 			match.assignSide(rosterPlayer);
 		}
-		if (muck.roster.size() === 0) {
-			muck.enterWaiting();
+		if (donor.roster.size() === 0) {
+			donor.enterWaiting();
 		}
-		warn(`[Football] muckabout team → ${match.pitch.folder.Name} to replace the leavers`);
+		warn(`[Football] ${donor.pitch.folder.Name}'s team → ${match.pitch.folder.Name} to replace the leavers`);
 		match.repositionVehicles();
 		if (match.teamsReady()) {
 			match.resetScores();
@@ -1219,7 +1243,7 @@ function handleTeamGone(teamId: string) {
 		return;
 	}
 
-	// No muckabout partner — leftover team free-plays until the whistle.
+	// No partner anywhere — leftover team free-plays until the whistle.
 	if (match.roster.size() > 0) {
 		if (match.phase !== "FreePlay") {
 			warn(`[Football] ${match.pitch.folder.Name} lost its opponent — free play`);
@@ -1796,12 +1820,43 @@ const footballMatch = {
 				}
 			}
 		});
+
+		// Clock watchdog: the shared clock starts at the first real kickoff — but
+		// if every pairing falls apart before any match reaches Play (leavers at
+		// the wrong moment, failed spawns), it would never start, endRoundForAll
+		// would never fire and the whole server wedged in free play forever.
+		// Once at least two teams are seated on real pitches a whistle MUST
+		// eventually come so the next beginRound can re-pair everyone.
+		task.delay(CLOCK_WATCHDOG_TIME, () => {
+			if (matchGen !== localMatchGen || clockStarted) {
+				return;
+			}
+			let seatedTeams = 0;
+			for (const match of matches) {
+				if (!match.muckabout) {
+					seatedTeams += match.sideByTeamId.size();
+				}
+			}
+			if (seatedTeams >= 2) {
+				warn("[Football] watchdog: no match reached kickoff — starting the shared clock so the round can end");
+				clockStarted = true;
+				startClock();
+			}
+		});
 		warn(`[Football] round ready: ${matches.size()} pitch(es), ${teams.size()} team(s)`);
 	},
 
 	getSpawnCFrame(player: Player): CFrame | undefined {
 		const match = matchOf(player);
 		if (!match) {
+			return undefined;
+		}
+		// Whistle straddle: a spawn that reaches here during the end-of-round
+		// interlude must NOT roster onto a pitch stop() is about to tear down —
+		// the roster entry would outlive the round as a phantom. Callers treat
+		// undefined as a failed spawn; the player rides the next auto-spawn.
+		if (match.phase === "Ended") {
+			warn(`[Football] ${player.Name} tried to spawn after the whistle — not rostering onto ${match.pitch.folder.Name}`);
 			return undefined;
 		}
 		return match.spawnCFrameFor(match.assignSide(player));
@@ -1828,6 +1883,38 @@ const footballMatch = {
 	onPlayerSpawned(player: Player) {
 		const match = matchOf(player);
 		if (!match || match.phase === "Ended") {
+			return;
+		}
+		// Round-boundary race: SpawnInPlayer can straddle the whistle — the old
+		// round's stop() destroyed the in-flight car AND wiped the roster, then
+		// this callback runs against the NEW round's match. Rostering the (now
+		// car-less, menu-bound) player would plant a phantom entry that keeps
+		// teamsReady() true, so the opponent "plays" a ghost instead of falling
+		// back to free play, and nothing cleans the entry until the next stop().
+		// Only for UNROSTERED players: a rostered player without a car is the
+		// legitimate demoed-while-spawning case — onPlayerDied has already
+		// scheduled their respawn and must keep its roster entry.
+		const vehicle = Globals.vehiclesTable[player.UserId];
+		const model = vehicle && vehicle.model;
+		const vehiclesFolder = game.Workspace.FindFirstChild("Vehicles");
+		const hasMatchCar =
+			model !== undefined &&
+			model.Parent !== undefined &&
+			vehiclesFolder !== undefined &&
+			model.IsDescendantOf(vehiclesFolder);
+		if (!hasMatchCar && !match.roster.has(player)) {
+			warn(`[Football] ${player.Name} has no match car after spawning — removing them from ${match.pitch.folder.Name}`);
+			footballMatch.leaveMatch(player);
+			// Back to the menu (same bindable the round-end sendToMenu uses) so
+			// the player is never stranded control-less; the shop auto-spawn
+			// retries them next round.
+			pcall(() => {
+				(
+					game.GetService("ServerStorage") as unknown as {
+						Events: { InitialisePlayerMenuUi: BindableEvent };
+					}
+				).Events.InitialisePlayerMenuUi.Fire(player);
+			});
 			return;
 		}
 		match.assignSide(player);
