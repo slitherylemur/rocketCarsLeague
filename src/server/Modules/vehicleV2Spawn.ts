@@ -265,6 +265,8 @@ interface DriverState {
 		instance: BasePart | Decal;
 		massless?: boolean;
 		canCollide?: boolean;
+		canTouch?: boolean;
+		canQuery?: boolean;
 		anchored?: boolean;
 		transparency: number;
 	}>;
@@ -279,6 +281,8 @@ function neutralizeInstance(state: DriverState, instance: Instance) {
 			instance,
 			massless: instance.Massless,
 			canCollide: instance.CanCollide,
+			canTouch: instance.CanTouch,
+			canQuery: instance.CanQuery,
 			anchored: instance.Anchored,
 			transparency: instance.Transparency,
 		});
@@ -353,7 +357,8 @@ export function releaseDriver(player: Player, restoreCFrame?: CFrame) {
 			if (instance.IsA("BasePart")) {
 				instance.Massless = snapshot.massless === true;
 				instance.CanCollide = snapshot.canCollide === true;
-				instance.CanTouch = true;
+				instance.CanTouch = snapshot.canTouch === true;
+				instance.CanQuery = snapshot.canQuery === true;
 				instance.Anchored = snapshot.anchored === true;
 			}
 			instance.Transparency = snapshot.transparency;

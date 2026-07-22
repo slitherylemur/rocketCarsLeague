@@ -574,7 +574,12 @@ function stepBall(ball: BasePart, dt: number) {
 		// step from the same restored state, applied through the same
 		// rollback-aware assembly velocity property the ball itself uses.
 		const dvBall = v.sub(vBeforeCarContact);
-		if (dvBall.Magnitude > 1e-3 && contact.carModel.GetAttribute("V2") !== undefined) {
+		// Peer scope: the server recoils every car; a client recoils ONLY its
+		// own predicted car — writing velocity to an authoritative remote
+		// replica would fight replication and diverge from the server run.
+		const recoilAllowed =
+			IS_SERVER || contact.carModel.GetAttribute(OWNER_USER_ID_ATTR) === LOCAL_PLAYER?.UserId;
+		if (dvBall.Magnitude > 1e-3 && recoilAllowed && contact.carModel.GetAttribute("V2") !== undefined) {
 			const recoil = ballRecoilFor(contact.carModel);
 			if (recoil > 0) {
 				const carRoot = contact.carModel.FindFirstChild("VehicleRoot");

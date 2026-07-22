@@ -224,8 +224,13 @@ function destroyRig(model: Model) {
 	for (const connection of rig.connections) {
 		connection.Disconnect();
 	}
+	// Release the camera only if THIS rig owns it — tearing down a remote car
+	// must not yank the subject off the local driven car for a frame.
+	const camera = game.Workspace.CurrentCamera;
+	if (camera && camera.CameraSubject === rig.cameraTarget) {
+		releaseCameraSubject();
+	}
 	rig.cameraTarget.Destroy();
-	releaseCameraSubject();
 }
 
 // ---- camera ----------------------------------------------------------------
@@ -284,6 +289,7 @@ function localVisiblePose(rig: Rig, dt: number): CFrame {
 		rig.offset = new CFrame();
 		rig.lastSimCF = simCF;
 		rig.lastSimVel = simVel;
+		rig.lastSimAngVel = root.AssemblyAngularVelocity;
 		return simCF;
 	}
 
@@ -520,7 +526,17 @@ function poseWheels(rig: Rig, visible: CFrame, dt: number) {
 
 function stepRig(rig: Rig, dt: number) {
 	if (rig.model.Parent === undefined || rig.root.Parent === undefined) {
-		destroyRig(rig.model);
+		const model = rig.model;
+		destroyRig(model);
+		// Streaming can drop VehicleRoot while the model persists — rebuild
+		// when it streams back in (buildRig re-waits for the root).
+		if (model.Parent !== undefined) {
+			task.delay(0.5, () => {
+				if (model.Parent !== undefined) {
+					buildRig(model);
+				}
+			});
+		}
 		return;
 	}
 	const visible = rig.isLocal ? localVisiblePose(rig, dt) : remoteVisiblePose(rig);
