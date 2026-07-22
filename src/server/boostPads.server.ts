@@ -15,6 +15,7 @@
 // the sim step.
 
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
+import * as VehicleApi from "shared/vehicleV2/VehicleApi";
 
 const RunService = game.GetService("RunService");
 
@@ -172,7 +173,8 @@ RunService.Heartbeat.Connect(() => {
 	// Snapshot the driven cars once per frame; parked cars don't eat pads.
 	const vehicles: Array<{ model: Model; position: Vector3 }> = [];
 	for (const model of vehiclesFolder.GetChildren()) {
-		const base = model.FindFirstChild("Base");
+		// V2 proxies carry the same Driving attribute on VehicleRoot.
+		const base = model.FindFirstChild("VehicleRoot") ?? model.FindFirstChild("Base");
 		if (base && base.IsA("BasePart") && base.GetAttribute(VehicleSim.VehicleAttr.Driving) === true) {
 			vehicles.push({ model: model as Model, position: base.Position });
 		}
@@ -199,7 +201,7 @@ RunService.Heartbeat.Connect(() => {
 				}
 				occupants.add(vehicle.model);
 				if (pad.active) {
-					VehicleSim.grantBoost(vehicle.model, pad.mega ? MEGA_GRANT : MINI_GRANT);
+					VehicleApi.grantBoost(vehicle.model, pad.mega ? MEGA_GRANT : MINI_GRANT);
 					pad.pickupSound.Play();
 					pad.active = false;
 					pad.reactivateAt = now + (pad.mega ? MEGA_RESPAWN : MINI_RESPAWN);

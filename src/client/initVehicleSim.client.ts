@@ -12,12 +12,14 @@
 
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
 import { VehicleModelAttr, VehicleModel } from "shared/vehicleSim/VehicleSim";
+import * as CarSim from "shared/vehicleV2/CarSim";
 
 const Players = game.GetService("Players");
 const RunService = game.GetService("RunService");
 const LocalPlayer = Players.LocalPlayer;
 
 VehicleSim.initialize();
+CarSim.initialize();
 
 // Only predictable classes — see VehicleKeyHandler.canPredict.
 function canPredict(instance: Instance): boolean {
@@ -72,9 +74,29 @@ function onVehicleAdded(model: Instance) {
 			return;
 		}
 
-		// Own car: retry registration until the replica is complete.
+		// Own car: retry registration until the replica is complete. V2 models
+		// register with CarSim; the prediction marking that legacy did on the
+		// seat edge (VehicleKeyHandler) happens here because V2 has no seat.
+		// The RenderSource is cosmetic-only and explicitly NOT predicted.
 		while (model.Parent) {
-			if (VehicleSim.registerReplica(model as VehicleModel, LocalPlayer)) {
+			if (CarSim.isV2Model(model)) {
+				if (CarSim.registerReplica(model, LocalPlayer)) {
+					const root = model.FindFirstChild("VehicleRoot");
+					if (root) {
+						setPredictionDeep(root, Enum.PredictionMode.On);
+					}
+					const hitboxes = model.FindFirstChild("Hitboxes");
+					if (hitboxes) {
+						setPredictionDeep(hitboxes, Enum.PredictionMode.On);
+					}
+					const renderSource = model.FindFirstChild("RenderSource");
+					if (renderSource) {
+						setPredictionDeep(renderSource, Enum.PredictionMode.Off);
+					}
+					print(`[CarSim] client registered own V2 car ${model.Name}`);
+					return;
+				}
+			} else if (VehicleSim.registerReplica(model as VehicleModel, LocalPlayer)) {
 				print(`[VehicleSim] client registered own car ${model.Name}`);
 				return;
 			}
@@ -88,6 +110,7 @@ vehiclesFolder.ChildAdded.Connect(onVehicleAdded);
 vehiclesFolder.ChildRemoved.Connect((model) => {
 	if (model.IsA("Model")) {
 		VehicleSim.unregister(model);
+		CarSim.unregister(model);
 	}
 });
 for (const child of vehiclesFolder.GetChildren()) {

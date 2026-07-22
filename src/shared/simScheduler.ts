@@ -7,10 +7,9 @@
 //   1. FREQUENCY. The engine default is Hz30 (the docs list "Default Value:
 //      Hz30"), while several diagnostics assumed 60 Hz. SIM_RATE_HZ below is
 //      the single source of truth; every "per tick" calculation must derive
-//      from it. 30 Hz is the deliberate stability baseline — 60 Hz roughly
-//      doubles scripted simulation AND rollback-resimulation work, so it is
-//      only worth adopting after an A/B shows a real control improvement with
-//      RCC heartbeat still ≥ 59 (flip SIM_RATE_HZ to 60 to run that A/B).
+//      from it. Vehicle V2 deliberately targets 60 Hz for responsive contact
+//      and control; the acceptance ladder must verify RCC heartbeat stays at
+//      least 59 under full-lobby rollback/resimulation load.
 //
 //   2. ORDER. Vehicle and ball callbacks had no defined relative order (it
 //      fell out of script load order, which differs between server and
@@ -18,7 +17,7 @@
 //      callback runs them in ascending `order` — vehicles strictly before
 //      balls on every peer, so a resimulated tick replays identically.
 //
-// The Hz30 enum/argument is passed defensively: the server-authority API is
+// The Hz60 enum/argument is passed defensively: the server-authority API is
 // still a beta and its signature has shifted before. If the engine rejects
 // the frequency argument the bare bind is used (which today defaults to
 // 30 Hz anyway), and the first-ticks rate check below warns loudly if the
@@ -27,7 +26,7 @@
 
 const RunService = game.GetService("RunService");
 
-export const SIM_RATE_HZ = 30;
+export const SIM_RATE_HZ = 60;
 export const SIM_DT = 1 / SIM_RATE_HZ;
 
 // Hook orders (ascending = earlier). Gaps left for future systems.
@@ -72,29 +71,37 @@ function runHooks(dt: number) {
 	}
 }
 
+// Priority of the single bound callback (documented default 2000, LOWER runs
+// first within a step). 1000 keeps the gameplay sims ahead of any
+// default-priority binds other systems might add later.
+export const SIM_BIND_PRIORITY = 1000;
+
 function bindOnce() {
 	if (bound) {
 		return;
 	}
 	bound = true;
 
-	// Enum.SimulationFrequency may not exist on this engine build — indexing
-	// an unknown EnumType throws, so probe under pcall.
-	let hz30: unknown;
+	// The documented signature is BindToSimulation(fn, Enum.StepFrequency,
+	// priority) — the old code probed Enum.SimulationFrequency, which does not
+	// exist, so it always fell through to the bare bind and ran on the engine
+	// DEFAULT (Hz30 today, but implicit). Probe the real enum under pcall
+	// (server-authority beta builds have shifted signatures before).
+	let stepFrequency: unknown;
 	pcall(() => {
-		hz30 = (Enum as unknown as Record<string, Record<string, unknown>>)["SimulationFrequency"][
+		stepFrequency = (Enum as unknown as Record<string, Record<string, unknown>>)["StepFrequency"][
 			`Hz${SIM_RATE_HZ}`
 		];
 	});
 
 	const rs = RunService as unknown as {
-		BindToSimulation(callback: (dt: number) => void, frequency?: unknown): void;
+		BindToSimulation(callback: (dt: number) => void, frequency?: unknown, priority?: number): void;
 	};
 
-	if (hz30 !== undefined) {
-		const [ok] = pcall(() => rs.BindToSimulation(runHooks, hz30));
+	if (stepFrequency !== undefined) {
+		const [ok] = pcall(() => rs.BindToSimulation(runHooks, stepFrequency, SIM_BIND_PRIORITY));
 		if (ok) {
-			boundVia = `BindToSimulation(Hz${SIM_RATE_HZ})`;
+			boundVia = `BindToSimulation(Hz${SIM_RATE_HZ},prio${SIM_BIND_PRIORITY})`;
 			print(`[SimScheduler] ${RunService.IsServer() ? "server" : "client"} bound via ${boundVia}`);
 			return;
 		}

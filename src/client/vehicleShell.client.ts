@@ -243,6 +243,12 @@ function trackVehicle(model: Instance) {
 	if (!model.IsA("Model")) {
 		return;
 	}
+	// V2 cars are rendered by carRig.client.ts (single-assembly proxy + rig);
+	// the legacy shell must never double-render one. The attribute is stamped
+	// server-side before the model is parented, so no race here.
+	if (model.GetAttribute("V2") !== undefined) {
+		return;
+	}
 	task.spawn(() => {
 		// Streaming: wait for the chassis, then build from whatever visible
 		// geometry exists; DescendantAdded catches the rest as it arrives.

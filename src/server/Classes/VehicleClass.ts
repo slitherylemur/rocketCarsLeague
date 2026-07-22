@@ -18,6 +18,10 @@ import { COLLISION_GROUPS } from "shared/collisionGroups";
 import { getUiIntentEvent } from "shared/UiIntents";
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
 import { VehicleModel, VehicleModelAttr } from "shared/vehicleSim/VehicleSim";
+import * as VehicleApi from "shared/vehicleV2/VehicleApi";
+import * as CarSim from "shared/vehicleV2/CarSim";
+import { VEHICLE_V2_ENABLED } from "shared/vehicleV2/FeatureFlags";
+import * as vehicleV2Spawn from "../Modules/vehicleV2Spawn";
 
 // The instance shape types moved to the shared sim; re-exported so the
 // subclasses and spawnVehicle keep importing them from here.
@@ -95,29 +99,41 @@ export class VehicleClass {
 	wasKilled: boolean;
 
 	initialiseVehicleModel() {
-		const base = this.model.Base;
+		// V2: restructure the cloned template into the single-assembly proxy
+		// (no physical wheels/springs/seat) and register with CarSim. The rest
+		// of this method (health bar, damage loop, ancestry hook) is shared —
+		// it addresses the simulated body through `rootPart`.
+		let rootPart: BasePart;
+		if (VEHICLE_V2_ENABLED) {
+			const root = vehicleV2Spawn.buildProxy(this.model as unknown as Model, this.model.Name, this.owner);
+			if (!root) {
+				error(`[VehicleClass] V2 proxy build failed for ${this.model.Name}`);
+			}
+			CarSim.registerServer(this.model as unknown as Model, root, this.owner);
+			rootPart = root;
+		} else {
+			const base = this.model.Base;
+			for (const wheel of this.model.Wheels.GetChildren() as VehicleSim.VehicleWheel[]) {
+				wheel.WheelMount.SpringConstraint.Damping = this.damping;
+				wheel.WheelMount.SpringConstraint.Stiffness = this.stiffness;
+				wheel.WheelMount.SpringConstraint.FreeLength = this.freeLength;
 
-		for (const wheel of this.model.Wheels.GetChildren() as VehicleSim.VehicleWheel[]) {
-			wheel.WheelMount.SpringConstraint.Damping = this.damping;
-			wheel.WheelMount.SpringConstraint.Stiffness = this.stiffness;
-			wheel.WheelMount.SpringConstraint.FreeLength = this.freeLength;
+				wheel.turn.trail.Position = new Vector3(wheel.DisplayWheel.Size.X / 2, -wheel.Wheel.Size.Y / 2 + 0.15, 0);
+				wheel.turn.trail2.Position = new Vector3(-wheel.DisplayWheel.Size.X / 2, -wheel.Wheel.Size.Y / 2 + 0.15, 0);
+			}
 
-			wheel.turn.trail.Position = new Vector3(wheel.DisplayWheel.Size.X / 2, -wheel.Wheel.Size.Y / 2 + 0.15, 0);
-			wheel.turn.trail2.Position = new Vector3(-wheel.DisplayWheel.Size.X / 2, -wheel.Wheel.Size.Y / 2 + 0.15, 0);
+			const density = this.mass / (base.Size.X * base.Size.Y * base.Size.Z);
+			base.CustomPhysicalProperties = new PhysicalProperties(density, 0.4, 0.25, 1, 1);
+			rootPart = base;
 		}
 
-		const density = this.mass / (base.Size.X * base.Size.Y * base.Size.Z);
-
-		const physPropertiesBase = new PhysicalProperties(density, 0.4, 0.25, 1, 1);
-
-		base.CustomPhysicalProperties = physPropertiesBase;
-
 		// Idle engine sound config (the renderer plays and pitches it).
-		if (this.idleSoundId !== undefined) {
+		const idleSound = rootPart.FindFirstChild("IdleSound") as Sound | undefined;
+		if (this.idleSoundId !== undefined && idleSound !== undefined) {
 			if (volumes.get(this.idleSoundId) !== undefined) {
-				base.IdleSound.Volume = volumes.get(this.idleSoundId)!;
+				idleSound.Volume = volumes.get(this.idleSoundId)!;
 			}
-			base.IdleSound.SoundId = "rbxassetid://" + this.idleSoundId;
+			idleSound.SoundId = "rbxassetid://" + this.idleSoundId;
 		}
 
 		const healthBar = (
@@ -220,23 +236,27 @@ export class VehicleClass {
 			healthBar.PlayerTag.Visible = false;
 		}
 
-		// Register with the shared simulation core: creates the constraint
-		// movers, writes the tuning/state attributes, sets wheel friction.
-		VehicleSim.register(
-			this.model,
-			{
-				mass: this.mass,
-				acceleration: this.acceleration,
-				targetVelocity: this.targetVelocity,
-				minTurnRadius: this.minTurnRadius + 5,
-				maxTurnRadius: this.maxTurnRadius,
-				maxAngularSpeed: this.maxAngularSpeed,
-				minAngularSpeed: this.minAngularSpeed,
-				boostAmount: this.boostAmount,
-				driftingMult: this.driftingMult,
-			},
-			this.owner,
-		);
+		// Legacy path only: register with the constraint-driven shared sim
+		// (creates movers, writes tuning/state attributes, sets wheel
+		// friction). V2 registered with CarSim above — the two registrations
+		// are mutually exclusive by construction (gate G-14).
+		if (!VEHICLE_V2_ENABLED) {
+			VehicleSim.register(
+				this.model,
+				{
+					mass: this.mass,
+					acceleration: this.acceleration,
+					targetVelocity: this.targetVelocity,
+					minTurnRadius: this.minTurnRadius + 5,
+					maxTurnRadius: this.maxTurnRadius,
+					maxAngularSpeed: this.maxAngularSpeed,
+					minAngularSpeed: this.minAngularSpeed,
+					boostAmount: this.boostAmount,
+					driftingMult: this.driftingMult,
+				},
+				this.owner,
+			);
+		}
 
 		// Game-state attributes (the renderer draws the health bar from these).
 		this.model.SetAttribute(VehicleModelAttr.MaxHealth, this.baseHealth);
@@ -279,12 +299,12 @@ export class VehicleClass {
 			damageQueryAccum = 0;
 			const hitboxes = this.model.FindFirstChild("Hitboxes");
 			const damageBlock = hitboxes && hitboxes.FindFirstChild("damageBlock");
-			if (!damageBlock || !damageBlock.IsA("BasePart") || !this.model.FindFirstChild("Base")) {
+			if (!damageBlock || !damageBlock.IsA("BasePart") || rootPart.Parent === undefined) {
 				return;
 			}
-			// GetVelocityAtPosition(Base.Position) == the old Base.Velocity read.
-			const velocity = -this.model.Base.CFrame.VectorToObjectSpace(
-				this.model.Base.GetVelocityAtPosition(this.model.Base.Position),
+			// GetVelocityAtPosition(root.Position) == the old Base.Velocity read.
+			const velocity = -rootPart.CFrame.VectorToObjectSpace(
+				rootPart.GetVelocityAtPosition(rootPart.Position),
 			).Z;
 			const propVelocity = math.abs(velocity) / this.targetVelocity;
 			if (propVelocity <= 0.05) {
@@ -326,7 +346,7 @@ export class VehicleClass {
 			}
 		});
 
-		healthBar.Parent = base;
+		healthBar.Parent = rootPart;
 	}
 
 	constructor(params: VehicleParams) {
@@ -394,7 +414,7 @@ export class VehicleClass {
 
 		// The Metal swap moves real mass (~11× plastic density) — flag the sim
 		// to re-measure SimMass; mass is no longer sampled per tick.
-		VehicleSim.refreshMass(model);
+		VehicleApi.refreshMass(model);
 	}
 
 	ChangeBoostTrail(EffectName: string) {
@@ -422,8 +442,10 @@ export class VehicleClass {
 			// Assign the SoundId now, not at first honk: clients download the
 			// asset ahead of time, and the owner's local-first horn playback
 			// (VehicleKeyHandler) clones a ready-to-play sound.
-			if (this.model && this.model.FindFirstChild("Base")) {
-				this.model.Base.hornSound.SoundId = this.hornSoundId;
+			const root = this.model ? VehicleApi.rootOf(this.model) : undefined;
+			const hornSoundInstance = root ? root.FindFirstChild("hornSound") : undefined;
+			if (hornSoundInstance && hornSoundInstance.IsA("Sound")) {
+				hornSoundInstance.SoundId = this.hornSoundId;
 			}
 		}
 	}
@@ -437,15 +459,24 @@ export class VehicleClass {
 	}
 
 	DealDamage(target: VehicleModel, hitBox: BasePart, velocity: number) {
-		if (target.Seats.VehicleSeat.Occupant) {
-			const targetPlayer = Players.GetPlayerFromCharacter(target.Seats.VehicleSeat.Occupant!.Parent as Model)!;
-
+		// V2 has no seat: the driver is the model's OwnerUserId association.
+		let targetPlayer: Player | undefined;
+		if (VehicleApi.isV2Model(target)) {
+			const userId = target.GetAttribute(VehicleModelAttr.OwnerUserId);
+			targetPlayer = typeIs(userId, "number") && userId !== 0 ? Players.GetPlayerByUserId(userId) : undefined;
+		} else if (target.Seats.VehicleSeat.Occupant) {
+			targetPlayer = Players.GetPlayerFromCharacter(target.Seats.VehicleSeat.Occupant!.Parent as Model);
+		}
+		if (targetPlayer !== undefined) {
 			//For TDM
 			if (this.owner!.Neutral === false && targetPlayer.Team === this.owner!.Team) {
 				return;
 			}
 
-			const targetVehicle = Globals.vehiclesTable[targetPlayer.UserId]!;
+			const targetVehicle = Globals.vehiclesTable[targetPlayer.UserId];
+			if (targetVehicle === undefined) {
+				return;
+			}
 
 			let damage = 0;
 			if (velocity < 0.5) {
@@ -465,25 +496,27 @@ export class VehicleClass {
 	}
 
 	SmokeEngine() {
-		if (this.model.Base.FindFirstChild("EngineSmoke")) {
+		const root = VehicleApi.rootOf(this.model);
+		if (!root || root.FindFirstChild("EngineSmoke")) {
 			return;
 		}
 
 		const smoke = (
 			game.GetService("ServerStorage") as unknown as { Effects: { EngineSmoke: Instance } }
 		).Effects.EngineSmoke.Clone();
-		smoke.Parent = this.model.Base;
+		smoke.Parent = root;
 	}
 
 	BurnEngine() {
-		if (this.model.Base.FindFirstChild("EngineBurn")) {
+		const root = VehicleApi.rootOf(this.model);
+		if (!root || root.FindFirstChild("EngineBurn")) {
 			return;
 		}
 
 		const burn = (
 			game.GetService("ServerStorage") as unknown as { Effects: { EngineBurn: Instance } }
 		).Effects.EngineBurn.Clone();
-		burn.Parent = this.model.Base;
+		burn.Parent = root;
 	}
 
 	TakeDamage(damage: number, attacker?: Player, hitBox?: BasePart, damagePart?: BasePart) {
@@ -535,11 +568,12 @@ export class VehicleClass {
 			}
 		).Effects.VehicleCollision.Clone();
 		effect.Parent = (game.Workspace as unknown as { GameEffects: Folder }).GameEffects;
-		if (this.model.FindFirstChild("Base")) {
+		const crashRoot = VehicleApi.rootOf(this.model);
+		if (crashRoot) {
 			const sound = (
 				game.GetService("ServerStorage") as unknown as { Sounds: { crash: Sound } }
 			).Sounds.crash.Clone();
-			sound.Parent = this.model.Base;
+			sound.Parent = crashRoot;
 			sound.Play();
 		}
 		effect.WorldCFrame = damagePart.CFrame;
@@ -572,7 +606,8 @@ export class VehicleClass {
 		).Sounds.explosion.Clone();
 		sound.Parent = effect;
 		sound.Play();
-		effect.WorldCFrame = this.model.Base.CFrame;
+		const deathRoot = VehicleApi.rootOf(this.model);
+		effect.WorldCFrame = deathRoot ? deathRoot.CFrame : this.model.GetPivot();
 
 		task.wait(0.4);
 		for (const emitter of effect.GetChildren()) {
@@ -587,29 +622,29 @@ export class VehicleClass {
 	// ---- input & ability forwarding into the shared sim ----
 
 	DriftHandler(inputState: Enum.UserInputState) {
-		VehicleSim.setDriftHeld(this.model, inputState === Enum.UserInputState.Begin);
+		VehicleApi.setDriftHeld(this.model, inputState === Enum.UserInputState.Begin);
 	}
 
 	Boost(inputState: Enum.UserInputState) {
-		VehicleSim.setBoostHeld(this.model, inputState === Enum.UserInputState.Begin);
+		VehicleApi.setBoostHeld(this.model, inputState === Enum.UserInputState.Begin);
 	}
 
 	Jump(inputState: Enum.UserInputState) {
 		if (inputState === Enum.UserInputState.Begin) {
-			VehicleSim.requestJump(this.model);
+			VehicleApi.requestJump(this.model);
 		}
 	}
 
 	Flip() {
-		VehicleSim.requestFlip(this.model);
+		VehicleApi.requestFlip(this.model);
 	}
 
 	RollLeft(inputState: Enum.UserInputState) {
-		VehicleSim.setRoll(this.model, -1, inputState === Enum.UserInputState.Begin);
+		VehicleApi.setRoll(this.model, -1, inputState === Enum.UserInputState.Begin);
 	}
 
 	RollRight(inputState: Enum.UserInputState) {
-		VehicleSim.setRoll(this.model, 1, inputState === Enum.UserInputState.Begin);
+		VehicleApi.setRoll(this.model, 1, inputState === Enum.UserInputState.Begin);
 	}
 
 	ChangeTrail(trailName: string) {
@@ -630,10 +665,11 @@ export class VehicleClass {
 
 	Horn(inputState: Enum.UserInputState) {
 		if (inputState === Enum.UserInputState.Begin) {
-			if (this.model && this.model.FindFirstChild("Base")) {
-				this.model.Base.hornSound.SoundId = this.hornSoundId;
-
-				this.model.Base.hornSound.Play();
+			const root = this.model ? VehicleApi.rootOf(this.model) : undefined;
+			const hornSoundInstance = root ? root.FindFirstChild("hornSound") : undefined;
+			if (hornSoundInstance && hornSoundInstance.IsA("Sound")) {
+				hornSoundInstance.SoundId = this.hornSoundId;
+				hornSoundInstance.Play();
 			}
 		}
 	}
@@ -650,7 +686,7 @@ export class VehicleClass {
 		);
 		// Textures are weightless today, but any future skin that swaps parts
 		// or materials must keep SimMass honest — the refresh is cheap and rare.
-		VehicleSim.refreshMass(this.model);
+		VehicleApi.refreshMass(this.model);
 	}
 
 	GetCost(): number {

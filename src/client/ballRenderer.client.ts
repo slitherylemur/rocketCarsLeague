@@ -16,7 +16,6 @@ import { BallAttr } from "shared/ballSim/BallSim";
 
 const RunService = game.GetService("RunService");
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
-const TweenService = game.GetService("TweenService");
 const Players = game.GetService("Players");
 const SoundService = game.GetService("SoundService");
 const Debris = game.GetService("Debris");
@@ -230,7 +229,7 @@ function setupBall(ball: BasePart) {
 		const bounceStamp = readStamp(BallAttr.LastBounceTime);
 		if (bounceStamp > heardBounceStamp + 1e-3) {
 			// Min audible speed must stay above per-tick gravity accumulation
-			// (~6.5 studs/s at the 30 Hz sim rate) or resting/rolling floor
+			// (~3.3 studs/s at the 60 Hz sim rate) or resting/rolling floor
 			// contact rattles.
 			playImpact(bounceSoundTemplate, readStamp(BallAttr.LastBounceSpeed), 8, 50, 1.05, 1.3);
 		}
@@ -312,39 +311,78 @@ function setupBall(ball: BasePart) {
 		ballVisual?.setSize(ball.Size);
 	});
 
-	let smoothing = false;
-	let smoothVelocity = new Vector3();
+	// Corrected-present continuity with a magnitude/context-scaled decay
+	// instead of the old binary engage/SmoothDamp: errors below the noise gate
+	// pin exactly (zero permanent lag), everything above decays with a
+	// half-life that SHRINKS as the error grows and near gameplay-critical
+	// moments (fresh car contact — goal-line truth matters more than polish),
+	// so there is no threshold below which everything snaps and above which
+	// everything lags (BALL_PHYSICS.md / VEHICLE_V2_ADR.md §3).
+	const NOISE_GATE = 0.05; // studs — pin outright below this
+	const BASE_HALF_LIFE = 0.08; // seconds at the engage-scale error
+	const MIN_HALF_LIFE = 0.02;
+	const SNAP_DISTANCE = 40; // beyond this the correction is a respawn/teleport
+	const CONTACT_FAST_WINDOW = 0.35; // seconds after a car hit: truth, fast
+	let positionOffset = new Vector3();
+	let lastSimPosition = ball.Position;
+	let lastSimVelocity = ball.AssemblyLinearVelocity;
+	let rollbackCapture: Vector3 | undefined;
+
+	// Capture what was actually visible before Roblox restores the
+	// authoritative historical state. After resimulation, the next render
+	// converts that continuity pose into an offset from the corrected present.
+	pcall(() => {
+		const connection = (
+			RunService as unknown as {
+				Rollback: RBXScriptSignal<(time: number) => void>;
+			}
+		).Rollback.Connect(() => {
+			rollbackCapture = renderer.Position;
+		});
+		modeConnections.push(connection);
+	});
 
 	const renderConn = RunService.RenderStepped.Connect((dt) => {
 		const simCF = ball.CFrame;
-
-		if (!smoothing && renderer.Position.sub(simCF.Position).Magnitude > ballTunables.smoothEngageDistance) {
-			smoothing = true;
-			smoothVelocity = new Vector3();
-		}
-
-		if (smoothing) {
-			const [smoothPos, newVelocity] = TweenService.SmoothDamp(
-				renderer.Position,
-				simCF.Position,
-				smoothVelocity,
-				ballTunables.smoothTime,
-				math.huge,
-				dt,
-			);
-			smoothVelocity = newVelocity;
-
-			if (smoothPos.sub(simCF.Position).Magnitude <= ballTunables.smoothReleaseDistance) {
-				smoothing = false;
-				renderer.CFrame = simCF;
-			} else {
-				// Keep the sim's rotation (rolling), smooth only the position.
-				renderer.CFrame = simCF.Rotation.add(smoothPos);
-			}
+		const simVelocity = ball.AssemblyLinearVelocity;
+		if (dt <= 0 || dt >= 0.25) {
+			positionOffset = new Vector3();
+			rollbackCapture = undefined;
 		} else {
-			renderer.CFrame = simCF;
+			const averageVelocity = lastSimVelocity.add(simVelocity).mul(0.5);
+			const expectedPosition = lastSimPosition.add(averageVelocity.mul(dt));
+			const discontinuity = simCF.Position.sub(expectedPosition).Magnitude;
+			const threshold = 0.08 + math.min(simVelocity.Magnitude * dt * 0.025, 0.12);
+			if (rollbackCapture !== undefined || discontinuity > threshold) {
+				const visibleBefore = rollbackCapture ?? renderer.Position;
+				const visibleContinuation = visibleBefore.add(averageVelocity.mul(dt));
+				positionOffset = visibleContinuation.sub(simCF.Position);
+				rollbackCapture = undefined;
+			}
 		}
 
+		const offsetMagnitude = positionOffset.Magnitude;
+		if (offsetMagnitude > SNAP_DISTANCE) {
+			positionOffset = new Vector3();
+		} else if (offsetMagnitude > NOISE_GATE) {
+			const engage = math.max(ballTunables.smoothEngageDistance, 0.1);
+			let halfLife = math.clamp(BASE_HALF_LIFE * (engage / offsetMagnitude), MIN_HALF_LIFE, BASE_HALF_LIFE);
+			const lastHit = ball.GetAttribute(BallAttr.LastHitTime);
+			const simTime = ball.GetAttribute(BallAttr.SimTime);
+			if (typeIs(lastHit, "number") && typeIs(simTime, "number") && simTime - lastHit < CONTACT_FAST_WINDOW) {
+				halfLife *= 0.4;
+			}
+			const remain = math.pow(0.5, dt / halfLife);
+			positionOffset = positionOffset.mul(remain);
+		} else if (offsetMagnitude > 0) {
+			positionOffset = new Vector3();
+		}
+
+		// With no active correction offset, the visual is exactly the current
+		// predicted ball: ordinary flight never acquires presentation lag.
+		renderer.CFrame = simCF.Rotation.add(simCF.Position.add(positionOffset));
+		lastSimPosition = simCF.Position;
+		lastSimVelocity = simVelocity;
 		ballVisual?.setCFrame(renderer.CFrame);
 		pollImpactSounds();
 	});

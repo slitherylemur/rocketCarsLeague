@@ -10,6 +10,12 @@
 
 import { Globals } from "./Globals";
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
+import * as VehicleApi from "shared/vehicleV2/VehicleApi";
+
+// Harness measurements read the simulated body: V2 VehicleRoot or legacy Base.
+function harnessRoot(vehicle: { model: Model }): BasePart {
+	return (VehicleApi.rootOf(vehicle.model) ?? error("[FeelHarness] no sim root")) as BasePart;
+}
 import { VehicleAttr } from "shared/vehicleSim/VehicleSim";
 import type { VehicleClass } from "./Classes/VehicleClass";
 
@@ -24,30 +30,30 @@ function round2(n: number): number {
 }
 
 function speedOf(vehicle: VehicleClass): number {
-	const base = vehicle.model.Base;
+	const base = harnessRoot(vehicle);
 	return -base.CFrame.VectorToObjectSpace(base.AssemblyLinearVelocity).Z;
 }
 
 function sideSpeedOf(vehicle: VehicleClass): number {
-	const base = vehicle.model.Base;
+	const base = harnessRoot(vehicle);
 	return base.CFrame.VectorToObjectSpace(base.AssemblyLinearVelocity).X;
 }
 
 function yawRateOf(vehicle: VehicleClass): number {
-	return vehicle.model.Base.AssemblyAngularVelocity.Y;
+	return harnessRoot(vehicle).AssemblyAngularVelocity.Y;
 }
 
 // Inputs go through the same sim entry points the remotes use. The client can
 // overwrite them if keys are pressed mid-suite — hence "hands off".
 function setInputs(vehicle: VehicleClass, throttle: number, steer: number) {
-	VehicleSim.setThrottleSteer(vehicle.model, throttle, steer);
+	VehicleApi.setThrottleSteer(vehicle.model, throttle, steer);
 }
 
 function resetCar(vehicle: VehicleClass, pose: CFrame) {
 	setInputs(vehicle, 0, 0);
-	VehicleSim.setDriftHeld(vehicle.model, false);
+	VehicleApi.setDriftHeld(vehicle.model, false);
 	vehicle.model.PivotTo(pose);
-	const base = vehicle.model.Base;
+	const base = harnessRoot(vehicle);
 	base.AssemblyLinearVelocity = new Vector3(0, 0, 0);
 	base.AssemblyAngularVelocity = new Vector3(0, 0, 0);
 	for (let i = 0; i < 45; i++) {
@@ -114,7 +120,7 @@ function runSuite(player: Player) {
 
 	// Stop the sim from reading the player's InputActions — the suite owns
 	// the input attributes for its duration.
-	VehicleSim.setScriptedInput(vehicle.model, true);
+	VehicleApi.setScriptedInput(vehicle.model, true);
 
 	// 1. acceleration + top speed
 	resetCar(vehicle, pose);
@@ -153,7 +159,7 @@ function runSuite(player: Player) {
 	resetCar(vehicle, pose);
 	setInputs(vehicle, 1, 0);
 	waitForSpeedFraction(vehicle, 0.7, 10);
-	VehicleSim.setDriftHeld(vehicle.model, true);
+	VehicleApi.setDriftHeld(vehicle.model, true);
 	setInputs(vehicle, 1, 1);
 	let driftYawSum = 0;
 	let driftN = 0;
@@ -163,7 +169,7 @@ function runSuite(player: Player) {
 		driftN += 1;
 		driftSideMax = math.max(driftSideMax, math.abs(sideSpeedOf(vehicle)));
 	});
-	VehicleSim.setDriftHeld(vehicle.model, false);
+	VehicleApi.setDriftHeld(vehicle.model, false);
 	metrics.drift_yaw_rate = round2(driftYawSum / math.max(driftN, 1));
 	metrics.drift_side_speed_max = round2(driftSideMax);
 
@@ -171,10 +177,10 @@ function runSuite(player: Player) {
 	// refills through boost pads now — Rocket League rules)
 	resetCar(vehicle, pose);
 	const readBoost = () => {
-		const value = vehicle.model.Base.GetAttribute(VehicleAttr.BoostAmount);
+		const value = harnessRoot(vehicle).GetAttribute(VehicleAttr.BoostAmount);
 		return typeIs(value, "number") ? value : 0;
 	};
-	vehicle.model.Base.SetAttribute(VehicleAttr.BoostAmount, 100);
+	harnessRoot(vehicle).SetAttribute(VehicleAttr.BoostAmount, 100);
 	setInputs(vehicle, 1, 0);
 	vehicle.Boost(Enum.UserInputState.Begin);
 	let boostTop = 0;
@@ -195,7 +201,7 @@ function runSuite(player: Player) {
 
 	// 6. jump: apex height and airtime
 	resetCar(vehicle, pose);
-	const startY = vehicle.model.Base.Position.Y;
+	const startY = harnessRoot(vehicle).Position.Y;
 	vehicle.Jump(Enum.UserInputState.Begin); // non-blocking now: the sim runs the force window
 	let apex = 0;
 	let airtime = -1;
@@ -203,8 +209,8 @@ function runSuite(player: Player) {
 	const jumpT0 = os.clock();
 	while (os.clock() - jumpT0 < 4) {
 		RunService.Heartbeat.Wait();
-		apex = math.max(apex, vehicle.model.Base.Position.Y - startY);
-		const grounded = VehicleSim.isOnGround(vehicle.model);
+		apex = math.max(apex, harnessRoot(vehicle).Position.Y - startY);
+		const grounded = VehicleApi.isOnGround(vehicle.model);
 		if (!leftGround && !grounded) {
 			leftGround = true;
 		} else if (leftGround && grounded && airtime < 0) {
@@ -217,7 +223,7 @@ function runSuite(player: Player) {
 
 	// hand control back to the client
 	resetCar(vehicle, pose);
-	VehicleSim.setScriptedInput(vehicle.model, false);
+	VehicleApi.setScriptedInput(vehicle.model, false);
 	running = false;
 
 	warn(`[feel] ==== results: ${vehicleName} ====`);

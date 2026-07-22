@@ -5,6 +5,9 @@ import { COLLISION_GROUPS } from "shared/collisionGroups";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import requireModule from "shared/requireModule";
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
+import * as VehicleApi from "shared/vehicleV2/VehicleApi";
+import * as CarSim from "shared/vehicleV2/CarSim";
+import * as vehicleV2Spawn from "./vehicleV2Spawn";
 import type { VehicleClass, VehicleModel } from "../Classes/VehicleClass";
 import type { VehicleSubClassModule } from "../Classes/VehicleSubClass/subClassTypes";
 
@@ -84,6 +87,19 @@ function GetSpawnCFrame(humanoidRootPart: BasePart, vehicleModel: Model): CFrame
 
 function SeatPlayer(player: Player, newModel: Model) {
 	spawnLog(`[SeatPlayer] ENTER player=${player.Name} vehicle=${newModel.GetFullName()}`);
+	// V2: no seat exists — the driver is an explicit association. The avatar
+	// is neutralized + anchored (never part of the predicted assembly) and
+	// the sim's Driving attribute replaces seat occupancy.
+	if (CarSim.isV2Model(newModel)) {
+		const root = VehicleApi.rootOf(newModel);
+		if (!root) {
+			warn(`[SeatPlayer] ABORT V2 model ${newModel.GetFullName()} has no VehicleRoot`);
+			return;
+		}
+		vehicleV2Spawn.associateDriver(player, newModel, root);
+		spawnLog(`[SeatPlayer] EXIT (V2 associate) vehiclePos=${root.Position}`);
+		return;
+	}
 	const seat = newModel.FindFirstChildWhichIsA("VehicleSeat", true);
 	if (!seat) {
 		warn(`[SeatPlayer] ABORT no VehicleSeat on ${newModel.GetFullName()}`);
@@ -270,6 +286,11 @@ function neutralizeSeatedCharacter(character: Model, seat: VehicleSeat) {
 }
 
 function makeWheelsUncollidable(vehicleModel: VehicleModel) {
+	// V2 proxies configure their own collision groups in buildProxy; the
+	// legacy per-part sweep would pointlessly stomp render-part groups.
+	if (CarSim.isV2Model(vehicleModel)) {
+		return;
+	}
 	const hitboxes = vehicleModel.FindFirstChild("Hitboxes");
 	for (const part of vehicleModel.GetDescendants()) {
 		if (part.IsA("BasePart")) {
@@ -370,8 +391,17 @@ const spawnVehicleModule = {
 				(newModel.FindFirstChild("TeamHighlight") as Highlight).Enabled = false;
 			}
 
-			if (newModel.Base.FindFirstChild("HealthBar")) {
-				newModel.Base.FindFirstChild("HealthBar")!.Destroy();
+			const displayRoot = VehicleApi.rootOf(newModel);
+			if (displayRoot && displayRoot.FindFirstChild("HealthBar")) {
+				displayRoot.FindFirstChild("HealthBar")!.Destroy();
+			}
+			// Garage display cars are static props: never live in a sim
+			// registry, and a V2 proxy root is anchored so the invisible
+			// physics box can't roll away from its anchored render parts
+			// (menu rotation moves the whole model via SetPrimaryPartCFrame).
+			VehicleApi.unregister(newModel);
+			if (displayRoot && CarSim.isV2Model(newModel)) {
+				displayRoot.Anchored = true;
 			}
 
 			// task.wait(.1)
@@ -491,7 +521,8 @@ const spawnVehicleModule = {
 				Globals.vehiclesTable[player.UserId]!.wasKilled = true;
 			}
 
-			VehicleSim.unregister(existing.model);
+			VehicleApi.unregister(existing.model);
+			vehicleV2Spawn.releaseDriver(player);
 
 			for (const instance of Globals.vehiclesTable[player.UserId]!.model.GetDescendants()) {
 				if (

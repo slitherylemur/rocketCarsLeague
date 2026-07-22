@@ -100,7 +100,7 @@ function playLocalHorn() {
 	if (!vehicle) {
 		return;
 	}
-	const base = vehicle.FindFirstChild("Base");
+	const base = vehicle.FindFirstChild("VehicleRoot") ?? vehicle.FindFirstChild("Base");
 	const hornSound = base && base.FindFirstChild("hornSound");
 	if (!base || !hornSound || !hornSound.IsA("Sound") || hornSound.SoundId === "") {
 		return; // no preloaded id (old save / race) — the server path still honks
@@ -745,6 +745,117 @@ function connectCharacter(Character: Model) {
 Player.CharacterAdded.Connect(connectCharacter);
 if (Player.Character) {
 	task.spawn(() => connectCharacter(Player.Character!));
+}
+
+// ---------------------------------------------------------------------------
+// V2 drive mode (no seat): derived from the own car's Driving attribute.
+// Horn bind + mobile UI mirror the seat path; prediction marking for V2 lives
+// in initVehicleSim.client.ts (root/hitboxes On at registration).
+// ---------------------------------------------------------------------------
+
+function onV2Driving(vehicleModel: Model, driving: boolean) {
+	const session = ++seatSession;
+	if (driving) {
+		managedVehicle = vehicleModel;
+		task.spawn(() => {
+			const root = vehicleModel.FindFirstChild("VehicleRoot");
+			const hornSound = root ? root.FindFirstChild("hornSound") : undefined;
+			if (hornSound && hornSound.IsA("Sound") && hornSound.SoundId !== "") {
+				pcall(() => game.GetService("ContentProvider").PreloadAsync([hornSound]));
+			}
+		});
+		task.spawn(() => {
+			let hornKey: Enum.KeyCode = Enum.KeyCode.H;
+			pcall(() => {
+				hornKey = GetKeyBinding.InvokeServer("Horn") as Enum.KeyCode;
+			});
+			if (seatSession !== session) {
+				return;
+			}
+			ContextActionService.BindAction("HonkHorn", handleHornAction as never, false, hornKey, Enum.KeyCode.ButtonY);
+		});
+		if (UserInputService.TouchEnabled) {
+			setCoreTouchControlsEnabled(false);
+			task.spawn(() => {
+				const playerGui = Player.WaitForChild("PlayerGui") as PlayerGui;
+				while (seatSession === session) {
+					const mobileInterface = playerGui.FindFirstChild("MobileInterface");
+					if (mobileInterface && mobileInterface.IsA("ScreenGui")) {
+						if (!mobileInterface.Enabled) {
+							mobileInterface.Enabled = true;
+						}
+						wireTouchButtons(mobileInterface);
+					}
+					task.wait(0.5);
+				}
+			});
+		}
+	} else {
+		managedVehicle = undefined;
+		ContextActionService.UnbindAction("HonkHorn");
+		if (UserInputService.TouchEnabled) {
+			setCoreTouchControlsEnabled(true);
+			resetTouchMovement();
+			releaseAllTouches();
+			const playerGui = Player.FindFirstChild("PlayerGui");
+			const mobileInterface = playerGui ? playerGui.FindFirstChild("MobileInterface") : undefined;
+			if (mobileInterface && mobileInterface.IsA("ScreenGui")) {
+				mobileInterface.Enabled = false;
+			}
+		}
+	}
+}
+
+{
+	let v2DrivingActive = false;
+	const tryHookV2 = (model: Instance) => {
+		if (!model.IsA("Model")) {
+			return;
+		}
+		task.spawn(() => {
+			// V2 attr + owner marker can land after the ChildAdded edge.
+			const t0 = os.clock();
+			while (model.Parent !== undefined && os.clock() - t0 < 15) {
+				if (model.GetAttribute("V2") !== undefined && model.GetAttribute("OwnerUserId") !== undefined) {
+					break;
+				}
+				task.wait(0.2);
+			}
+			if (
+				model.Parent === undefined ||
+				model.GetAttribute("V2") === undefined ||
+				model.GetAttribute("OwnerUserId") !== Player.UserId
+			) {
+				return;
+			}
+			const root = model.WaitForChild("VehicleRoot", 15);
+			if (!root || model.Parent === undefined) {
+				return;
+			}
+			const evaluate = () => {
+				const drivingNow = model.Parent !== undefined && root.GetAttribute("Driving") === true;
+				if (drivingNow === v2DrivingActive) {
+					return;
+				}
+				v2DrivingActive = drivingNow;
+				onV2Driving(model, drivingNow);
+			};
+			root.GetAttributeChangedSignal("Driving").Connect(evaluate);
+			model.AncestryChanged.Connect(() => {
+				if (model.Parent === undefined) {
+					evaluate();
+				}
+			});
+			evaluate();
+		});
+	};
+	task.spawn(() => {
+		const vehicles = game.Workspace.WaitForChild("Vehicles");
+		vehicles.ChildAdded.Connect(tryHookV2);
+		for (const child of vehicles.GetChildren()) {
+			tryHookV2(child);
+		}
+	});
 }
 
 // (The old PlayerGui.ChildAdded re-mount hook is gone — MobileInterface is

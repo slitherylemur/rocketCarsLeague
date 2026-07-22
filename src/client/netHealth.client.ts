@@ -19,6 +19,7 @@
 //   - both healthy       → steppiness is elsewhere (smoothing/interp).
 
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
+import * as CarSim from "shared/vehicleV2/CarSim";
 import { VehicleAttr, VehicleInput, VehicleModelAttr } from "shared/vehicleSim/VehicleSim";
 import { SIM_RATE_HZ } from "shared/simScheduler";
 
@@ -159,7 +160,8 @@ function localVehicleBase(): BasePart | undefined {
 	}
 	for (const model of vehicles.GetChildren()) {
 		if (model.GetAttribute(VehicleModelAttr.OwnerUserId) === LocalPlayer.UserId) {
-			const base = model.FindFirstChild("Base");
+			// V2 proxies use the same state-attribute names on VehicleRoot.
+			const base = model.FindFirstChild("VehicleRoot") ?? model.FindFirstChild("Base");
 			if (base && base.IsA("BasePart")) {
 				return base;
 			}
@@ -354,8 +356,87 @@ function describeDelta(predicted: unknown, authoritative: unknown): LuaTuple<[nu
 	return $tuple(undefined, undefined);
 }
 
+// Resimulation cost from the stats dictionary (documented: ResimulationTime).
+let resimTimeSum = 0;
+let resimTimeMax = 0;
+let resimTimeCount = 0;
+
+function recordEntryValue(instance: Instance | undefined, name: string, predicted: unknown, authoritative: unknown) {
+	const key = `${instance !== undefined ? `${instance.ClassName}:${instance.Name}` : "?"}.${name}`;
+	let stat = mispredictStats.get(key);
+	if (stat === undefined) {
+		stat = { count: 0, posDeltaSum: 0, posDeltaMax: 0, rotDegSum: 0, rotDegMax: 0, nearTeleport: 0, nearLock: 0 };
+		mispredictStats.set(key, stat);
+	}
+	stat.count += 1;
+	const [posDelta, rotDeg] = describeDelta(predicted, authoritative);
+	if (posDelta !== undefined) {
+		stat.posDeltaSum += posDelta;
+		stat.posDeltaMax = math.max(stat.posDeltaMax, posDelta);
+	}
+	if (rotDeg !== undefined) {
+		stat.rotDegSum += rotDeg;
+		stat.rotDegMax = math.max(stat.rotDegMax, rotDeg);
+	}
+	const now = os.clock();
+	if (now - lastTeleportAt < TELEPORT_CORRELATE_S) {
+		stat.nearTeleport += 1;
+	}
+	if (now - lastLockChangeAt < TELEPORT_CORRELATE_S) {
+		stat.nearLock += 1;
+	}
+}
+
+// Documented shape (creator-docs RunService.yaml):
+//   Misprediction(time: double,
+//                 instances: Array<{ Instance,
+//                                    Properties?:  { [name]: {Predicted, Authoritative} },
+//                                    Attributes?:  { [name]: {Predicted, Authoritative} } }>,
+//                 stats: { ResimulationTime: number })
+// The values describe the FIRST DIVERGENT historical step. A positional-arg
+// fallback covers older beta builds the previous parser was written against.
 function recordMisprediction(...args: unknown[]) {
 	mispredictEvents += 1;
+
+	const entries = args[1];
+	if (typeIs(entries, "table")) {
+		for (const raw of entries as Array<unknown>) {
+			if (!typeIs(raw, "table")) {
+				continue;
+			}
+			const entry = raw as Record<string, unknown>;
+			const instanceRaw = entry["Instance"];
+			const instance = typeIs(instanceRaw, "Instance") ? instanceRaw : undefined;
+			let foundAny = false;
+			for (const dictName of ["Properties", "Attributes"]) {
+				const dict = entry[dictName];
+				if (typeIs(dict, "table")) {
+					for (const [name, values] of pairs(dict as Record<string, unknown>)) {
+						if (typeIs(values, "table")) {
+							const pair = values as { Predicted?: unknown; Authoritative?: unknown };
+							recordEntryValue(instance, tostring(name), pair.Predicted, pair.Authoritative);
+							foundAny = true;
+						}
+					}
+				}
+			}
+			if (!foundAny) {
+				recordEntryValue(instance, "?", undefined, undefined);
+			}
+		}
+		const stats = args[2];
+		if (typeIs(stats, "table")) {
+			const resim = (stats as Record<string, unknown>)["ResimulationTime"];
+			if (typeIs(resim, "number")) {
+				resimTimeSum += resim;
+				resimTimeCount += 1;
+				resimTimeMax = math.max(resimTimeMax, resim);
+			}
+		}
+		return;
+	}
+
+	// Fallback: scan positional args (older event shapes).
 	let instance: Instance | undefined;
 	let name: string | undefined;
 	const values: defined[] = [];
@@ -368,31 +449,7 @@ function recordMisprediction(...args: unknown[]) {
 			values.push(arg as defined);
 		}
 	}
-	const key = `${instance !== undefined ? `${instance.ClassName}:${instance.Name}` : "?"}.${name ?? "?"}`;
-	let stat = mispredictStats.get(key);
-	if (stat === undefined) {
-		stat = { count: 0, posDeltaSum: 0, posDeltaMax: 0, rotDegSum: 0, rotDegMax: 0, nearTeleport: 0, nearLock: 0 };
-		mispredictStats.set(key, stat);
-	}
-	stat.count += 1;
-	if (values.size() >= 2) {
-		const [posDelta, rotDeg] = describeDelta(values[0], values[1]);
-		if (posDelta !== undefined) {
-			stat.posDeltaSum += posDelta;
-			stat.posDeltaMax = math.max(stat.posDeltaMax, posDelta);
-		}
-		if (rotDeg !== undefined) {
-			stat.rotDegSum += rotDeg;
-			stat.rotDegMax = math.max(stat.rotDegMax, rotDeg);
-		}
-	}
-	const now = os.clock();
-	if (now - lastTeleportAt < TELEPORT_CORRELATE_S) {
-		stat.nearTeleport += 1;
-	}
-	if (now - lastLockChangeAt < TELEPORT_CORRELATE_S) {
-		stat.nearLock += 1;
-	}
+	recordEntryValue(instance, name ?? "?", values[0], values[1]);
 }
 
 pcall(() => {
@@ -447,9 +504,17 @@ function mispredictSummary(intervalSeconds: number): string | undefined {
 	}
 	mispredictStats.clear();
 	table.sort(entries, (a, b) => a[1].count > b[1].count);
-	const lines: string[] = [
-		`${total} misprediction events (${string.format("%.1f", total / intervalSeconds)}/s), top offenders:`,
-	];
+	let header = `${total} misprediction events (${string.format("%.1f", total / intervalSeconds)}/s)`;
+	if (resimTimeCount > 0) {
+		header += `, resim avg=${string.format("%.2f", (resimTimeSum / resimTimeCount) * 1000)}ms max=${string.format(
+			"%.2f",
+			resimTimeMax * 1000,
+		)}ms`;
+		resimTimeSum = 0;
+		resimTimeMax = 0;
+		resimTimeCount = 0;
+	}
+	const lines: string[] = [`${header}, top offenders:`];
 	for (let i = 0; i < math.min(entries.size(), 5); i++) {
 		const [key, stat] = entries[i];
 		let detail = `${key} x${stat.count}`;
@@ -475,7 +540,12 @@ function mispredictSummary(intervalSeconds: number): string | undefined {
 function isSeated(): boolean {
 	const character = LocalPlayer.Character;
 	const humanoid = character && character.FindFirstChildOfClass("Humanoid");
-	return humanoid !== undefined && humanoid.SeatPart !== undefined;
+	if (humanoid !== undefined && humanoid.SeatPart !== undefined) {
+		return true;
+	}
+	// V2 has no seat — "driving" is the own car's Driving attribute.
+	const base = localVehicleBase();
+	return base !== undefined && base.GetAttribute(VehicleAttr.Driving) === true;
 }
 
 function predictedInstanceCount(): number | undefined {
@@ -510,7 +580,7 @@ task.spawn(() => {
 			continue;
 		}
 		diagAccumulator = 0;
-		const resimTicks = VehicleSim.readResimTicks();
+		const resimTicks = VehicleSim.readResimTicks() + CarSim.readResimTicks();
 		if (!isSeated()) {
 			continue; // nothing meaningful to report from the menu/lobby
 		}

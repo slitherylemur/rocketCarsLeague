@@ -1,3 +1,12 @@
+> **SUPERSEDED FOR MATCH VEHICLES (2026-07-22):** the constraint-driven car this
+> plan migrated has been replaced by the **Vehicle V2 single-assembly
+> ray-contact architecture** behind `VEHICLE_V2_ENABLED`
+> (src/shared/vehicleV2/). See `VEHICLE_V2_ADR.md` (decisions + audit),
+> `VEHICLE_V2_ACCEPTANCE.md` (gates + latency ladder) and `VEHICLE_V2_GUIDE.md`
+> (how to add cars/presets and diagnose corrections). This document remains as
+> the historical record of the server-authority migration and still describes
+> the legacy path that runs when the flag is off.
+
 # Server Authority + Client Prediction Migration Plan
 
 > **Status (2026-07-16):**

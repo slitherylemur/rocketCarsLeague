@@ -36,6 +36,13 @@
 import { BALL_NAME, BALL_FIELDS, ballTunables, ballTuneAttr } from "shared/ballSim/BallConfig";
 import { COLLISION_GROUPS } from "shared/collisionGroups";
 import { registerSimHook, SIM_ORDER_BALL } from "shared/simScheduler";
+import { getPreset } from "shared/vehicleV2/PhysicsPresets";
+import { sweepPointAabb } from "shared/ballSim/BallMath";
+
+// V2 reciprocal-recoil lookup (leaf import only — no sim<->sim cycle).
+function ballRecoilFor(carModel: Model): number {
+	return getPreset(carModel.GetAttribute("PresetId")).ballRecoil;
+}
 
 const RunService = game.GetService("RunService");
 const Players = game.GetService("Players");
@@ -350,6 +357,57 @@ function boxContact(ball: BasePart, part: BasePart, center: Vector3, radius: num
 	};
 }
 
+interface TimedCarContact {
+	contact: CarContact;
+	time: number;
+}
+
+/** Continuous relative translation sweep against an oriented car box. The
+ * sphere radius expands the box in local space, then a slab test gives the
+ * first time of impact. Current overlaps retain the exact closest-point
+ * contact so depenetration remains precise. */
+function sweptBoxContact(
+	ball: BasePart,
+	part: BasePart,
+	position: Vector3,
+	ballTravel: Vector3,
+	radius: number,
+	dt: number,
+): TimedCarContact | undefined {
+	const immediate = boxContact(ball, part, position, radius);
+	if (immediate) {
+		return { contact: immediate, time: 0 };
+	}
+	const carVelocity = part.GetVelocityAtPosition(part.Position);
+	const relativeTravel = ballTravel.sub(carVelocity.mul(dt));
+	const localStart = part.CFrame.PointToObjectSpace(position);
+	const localDelta = part.CFrame.VectorToObjectSpace(relativeTravel);
+	const expandedHalf = part.Size.div(2).add(new Vector3(radius, radius, radius));
+	const hit = sweepPointAabb(localStart, localDelta, expandedHalf);
+	if (!hit) {
+		return undefined;
+	}
+	const carModel = part.Parent !== undefined ? part.Parent.Parent : undefined;
+	if (carModel === undefined || !carModel.IsA("Model")) {
+		return undefined;
+	}
+	const normal = part.CFrame.VectorToWorldSpace(hit.normal).Unit;
+	const ballCenterAtHit = position.add(ballTravel.mul(hit.time));
+	const carCenterAtHit = part.Position.add(carVelocity.mul(dt * hit.time));
+	const hitPoint = ballCenterAtHit.sub(normal.mul(radius));
+	return {
+		time: hit.time,
+		contact: {
+			normal,
+			hitPoint,
+			penetration: 0,
+			carVelocity: part.GetVelocityAtPosition(hitPoint),
+			carModel,
+			carCenter: carCenterAtHit,
+		},
+	};
+}
+
 // A ball with no usable world filter is not simulated — but the ENGINE still
 // integrates it: with a stale/zero AntiGravity force an unanchored frozen
 // ball freefalls through the CanCollide=false floor until the spawner's
@@ -483,32 +541,52 @@ function stepBall(ball: BasePart, dt: number) {
 	// 5. car hits via the HitboxMain boxes (the overlap's include list holds
 	// exactly those parts; the name guard is belt-and-braces).
 	//
-	// One contact per tick, chosen DETERMINISTICALLY: GetPartBoundsInRadius
+	// CONTINUOUS relative detection: a fast ball or incoming car can cross the
+	// thin dimension within one 60 Hz tick. An analytic relative segment sweep
+	// against the radius-expanded oriented box finds the first time of impact.
+	//
+	// Contacts are chosen DETERMINISTICALLY: GetPartBoundsInRadius
 	// returns results in no guaranteed order, so "first box wins" could pick
 	// a different car on client and server from identical physics state — a
-	// guaranteed misprediction whenever two cars pinch the ball. The deepest
-	// penetration wins instead (ties broken by model name), which both peers
-	// compute identically from the same state.
-	const nearby = game.Workspace.GetPartBoundsInRadius(position, radius, carOverlapParams);
-	let best: CarContact | undefined;
+	// guaranteed misprediction whenever two cars pinch the ball. Ordering:
+	// earliest time wins, then deepest penetration, then model name. Up to two
+	// distinct cars resolve so opposing simultaneous contacts can form pinches.
+	const travelSweep = v.mul(dt);
+	const MAX_CAR_BROADPHASE_SPEED = 300;
+	const nearby = game.Workspace.GetPartBoundsInRadius(
+		position,
+		radius + travelSweep.Magnitude + MAX_CAR_BROADPHASE_SPEED * dt,
+		carOverlapParams,
+	);
+	const candidates: TimedCarContact[] = [];
 	for (const part of nearby) {
 		if (part.Name !== HITBOX_MAIN_NAME || part.Parent === undefined) {
 			continue;
 		}
-		const contact = boxContact(ball, part, position, radius);
-		if (contact === undefined) {
-			continue;
-		}
-		if (
-			best === undefined ||
-			contact.penetration > best.penetration + 1e-6 ||
-			(math.abs(contact.penetration - best.penetration) <= 1e-6 && contact.carModel.Name < best.carModel.Name)
-		) {
-			best = contact;
+		const timed = sweptBoxContact(ball, part, position, travelSweep, radius, dt);
+		if (timed) {
+			candidates.push(timed);
 		}
 	}
-	if (best !== undefined) {
-		const contact = best;
+	table.sort(candidates, (a, b) => {
+		if (math.abs(a.time - b.time) > 1e-9) {
+			return a.time < b.time;
+		}
+		if (math.abs(a.contact.penetration - b.contact.penetration) > 1e-6) {
+			return a.contact.penetration > b.contact.penetration;
+		}
+		return a.contact.carModel.Name < b.contact.carModel.Name;
+	});
+	const resolvedCars = new Set<Model>();
+	let resolvedContacts = 0;
+	for (const timed of candidates) {
+		const contact = timed.contact;
+		if (resolvedCars.has(contact.carModel)) {
+			continue;
+		}
+		resolvedCars.add(contact.carModel);
+		resolvedContacts += 1;
+		const vBeforeCarContact = v;
 
 		const n = contact.normal;
 		const relV = v.sub(contact.carVelocity);
@@ -535,6 +613,29 @@ function stepBall(ball: BasePart, dt: number) {
 			}
 		}
 
+		// Reciprocal car recoil (preset experiment, default 0 = Rocket League
+		// rules). Deterministic on both peers: computed inside the same sim
+		// step from the same restored state, applied through the same
+		// rollback-aware assembly velocity property the ball itself uses.
+		const dvBall = v.sub(vBeforeCarContact);
+		// Peer scope: the server recoils every car; a client recoils ONLY its
+		// own predicted car — writing velocity to an authoritative remote
+		// replica would fight replication and diverge from the server run.
+		const recoilAllowed =
+			IS_SERVER || contact.carModel.GetAttribute(OWNER_USER_ID_ATTR) === LOCAL_PLAYER?.UserId;
+		if (dvBall.Magnitude > 1e-3 && recoilAllowed && contact.carModel.GetAttribute("V2") !== undefined) {
+			const recoil = ballRecoilFor(contact.carModel);
+			if (recoil > 0) {
+				const carRoot = contact.carModel.FindFirstChild("VehicleRoot");
+				if (carRoot !== undefined && carRoot.IsA("BasePart")) {
+					const massRatio = ball.AssemblyMass / math.max(carRoot.AssemblyMass, 1);
+					carRoot.AssemblyLinearVelocity = carRoot.AssemblyLinearVelocity.sub(
+						dvBall.mul(massRatio * recoil),
+					);
+				}
+			}
+		}
+
 		// De-penetrate so the next tick starts outside the box — but never
 		// THROUGH a wall: a car pinching the ball against the arena shell (the
 		// goal mouth, classically) would otherwise push the centre past the
@@ -555,6 +656,9 @@ function stepBall(ball: BasePart, dt: number) {
 				position = position.add(push);
 			}
 			positionChanged = true;
+		}
+		if (resolvedContacts >= 2) {
+			break;
 		}
 	}
 

@@ -1,3 +1,14 @@
+> **UPDATE (2026-07-22, Vehicle V2):** car contact detection now samples the
+> relative ball-vs-hitbox motion at t=0.5/1.0 within each tick (continuous
+> detection — no tunneling through the thin hitbox dimension), with
+> deterministic earliest-time/deepest/name contact ordering; a preset-gated
+> reciprocal car recoil exists (`PhysicsPresets.ballRecoil`, default 0 = RL
+> rules); V2 cars expose the same `Hitboxes.HitboxMain` contract from a box
+> welded to the single VehicleRoot assembly (spawn-validated); and the ball
+> renderer now uses magnitude-scaled error decay with a fast-truth window
+> after car contacts instead of the binary SmoothDamp engage. Details:
+> `VEHICLE_V2_ADR.md`.
+
 # Custom Ball Physics (Rocket-League style)
 
 Why: engine physics (density/friction/elasticity) gave almost no usable

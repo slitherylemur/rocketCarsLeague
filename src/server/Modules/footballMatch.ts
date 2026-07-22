@@ -28,6 +28,7 @@ import UiState from "../ui/UiState";
 import { getUiIntentEvent } from "shared/UiIntents";
 import { BallAttr } from "shared/ballSim/BallSim";
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
+import * as VehicleApi from "shared/vehicleV2/VehicleApi";
 import { VehicleInput } from "shared/vehicleSim/VehicleSim";
 import type { Pitch } from "./PitchManager";
 
@@ -154,7 +155,7 @@ function setContextEnabled(player: Player, enabled: boolean) {
 	// case (the sim consults it at the fresh-sit enable).
 	const vehicle = Globals.vehiclesTable[player.UserId];
 	if (vehicle && vehicle.model && vehicle.model.Parent) {
-		VehicleSim.setInputLocked(vehicle.model, !enabled);
+		VehicleApi.setInputLocked(vehicle.model, !enabled);
 	}
 }
 
@@ -171,9 +172,9 @@ function clearLockCountdown(player: Player) {
 function zeroVehicleInputs(player: Player) {
 	const vehicle = Globals.vehiclesTable[player.UserId];
 	if (vehicle && vehicle.model && vehicle.model.Parent) {
-		VehicleSim.setThrottleSteer(vehicle.model, 0, 0);
-		VehicleSim.setDriftHeld(vehicle.model, false);
-		VehicleSim.setBoostHeld(vehicle.model, false);
+		VehicleApi.setThrottleSteer(vehicle.model, 0, 0);
+		VehicleApi.setDriftHeld(vehicle.model, false);
+		VehicleApi.setBoostHeld(vehicle.model, false);
 	}
 }
 
@@ -636,7 +637,7 @@ class PitchMatch {
 			}
 			// Intentional relocation: bump TeleportGen so client renderers snap
 			// to the new pose instead of smoothing a map-scale "correction".
-			VehicleSim.markTeleport(model);
+			VehicleApi.markTeleport(model);
 			model.SetPrimaryPartCFrame(spawnCFrame.Rotation.add(new Vector3(position.X, targetY, position.Z)));
 			// Wheels are SEPARATE assemblies (springs/hinges, not welds): zero
 			// every assembly, not just the body, or a wheel keeps its
@@ -713,7 +714,7 @@ class PitchMatch {
 		);
 		pcall(() => {
 			// Intentional relocation — renderers snap, not smooth (TeleportGen).
-			VehicleSim.markTeleport(model);
+			VehicleApi.markTeleport(model);
 			model.SetPrimaryPartCFrame(target);
 			for (const descendant of model.GetDescendants()) {
 				if (descendant.IsA("BasePart")) {
@@ -959,15 +960,15 @@ class PitchMatch {
 			for (const [player] of this.roster) {
 				const vehicle = Globals.vehiclesTable[player.UserId];
 				const model = vehicle && vehicle.model;
-				const base = model && model.FindFirstChild("Base");
-				if (!base || !base.IsA("BasePart")) {
+				const base = model && VehicleApi.rootOf(model);
+				if (!model || !base) {
 					continue;
 				}
 				const away = base.Position.sub(goalPart.Position);
 				const horizontal = new Vector3(away.X, 0, away.Z);
 				const outward = horizontal.Magnitude > 0.01 ? horizontal.Unit : goalPart.CFrame.LookVector;
 				const impulseVelocity = outward.mul(GOAL_BLAST_SPEED).add(new Vector3(0, GOAL_BLAST_LIFT, 0));
-				base.ApplyImpulse(impulseVelocity.mul(base.AssemblyMass));
+				VehicleApi.applyBlast(model, impulseVelocity);
 			}
 		}
 		task.spawn(() => {
@@ -1797,7 +1798,7 @@ const footballMatch = {
 		// the showcase lock so they can jump/boost/spin on the lineup without
 		// leaving it. Undone after the scene so the ladder map / summary play
 		// out over a still lineup.
-		const winnerBases: BasePart[] = [];
+		const winnerModels: Model[] = [];
 		const winnerPlayers: Player[] = [];
 		for (const match of matches) {
 			// No winner presentation for free-play-only pitches (muckabout /
@@ -1863,21 +1864,18 @@ const footballMatch = {
 								const size = model.GetExtentsSize();
 								const lifted = target!.add(new Vector3(0, size.Y / 2, 0));
 								// Intentional relocation — renderers snap (TeleportGen).
-								VehicleSim.markTeleport(model);
+								VehicleApi.markTeleport(model);
 								model.SetPrimaryPartCFrame(lifted);
-								const base = model.FindFirstChild("Base");
-								if (base && base.IsA("BasePart")) {
+								const base = VehicleApi.rootOf(model);
+								if (base) {
 									base.AssemblyLinearVelocity = new Vector3(0, 0, 0);
 									base.AssemblyAngularVelocity = new Vector3(0, 0, 0);
 								}
 								return lifted.Position;
 							});
 							if (posed) {
-								const base = model.FindFirstChild("Base");
-								if (base && base.IsA("BasePart")) {
-									VehicleSim.setShowcaseLock(base, lockPos as Vector3);
-									winnerBases.push(base);
-								}
+								VehicleApi.setShowcaseLock(model, lockPos as Vector3);
+								winnerModels.push(model);
 								// Only the winners celebrate with live controls.
 								unlockPlayer(player);
 								winnerPlayers.push(player);
@@ -1945,9 +1943,9 @@ const footballMatch = {
 			match.setAttr(FootballAttr.WinnerName, "");
 			match.setAttr(FootballAttr.FlipSide, "");
 		}
-		for (const base of winnerBases) {
-			if (base.Parent !== undefined) {
-				VehicleSim.setShowcaseLock(base, undefined);
+		for (const model of winnerModels) {
+			if (model.Parent !== undefined) {
+				VehicleApi.setShowcaseLock(model, undefined);
 			}
 		}
 		for (const player of winnerPlayers) {

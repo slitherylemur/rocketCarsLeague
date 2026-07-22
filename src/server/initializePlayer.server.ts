@@ -18,6 +18,7 @@ import { getUiIntentEvent, type UiIntentEventName } from "shared/UiIntents";
 import type { LadderTeam } from "./Modules/TeamRegistry";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import VehicleInputActions from "./Modules/vehicleInputActions";
+import { CarAttr, CarModelAttr } from "shared/vehicleV2/CarState";
 
 const HttpService = game.GetService("HttpService");
 const MarketplaceService = game.GetService("MarketplaceService");
@@ -1003,13 +1004,19 @@ function spawnInPlayerInner(player: Player, flowGen: number): boolean {
 	// clears the character.
 	const spawnedVehicle = Globals.vehiclesTable[player.UserId];
 	const spawnedSeat = spawnedVehicle?.model.FindFirstChildWhichIsA("VehicleSeat", true);
+	const spawnedRoot = spawnedVehicle?.model.FindFirstChild("VehicleRoot");
+	const v2Ready =
+		spawnedVehicle?.model.GetAttribute(CarModelAttr.V2) !== undefined &&
+		spawnedRoot !== undefined &&
+		spawnedRoot.IsA("BasePart") &&
+		spawnedRoot.GetAttribute(CarAttr.Driving) === true;
+	const legacyReady = spawnedSeat !== undefined && spawnedSeat.Occupant !== undefined;
 	if (
 		spawnedVehicle === undefined ||
 		spawnedVehicle.model.Parent === undefined ||
-		spawnedSeat === undefined ||
-		spawnedSeat.Occupant === undefined
+		(!v2Ready && !legacyReady)
 	) {
-		warn(`[SpawnInPlayer] ABORT no seated vehicle after SpawnVehicle for ${player.Name}`);
+		warn(`[SpawnInPlayer] ABORT no driven vehicle after SpawnVehicle for ${player.Name}`);
 		if (Globals.gamemode === "Football") {
 			// Un-roster cleanly (clears CB_Side/CB_PitchId/lock marker) so the
 			// pitch doesn't wait on a ghost; the shop-phase auto start retries
