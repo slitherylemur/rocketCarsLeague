@@ -54,7 +54,7 @@ const DRIFT_MIN_PROP_VEL = 0.15; // below this fraction of top speed drift disen
 const DRIFT_SIDE_FORCE_FWD = 30; // centripetal assist per unit mass while drifting forward
 const DRIFT_SIDE_FORCE_REV = 15; // centripetal assist per unit mass while drifting in reverse
 const DRIFT_YAW_RATE = 8; // rad/s of commanded yaw at full steer and full speed — a handbrake whip. Must stay clearly above grip turning's kinematic rate (v/minTurnRadius, ~4 rad/s at top speed) or the handbrake feels like nothing.
-const DRIFT_YAW_TORQUE = 300; // yaw authority per unit total mass — how hard the slide rotation is enforced; high so the handbrake whip decisively out-muscles the grip servo
+const DRIFT_YAW_TORQUE = 270; // yaw authority per unit total mass — how hard the slide rotation is enforced; high so the handbrake whip decisively out-muscles the grip servo
 const DRIFT_ENGINE_FORCE_MULT = 0.25; // engine force while sliding — a handbrake brakes; boost punches through
 const DRIFT_SPEED_SCRUB = 0.35; // handbrake drag per unit mass per stud/s of travel speed while sliding
 // Grip-mode yaw servo: while grounded and not sliding, the drift yaw mover is
@@ -72,11 +72,11 @@ const DRIFT_SPEED_SCRUB = 0.35; // handbrake drag per unit mass per stud/s of tr
 // arc that feels right; spin-out control is then ONE knob — the servo's
 // GRIP_YAW_TORQUE budget. (maxTurnRadius / minAngularSpeed tuning fields are
 // currently unused by the sim.)
-const GRIP_YAW_TORQUE = 116; // yaw authority per unit total mass for the grip servo — enforces the arc and damps roll/spin (110 let spin-outs through; 300 felt too strong; 125 turned too sharply; playtest-walked down from 180). Per-vehicle tunable.
+const GRIP_YAW_TORQUE = 112; // yaw authority per unit total mass for the grip servo — enforces the arc and damps roll/spin (110 let spin-outs through; 300 felt too strong; 125 and 116 turned too sharply; playtest-walked down from 180). Per-vehicle tunable.
 // While boosting (BoostHeld with meter > 0) the servo torque DROPS to this —
 // slightly below the normal budget, so boost-speed steering is a little
 // looser instead of forced. Friction is not changed by boost.
-const BOOST_GRIP_YAW_TORQUE = 110;
+const BOOST_GRIP_YAW_TORQUE = 100;
 // NOTE (2026-07-21): a lateral centripetal servo (LinearVelocity holding
 // sideways velocity at 0, capped ~500 studs/s²) was playtested at THREE mount
 // heights — COM, Base underside, and one chassis-height above the Base — and
@@ -96,7 +96,7 @@ const OVERSPEED_BRAKE_MULT = 2;
 // Wheel grip defaults (per-vehicle tunable). Trying 1: the 2.0 (Roblox cap)
 // grip made cornering tip the car onto two wheels — less contact grip trades
 // some slide for staying flat.
-const DRIVE_WHEEL_FRICTION = 1;
+const DRIVE_WHEEL_FRICTION = 1.2;
 const DRIFT_WHEEL_FRICTION = 0.05; // wheel friction while sliding — near-ice so the handbrake slide really carries; normal grip is restored on release
 const JUMP_FORCE_TIME = 0.16; // seconds the jump force stays on (default; per-vehicle tunable; 0.18 felt a touch long)
 // Jump force as a multiple of gravity; net accel along the launch dir during
@@ -207,6 +207,12 @@ export const VehicleAttr = {
 	JumpReadyAt: "JumpReadyAt",
 	TargetVelocity: "TargetVelocity",
 	ScriptedInput: "ScriptedInput", // FeelHarness: both peers skip IAS reads while set
+	// Control lock (kickoff/goal/respawn freezes). Replaces InputContext.Enabled
+	// flips: a disabled context froze GetState at whatever was held (stuck-key
+	// latch) and re-enables replicated a ping late. Both sims zero the movement
+	// inputs every tick this is true. Written as true/REMOVED (never false) —
+	// the predicted Base sits near the 1024-byte attribute payload cap.
+	InputLocked: "InputLocked",
 	// Rollback-safe sim state (Phase 4). EVERY value the sim carries across
 	// ticks lives in an attribute on the predicted Base: a rollback restores
 	// attributes to the server snapshot before resimulating, and any
@@ -763,10 +769,27 @@ export function registerReplica(model: VehicleModel, owner: Player): boolean {
 	return true;
 }
 
+// ---- client prediction diagnostics (netHealth.client.ts) -----------------
+// Module-level ON PURPOSE: a rollback restores attributes but never Lua
+// state, so a tick whose sim clock sits BEHIND the highest clock this module
+// has already seen can only be a rollback resimulation replay. Counting those
+// separates "constant rollbacks" from "not predicted at all" — the two very
+// different causes of steppy motion.
+const diagMaxSimTime = new Map<BasePart, number>();
+let diagResimTicks = 0;
+
+/** Rollback-resimulated ticks since the last call (client diagnostics). */
+export function readResimTicks(): number {
+	const count = diagResimTicks;
+	diagResimTicks = 0;
+	return count;
+}
+
 export function unregister(model: Model) {
 	const entry = registry.get(model);
 	if (entry) {
 		registry.delete(model);
+		diagMaxSimTime.delete(entry.base);
 		pcall(() => {
 			entry.base.SetAttribute(VehicleAttr.Driving, false);
 			setOwnerContextEnabled(entry, false);
@@ -882,6 +905,16 @@ export function setScriptedInput(model: Model, scripted: boolean) {
 	const entry = registry.get(model);
 	if (entry) {
 		entry.base.SetAttribute(VehicleAttr.ScriptedInput, scripted);
+	}
+}
+
+/** Match control lock (server): while set, both sims zero the movement
+ * inputs every tick — see the InputLocked notes on VehicleAttr. Replaces the
+ * old InputContext.Enabled flip (stuck-key latch + ping-late re-enable). */
+export function setInputLocked(model: Model, locked: boolean) {
+	const entry = registry.get(model);
+	if (entry) {
+		entry.base.SetAttribute(VehicleAttr.InputLocked, locked ? true : undefined);
 	}
 }
 
@@ -1040,24 +1073,18 @@ function getInputActions(entry: SimEntry) {
 }
 
 function setOwnerContextEnabled(entry: SimEntry, enabled: boolean) {
-	// Server only (the property replicates), and deferred out of the
-	// simulation step — InputContext.Enabled is not simulation-access.
+	// 2026-07 rework: the InputContext stays ENABLED for the whole session
+	// (see vehicleInputActions.ts) — this now drives the InputLocked
+	// attribute instead. Server only; the attribute replicates and rolls
+	// back like every other sim input.
 	if (!IS_SERVER || !entry.owner) {
 		return;
 	}
-	const owner = entry.owner;
-	task.defer(() => {
-		// An active match control lock (football kickoff/respawn freeze —
-		// CB_ControlLock, set BEFORE the car is seated) outranks the fresh-sit
-		// enable; the match layer re-enables the context when it unlocks.
-		if (enabled && owner.GetAttribute("CB_ControlLock") === true) {
-			return;
-		}
-		const context = owner.FindFirstChild(VehicleInput.ContextName);
-		if (context && context.IsA("InputContext")) {
-			context.Enabled = enabled;
-		}
-	});
+	// An active match control lock (football kickoff/respawn freeze —
+	// CB_ControlLock, set BEFORE the car is seated) outranks the fresh-sit
+	// enable; the match layer clears the lock when it unlocks.
+	const stayLocked = enabled && entry.owner.GetAttribute("CB_ControlLock") === true;
+	entry.base.SetAttribute(VehicleAttr.InputLocked, enabled && !stayLocked ? undefined : true);
 }
 
 // Reads the owner's InputActions and applies them exactly like the old
@@ -1070,14 +1097,24 @@ function readPlayerInputs(entry: SimEntry, now: number) {
 	if (!actions) {
 		return; // no context (yet) — attributes keep their last values
 	}
-	if (!actions.context.Enabled) {
-		// Disabled context (control lock / between drives): the engine stops
-		// delivering key transitions, so GetState() is frozen at whatever was
-		// held at disable time. Reading it would re-poison the zeroed input
-		// attributes with stale keys — keep the last written values instead.
+	const base = entry.base;
+
+	// Control lock (match freezes / between drives). The context itself stays
+	// enabled so key transitions NEVER stop flowing — the old Enabled flip
+	// froze GetState at whatever was held (stuck keys) and its re-enable
+	// replicated a ping late (dead inputs after GO). Zero the movement inputs
+	// every locked tick instead: idempotent same-value writes cause no
+	// rollback churn, and on unlock the very next tick reads live key state.
+	if (attrBool(base, VehicleAttr.InputLocked)) {
+		base.SetAttribute(VehicleAttr.Throttle, 0);
+		base.SetAttribute(VehicleAttr.Steer, 0);
+		base.SetAttribute(VehicleAttr.DriftHeld, false);
+		if (attrBool(base, VehicleAttr.BoostHeld)) {
+			base.SetAttribute(VehicleAttr.PrevBoostHeld, false);
+			base.SetAttribute(VehicleAttr.BoostHeld, false);
+		}
 		return;
 	}
-	const base = entry.base;
 
 	// Movement floats: per-key held-state combined like the old client code —
 	// (positive?1:0)-(negative?1:0), so both-held cancels and releasing one
@@ -1528,6 +1565,16 @@ function stepVehicle(entry: SimEntry, dt: number) {
 	// two peers' wall clocks can never agree.
 	const now = attrNumber(base, VehicleAttr.SimTime, 0) + dt;
 	base.SetAttribute(VehicleAttr.SimTime, now);
+
+	if (!IS_SERVER) {
+		const prevMax = diagMaxSimTime.get(base);
+		if (prevMax !== undefined && now < prevMax - 1e-4) {
+			diagResimTicks += 1;
+		}
+		if (prevMax === undefined || now > prevMax) {
+			diagMaxSimTime.set(base, now);
+		}
+	}
 
 	readPlayerInputs(entry, now);
 
