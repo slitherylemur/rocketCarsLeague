@@ -174,17 +174,30 @@ function fireBoolAction(actionName: string, held: boolean) {
 
 // Wire the MobileInterface buttons to Fire() the Bool actions — the same
 // programmatic path the mobile joystick uses (proven to reach the server's
-// input stream). MobileInterface is recreated from StarterGui on every
-// character respawn, so this must re-wire whenever the instance changes —
-// it's called on every seating.
+// input stream). MobileInterface is destroyed and re-mounted server-side on
+// every spawn, so this must re-wire whenever the instance changes — it's
+// retried from the per-sit maintenance loop until the buttons exist (the
+// ScreenGui and its children can replicate over several frames; dot-accessing
+// a button that hadn't arrived yet used to error and kill the whole seating
+// thread, leaving visible-but-dead buttons).
 let wiredMobileInterface: Instance | undefined = undefined;
 
-function wireTouchButtons() {
-	const mobileInterface = (Player.WaitForChild("PlayerGui") as PlayerGui).FindFirstChild("MobileInterface") as
-		| (ScreenGui & { Jump: TextButton; Drift: TextButton; Boost: TextButton })
-		| undefined;
-	if (!mobileInterface || mobileInterface === wiredMobileInterface) {
+function wireTouchButtons(mobileInterface: ScreenGui) {
+	if (mobileInterface === wiredMobileInterface) {
 		return;
+	}
+	const boost = mobileInterface.FindFirstChild("Boost");
+	const drift = mobileInterface.FindFirstChild("Drift");
+	const jump = mobileInterface.FindFirstChild("Jump");
+	if (
+		!boost ||
+		!boost.IsA("GuiButton") ||
+		!drift ||
+		!drift.IsA("GuiButton") ||
+		!jump ||
+		!jump.IsA("GuiButton")
+	) {
+		return; // children still replicating — caller retries
 	}
 	wiredMobileInterface = mobileInterface;
 
@@ -192,9 +205,9 @@ function wireTouchButtons() {
 		button.MouseButton1Down.Connect(() => fireBoolAction(actionName, true));
 		button.MouseButton1Up.Connect(() => fireBoolAction(actionName, false));
 	};
-	hook(VehicleInput.Boost, mobileInterface.Boost);
-	hook(VehicleInput.Drift, mobileInterface.Drift);
-	hook(VehicleInput.Jump, mobileInterface.Jump);
+	hook(VehicleInput.Boost, boost);
+	hook(VehicleInput.Drift, drift);
+	hook(VehicleInput.Jump, jump);
 }
 
 // ---------------------------------------------------------------------------
@@ -283,14 +296,23 @@ function syncActionStates(context: InputContext, toHardware: boolean) {
 }
 
 task.spawn(() => {
-	vehicleContext = Player.WaitForChild(VehicleInput.ContextName, 60) as InputContext | undefined;
-	if (!vehicleContext) {
-		warn("[VehicleKeyHandler] no VehicleControls InputContext arrived — vehicle inputs will be dead");
-		return;
+	// The context is built server-side on join and can arrive arbitrarily late
+	// (its keybind reads hit DataStore, which throttles under real load) —
+	// giving up after a timeout left mobile inputs dead for the whole session,
+	// so keep waiting for as long as the session lives.
+	let context: InputContext | undefined = undefined;
+	let warned = false;
+	while (context === undefined) {
+		context = Player.WaitForChild(VehicleInput.ContextName, 30) as InputContext | undefined;
+		if (!context && !warned) {
+			warned = true;
+			warn("[VehicleKeyHandler] VehicleControls InputContext still hasn't arrived — waiting");
+		}
 	}
-	const context = vehicleContext;
-	context.GetPropertyChangedSignal("Enabled").Connect(() => syncActionStates(context, context.Enabled));
-	syncActionStates(context, context.Enabled);
+	vehicleContext = context;
+	const adopted = context;
+	adopted.GetPropertyChangedSignal("Enabled").Connect(() => syncActionStates(adopted, adopted.Enabled));
+	syncActionStates(adopted, adopted.Enabled);
 });
 
 // ---------------------------------------------------------------------------
@@ -298,19 +320,24 @@ task.spawn(() => {
 // ---------------------------------------------------------------------------
 
 let seatedConnection: RBXScriptConnection | undefined = undefined;
+let seatPartConnection: RBXScriptConnection | undefined = undefined;
+
+// Whether the drive-mode setup (prediction, horn, mobile UI) is currently
+// active, and a token so per-sit background threads stop when the sit ends.
+let drivingActive = false;
+let seatSession = 0;
 
 function onSeated(humanoid: Humanoid, isSeated: boolean) {
+	const session = ++seatSession;
 	if (isSeated === true) {
-		while (humanoid.SeatPart === undefined) {
-			task.wait();
-		}
-		while (humanoid.SeatPart!.Parent === undefined) {
-			task.wait();
+		const seatPart = humanoid.SeatPart;
+		if (seatPart === undefined || seatPart.Parent === undefined) {
+			return; // evaluateSeating only enters here with a live SeatPart
 		}
 
 		// Only manage prediction for actual cars (seat lives in Model.Seats
 		// inside a model that has a Base).
-		const vehicleModel = humanoid.SeatPart!.Parent!.Parent;
+		const vehicleModel = seatPart.Parent.Parent;
 		if (vehicleModel && vehicleModel.FindFirstChild("Base")) {
 			managedVehicle = vehicleModel;
 			managedCharacter = Player.Character;
@@ -341,23 +368,44 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 
 		// Horn stays on the legacy remote (cosmetic, not part of the sim), but
 		// plays locally first — the remote only serves the other clients.
-		ContextActionService.BindAction(
-			"HonkHorn",
-			handleHornAction as never,
-			false,
-			GetKeyBinding.InvokeServer("Horn") as Enum.KeyCode,
-			Enum.KeyCode.ButtonY,
-		);
+		// The keybind fetch is a yielding RemoteFunction backed by DataStore2 —
+		// spawned + pcall'd so a slow or failing server read can neither delay
+		// nor kill the rest of the seating setup (it used to run inline BEFORE
+		// the mobile block: one throw = no mobile UI for the whole drive).
+		task.spawn(() => {
+			let hornKey: Enum.KeyCode = Enum.KeyCode.H; // DataStoreDefaults keyBinds.Horn
+			pcall(() => {
+				hornKey = GetKeyBinding.InvokeServer("Horn") as Enum.KeyCode;
+			});
+			if (seatSession !== session) {
+				return; // sit already ended while the invoke was in flight
+			}
+			ContextActionService.BindAction("HonkHorn", handleHornAction as never, false, hornKey, Enum.KeyCode.ButtonY);
+		});
 
 		if (UserInputService.TouchEnabled) {
+			// Idempotent re-bind: a missed exit edge (character destroyed while
+			// seated) can leave the old binding behind.
+			pcall(() => {
+				RunService.UnbindFromRenderStep("MobileSteer");
+			});
 			RunService.BindToRenderStep("MobileSteer", 1, mobileSteerFunction);
-			const mobileInterface = (Player as unknown as { PlayerGui: Instance }).PlayerGui.FindFirstChild(
-				"MobileInterface",
-			) as ScreenGui | undefined;
-			if (mobileInterface) {
-				mobileInterface.Enabled = true;
-			}
-			wireTouchButtons(); // re-wires if the interface was recreated on respawn
+			// The server destroys + re-mounts MobileInterface on every spawn and
+			// it can replicate AFTER the sit does — keep the UI enabled/wired
+			// from current state for the whole sit instead of sampling once.
+			task.spawn(() => {
+				const playerGui = Player.WaitForChild("PlayerGui") as PlayerGui;
+				while (seatSession === session) {
+					const mobileInterface = playerGui.FindFirstChild("MobileInterface");
+					if (mobileInterface && mobileInterface.IsA("ScreenGui")) {
+						if (!mobileInterface.Enabled) {
+							mobileInterface.Enabled = true;
+						}
+						wireTouchButtons(mobileInterface); // no-op once wired to this instance
+					}
+					task.wait(0.5);
+				}
+			});
 		}
 	} else {
 		// When the player gets out:
@@ -381,25 +429,61 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 			fireBoolAction(VehicleInput.Boost, false);
 			fireBoolAction(VehicleInput.Drift, false);
 			fireBoolAction(VehicleInput.Jump, false);
-			const mobileInterface = (Player as unknown as { PlayerGui: Instance }).PlayerGui.FindFirstChild(
-				"MobileInterface",
-			) as ScreenGui | undefined;
-			if (mobileInterface) {
+			// FindFirstChild chain (not dot-access): this branch also runs
+			// synchronously from connectCharacter's missed-exit cleanup, where a
+			// throw would kill the re-connect and leave seating unmonitored.
+			const playerGui = Player.FindFirstChild("PlayerGui");
+			const mobileInterface = playerGui ? playerGui.FindFirstChild("MobileInterface") : undefined;
+			if (mobileInterface && mobileInterface.IsA("ScreenGui")) {
 				mobileInterface.Enabled = false;
 			}
 		}
 	}
 }
 
+// Seat state is RE-DERIVED from Humanoid.SeatPart instead of trusting the
+// one-shot Seated event edge: the server seats the character within a fraction
+// of a second of LoadCharacter, so under real load (slow client boot, bad
+// ping, replication backlog) the character can arrive on the client ALREADY
+// seated — the edge fires before the listener below exists, and nothing ever
+// re-checked, leaving a touch player with no mobile UI and no control for the
+// entire match. The latch keeps the transitions idempotent however many
+// signals report the same state.
+function evaluateSeating(humanoid: Humanoid) {
+	const seatPart = humanoid.SeatPart;
+	const seatedNow = seatPart !== undefined && seatPart.Parent !== undefined;
+	if (seatedNow === drivingActive) {
+		return;
+	}
+	drivingActive = seatedNow;
+	onSeated(humanoid, seatedNow);
+}
+
 function connectCharacter(Character: Model) {
 	if (seatedConnection) {
 		seatedConnection.Disconnect();
+		seatedConnection = undefined;
+	}
+	if (seatPartConnection) {
+		seatPartConnection.Disconnect();
+		seatPartConnection = undefined;
 	}
 
 	const humanoid = Character.WaitForChild("Humanoid") as Humanoid;
-	seatedConnection = humanoid.Seated.Connect((isSeated) => {
-		onSeated(humanoid, isSeated);
-	});
+	if (Character !== Player.Character) {
+		return; // respawned while waiting — the newer connectCharacter took over
+	}
+	// Previous character was destroyed while seated (round teardown): its
+	// Seated(false) never fired, so run the exit cleanup before re-latching.
+	if (drivingActive) {
+		drivingActive = false;
+		onSeated(humanoid, false);
+	}
+	seatedConnection = humanoid.Seated.Connect(() => evaluateSeating(humanoid));
+	// SeatPart replicating late (or the sit predating this connection) still
+	// lands here even though the Seated edge itself was missed.
+	seatPartConnection = humanoid.GetPropertyChangedSignal("SeatPart").Connect(() => evaluateSeating(humanoid));
+	evaluateSeating(humanoid); // already seated by the time we connected?
 }
 
 Player.CharacterAdded.Connect(connectCharacter);
