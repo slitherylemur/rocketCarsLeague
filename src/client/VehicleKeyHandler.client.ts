@@ -181,27 +181,178 @@ function fireBoolAction(actionName: string, held: boolean) {
 
 // Wire the MobileInterface buttons to Fire() the Bool actions — the same
 // programmatic path the mobile joystick uses (proven to reach the server's
-// input stream). MobileInterface is recreated from StarterGui on every
-// character respawn, so this must re-wire whenever the instance changes —
-// it's called on every seating.
+// input stream). Every touch button is named after the InputAction it drives:
+// the left MovePad cluster fires ThrottleForward/ThrottleBackward/SteerLeft/
+// SteerRight (the exact actions W/S/A/D bind to, so ground drive and aerial
+// pitch/yaw behave identically to keyboard) and the right side fires
+// Boost/Drift/Jump/RollLeft/RollRight.
+//
+// Press semantics: press-and-hold, multi-touch safe (steer while
+// accelerating). Each press records its InputObject — touch InputObjects
+// keep their identity for the whole gesture, so the release matches exactly
+// the finger that pressed. A finger that slides well off a button releases
+// it (buttons must never stay latched), but small drift keeps the press.
+
+const TOUCH_HOLD_ACTIONS = [
+	VehicleInput.ThrottleForward,
+	VehicleInput.ThrottleBackward,
+	VehicleInput.SteerLeft,
+	VehicleInput.SteerRight,
+	VehicleInput.Drift,
+	VehicleInput.Boost,
+	VehicleInput.Jump,
+	VehicleInput.RollLeft,
+	VehicleInput.RollRight,
+];
+
+// Current held-state per action, as produced by the touch buttons only.
+// syncActionStates() consults this so a button held across a context
+// re-enable (e.g. the kickoff control-lock lifting) keeps working.
+const touchHeld = new Map<string, boolean>();
+
+function setTouchHeld(actionName: string, held: boolean) {
+	if ((touchHeld.get(actionName) === true) === held) {
+		return;
+	}
+	touchHeld.set(actionName, held);
+	fireBoolAction(actionName, held);
+}
+
+interface HeldTouch {
+	actionName: string;
+	button: GuiButton;
+	input: InputObject;
+}
+
+const heldTouches = new Array<HeldTouch>();
+
+function releaseHeldTouch(index: number) {
+	const held = heldTouches[index];
+	heldTouches.remove(index);
+	// Only drop the action if no OTHER finger still holds a button for it.
+	for (const other of heldTouches) {
+		if (other.actionName === held.actionName) {
+			return;
+		}
+	}
+	setTouchHeld(held.actionName, false);
+}
+
+function releaseAllTouches() {
+	heldTouches.clear();
+	for (const name of TOUCH_HOLD_ACTIONS) {
+		setTouchHeld(name, false);
+	}
+}
+
+// Slide-off tolerance: released once the finger is more than half a button
+// beyond the button's bounds (also absorbs any inset mismatch between
+// InputObject.Position and AbsolutePosition).
+function touchStillOverButton(button: GuiButton, position: Vector3): boolean {
+	const pos = button.AbsolutePosition;
+	const size = button.AbsoluteSize;
+	const pad = math.max(size.X, size.Y) * 0.5;
+	return (
+		position.X >= pos.X - pad &&
+		position.X <= pos.X + size.X + pad &&
+		position.Y >= pos.Y - pad &&
+		position.Y <= pos.Y + size.Y + pad
+	);
+}
+
+function hookHoldButton(actionName: string, button: GuiButton) {
+	button.InputBegan.Connect((input) => {
+		if (
+			input.UserInputType !== Enum.UserInputType.Touch &&
+			input.UserInputType !== Enum.UserInputType.MouseButton1
+		) {
+			return;
+		}
+		// Never two records for one button (a stale record would latch).
+		for (let i = heldTouches.size() - 1; i >= 0; i--) {
+			if (heldTouches[i].button === button) {
+				heldTouches.remove(i);
+			}
+		}
+		heldTouches.push({ actionName, button, input });
+		setTouchHeld(actionName, true);
+	});
+}
+
+UserInputService.InputEnded.Connect((input) => {
+	for (let i = heldTouches.size() - 1; i >= 0; i--) {
+		const held = heldTouches[i];
+		// Touch: match the exact InputObject. Mouse (Studio touch-less
+		// testing): any MouseButton1 up releases every mouse-held button.
+		if (
+			held.input === input ||
+			(input.UserInputType === Enum.UserInputType.MouseButton1 &&
+				held.input.UserInputType === Enum.UserInputType.MouseButton1)
+		) {
+			releaseHeldTouch(i);
+		}
+	}
+});
+
+UserInputService.InputChanged.Connect((input) => {
+	if (input.UserInputType !== Enum.UserInputType.Touch || heldTouches.size() === 0) {
+		return;
+	}
+	for (let i = heldTouches.size() - 1; i >= 0; i--) {
+		const held = heldTouches[i];
+		if (held.input === input && !touchStillOverButton(held.button, input.Position)) {
+			releaseHeldTouch(i);
+		}
+	}
+});
+
+// MobileInterface is recreated (ResetOnSpawn) on every character respawn, so
+// this must re-wire whenever the instance changes — called on every seating
+// and whenever a fresh MobileInterface arrives in PlayerGui.
 let wiredMobileInterface: Instance | undefined = undefined;
 
 function wireTouchButtons() {
 	const mobileInterface = (Player.WaitForChild("PlayerGui") as PlayerGui).FindFirstChild("MobileInterface") as
-		| (ScreenGui & { Jump: TextButton; Drift: TextButton; Boost: TextButton })
+		| ScreenGui
 		| undefined;
 	if (!mobileInterface || mobileInterface === wiredMobileInterface) {
 		return;
 	}
 	wiredMobileInterface = mobileInterface;
+	// The old instance (and its connections) is gone; nothing may stay held.
+	releaseAllTouches();
 
-	const hook = (actionName: string, button: GuiButton) => {
-		button.MouseButton1Down.Connect(() => fireBoolAction(actionName, true));
-		button.MouseButton1Up.Connect(() => fireBoolAction(actionName, false));
+	// The server React mount can parent the ScreenGui before its children
+	// finish building — wait for each button instead of dot-indexing.
+	const hook = (actionName: string, parent: Instance, buttonName: string) => {
+		task.spawn(() => {
+			const button = parent.WaitForChild(buttonName, 10);
+			if (wiredMobileInterface !== mobileInterface) {
+				return; // a newer interface replaced this one while waiting
+			}
+			if (button && button.IsA("GuiButton")) {
+				hookHoldButton(actionName, button);
+			} else {
+				warn(`[VehicleKeyHandler] MobileInterface button ${buttonName} missing — touch control dead`);
+			}
+		});
 	};
-	hook(VehicleInput.Boost, mobileInterface.Boost);
-	hook(VehicleInput.Drift, mobileInterface.Drift);
-	hook(VehicleInput.Jump, mobileInterface.Jump);
+
+	hook(VehicleInput.Boost, mobileInterface, "Boost");
+	hook(VehicleInput.Drift, mobileInterface, "Drift");
+	hook(VehicleInput.Jump, mobileInterface, "Jump");
+	hook(VehicleInput.RollLeft, mobileInterface, VehicleInput.RollLeft);
+	hook(VehicleInput.RollRight, mobileInterface, VehicleInput.RollRight);
+	task.spawn(() => {
+		const movePad = mobileInterface.WaitForChild("MovePad", 10);
+		if (!movePad || wiredMobileInterface !== mobileInterface) {
+			return;
+		}
+		hook(VehicleInput.ThrottleForward, movePad, VehicleInput.ThrottleForward);
+		hook(VehicleInput.ThrottleBackward, movePad, VehicleInput.ThrottleBackward);
+		hook(VehicleInput.SteerLeft, movePad, VehicleInput.SteerLeft);
+		hook(VehicleInput.SteerRight, movePad, VehicleInput.SteerRight);
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +410,10 @@ function syncActionStates(context: InputContext, toHardware: boolean) {
 	for (const name of BOOL_ACTION_NAMES) {
 		const action = context.FindFirstChild(name);
 		if (action && action.IsA("InputAction")) {
-			action.Fire(toHardware && actionHardwareHeld(action));
+			// A touch button counts as "hardware": a finger already holding
+			// the MovePad when the context re-enables (kickoff control-lock
+			// lifting) must keep working, exactly like a held key does.
+			action.Fire(toHardware && (actionHardwareHeld(action) || touchHeld.get(name) === true));
 		}
 	}
 
@@ -313,6 +467,24 @@ task.spawn(() => {
 // ---------------------------------------------------------------------------
 
 let seatedConnection: RBXScriptConnection | undefined = undefined;
+
+// True while seated in a vehicle on a touch device — gates the async
+// MobileInterface enable (the interface can mount AFTER the seat event) and
+// the PlayerGui.ChildAdded re-mount below.
+let touchSeated = false;
+
+// While driving, the Roblox core touch controls (dynamic thumbstick + jump
+// button) steer the HUMANOID, not the car — next to the custom MovePad they
+// are pure noise. GuiService.TouchControlsEnabled hides them entirely,
+// client-side and instantly reversible, without touching DevTouchMovementMode
+// (which would replicate/persist and still leaves the core jump button) or
+// the deprecated ModalEnabled. Walking around out of the car keeps the
+// normal joystick. pcall-guarded: purely cosmetic, must never kill seating.
+function setCoreTouchControlsEnabled(enabled: boolean) {
+	pcall(() => {
+		GuiService.TouchControlsEnabled = enabled;
+	});
+}
 
 function onSeated(humanoid: Humanoid, isSeated: boolean) {
 	if (isSeated === true) {
@@ -390,14 +562,26 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 		);
 
 		if (UserInputService.TouchEnabled) {
+			touchSeated = true;
+			setCoreTouchControlsEnabled(false); // the humanoid thumbstick is useless in a car
+			// The joystick sampler stays bound as a fallback: with the core
+			// controls hidden MoveDirection is always zero, so it fires nothing.
 			RunService.BindToRenderStep("MobileSteer", 1, mobileSteerFunction);
-			const mobileInterface = (Player as unknown as { PlayerGui: Instance }).PlayerGui.FindFirstChild(
-				"MobileInterface",
-			) as ScreenGui | undefined;
-			if (mobileInterface) {
-				mobileInterface.Enabled = true;
-			}
-			wireTouchButtons(); // re-wires if the interface was recreated on respawn
+			task.spawn(() => {
+				// The interface may not have mounted yet (the server React
+				// render races the first seat) and is recreated on every
+				// respawn — wait for it, then show and (re)wire.
+				const playerGui = Player.WaitForChild("PlayerGui") as PlayerGui;
+				const mobileInterface = playerGui.WaitForChild("MobileInterface", 30) as ScreenGui | undefined;
+				if (!mobileInterface) {
+					warn("[VehicleKeyHandler] MobileInterface never arrived — no touch controls this drive");
+					return;
+				}
+				if (touchSeated) {
+					mobileInterface.Enabled = true;
+					wireTouchButtons(); // re-wires if the interface was recreated on respawn
+				}
+			});
 		}
 	} else {
 		// When the player gets out:
@@ -417,14 +601,14 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 		ContextActionService.UnbindAction("HonkHorn");
 
 		if (UserInputService.TouchEnabled) {
+			touchSeated = false;
+			setCoreTouchControlsEnabled(true); // back on foot — restore the normal joystick
 			pcall(() => {
 				RunService.UnbindFromRenderStep("MobileSteer");
 			});
 			resetTouchMovement();
 			// A button still held while exiting must not stay latched.
-			fireBoolAction(VehicleInput.Boost, false);
-			fireBoolAction(VehicleInput.Drift, false);
-			fireBoolAction(VehicleInput.Jump, false);
+			releaseAllTouches();
 			const mobileInterface = (Player as unknown as { PlayerGui: Instance }).PlayerGui.FindFirstChild(
 				"MobileInterface",
 			) as ScreenGui | undefined;
@@ -449,6 +633,26 @@ function connectCharacter(Character: Model) {
 Player.CharacterAdded.Connect(connectCharacter);
 if (Player.Character) {
 	task.spawn(() => connectCharacter(Player.Character!));
+}
+
+// Remount robustness: the server destroys/recreates MobileInterface on every
+// respawn (ResetOnSpawn) and the timing races the seat events. If a fresh
+// instance arrives while we are already driving, show and re-wire it instead
+// of driving blind with no buttons for the rest of the round.
+if (UserInputService.TouchEnabled) {
+	task.spawn(() => {
+		const playerGui = Player.WaitForChild("PlayerGui") as PlayerGui;
+		playerGui.ChildAdded.Connect((child) => {
+			if (child.Name === "MobileInterface" && child.IsA("ScreenGui")) {
+				task.defer(() => {
+					if (touchSeated && child.Parent === playerGui) {
+						child.Enabled = true;
+						wireTouchButtons();
+					}
+				});
+			}
+		});
+	});
 }
 
 // ---------------------------------------------------------------------------
