@@ -166,6 +166,18 @@ export function gearMultiplier(curve: readonly (readonly [number, number])[], pr
 	return curve.size() > 0 ? curve[curve.size() - 1][1] : 1;
 }
 
+/** Signed angle (rad) from `from` to `to` about `axis`, both projected onto
+ * the plane perpendicular to `axis`. Positive follows the right-hand rule
+ * about `axis`. Returns 0 when either projection is degenerate. */
+export function signedPlanarAngle(from: Vector3, to: Vector3, axis: Vector3): number {
+	const fromPlane = from.sub(axis.mul(from.Dot(axis)));
+	const toPlane = to.sub(axis.mul(to.Dot(axis)));
+	if (fromPlane.Magnitude < 1e-6 || toPlane.Magnitude < 1e-6) {
+		return 0;
+	}
+	return math.atan2(fromPlane.Cross(toPlane).Dot(axis), fromPlane.Dot(toPlane));
+}
+
 // ---- angular servos -------------------------------------------------------
 
 /** Δ angular velocity toward `targetRate` about an axis, budgeted by

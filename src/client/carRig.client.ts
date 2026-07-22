@@ -48,13 +48,17 @@ const LocalPlayer = Players.LocalPlayer;
 
 const RENDER_BIND_NAME = "CarRigBeforeCamera";
 const RS_OFFSET_ATTR = "RS_Offset";
-const HITBOX_TRANSPARENCY = 0.5;
+const HITBOX_TRANSPARENCY = 1;
 const PREDICTED_HITBOX_COLOR = Color3.fromRGB(0, 200, 255);
 const SMOOTHED_HITBOX_COLOR = Color3.fromRGB(255, 70, 210);
 /** Deliberate presentation-only lowering after visual inspection in Studio. */
 const CHASSIS_VISUAL_LOWERING = 1.5;
 /** Cosmetic-only wheel drop, scaled by each template's authored wheel size. */
 const WHEEL_VISUAL_DROP_RADIUS_FRACTION = 0.15;
+/** Drift trail emitter sits this far above the wheel's ground contact point. */
+const TRAIL_GROUND_CLEARANCE = 0.1;
+/** Lateral half-width of the drift trail ribbon (attachment X offsets). */
+const TRAIL_HALF_WIDTH = 0.25;
 
 // Remote interpolation tuning.
 const SNAP_BUFFER = 32;
@@ -76,6 +80,10 @@ interface RigWheel {
 	contactIndex: number;
 	spinAngle: number;
 	trail?: Trail;
+	/** Local, anchored, invisible part the drift trail draws from. It tracks
+	 * the bottom of the wheel with chassis orientation, so the trail hugs the
+	 * ground instead of orbiting with the spinning wheel mesh. */
+	trailEmitter?: BasePart;
 }
 
 interface Snapshot {
@@ -264,6 +272,34 @@ function buildRig(model: Model) {
 				const localPos = child.GetAttribute(RigWheelAttr.LocalPos);
 				const radius = child.GetAttribute(RigWheelAttr.Radius);
 				const trail = child.FindFirstChildOfClass("Trail");
+				// Server-authored trail attachments live on the wheel part, which
+				// spins/steers every frame — re-point the trail at a local
+				// ground-following emitter so the ribbon lies flat on the ground.
+				// Only rear wheels (contactIndex >= 2) ever enable their trail.
+				let trailEmitter: BasePart | undefined;
+				if (trail && contactIndex >= 2) {
+					trailEmitter = new Instance("Part");
+					trailEmitter.Name = "DriftTrailEmitter";
+					trailEmitter.Size = new Vector3(TRAIL_HALF_WIDTH * 2, 0.1, 0.1);
+					trailEmitter.Transparency = 1;
+					trailEmitter.Anchored = true;
+					trailEmitter.CanCollide = false;
+					trailEmitter.CanQuery = false;
+					trailEmitter.CanTouch = false;
+					trailEmitter.CastShadow = false;
+					trailEmitter.CFrame = child.CFrame;
+					const a0 = new Instance("Attachment");
+					a0.Name = "trail";
+					a0.Position = new Vector3(-TRAIL_HALF_WIDTH, 0, 0);
+					a0.Parent = trailEmitter;
+					const a1 = new Instance("Attachment");
+					a1.Name = "trail2";
+					a1.Position = new Vector3(TRAIL_HALF_WIDTH, 0, 0);
+					a1.Parent = trailEmitter;
+					trailEmitter.Parent = game.Workspace;
+					trail.Attachment0 = a0;
+					trail.Attachment1 = a1;
+				}
 				rig.wheels.push({
 					part: child,
 					localPos: typeIs(localPos, "Vector3") ? localPos : offset.Position,
@@ -272,6 +308,7 @@ function buildRig(model: Model) {
 					contactIndex,
 					spinAngle: 0,
 					trail,
+					trailEmitter,
 				});
 			} else {
 				rig.parts.push({ part: child, offset });
@@ -342,6 +379,22 @@ function destroyRig(model: Model) {
 	rig.cameraTarget.Destroy();
 	rig.predictedHitbox?.Destroy();
 	rig.smoothedHitbox?.Destroy();
+	for (const wheel of rig.wheels) {
+		// Re-point the (replicated) trail back at its authored wheel
+		// attachments before destroying the local emitter, so a streaming
+		// rebuild never leaves the trail with dead attachment references.
+		if (wheel.trailEmitter) {
+			if (wheel.trail && wheel.trail.Parent !== undefined) {
+				pcall(() => {
+					const a0 = wheel.part.FindFirstChild("trail");
+					const a1 = wheel.part.FindFirstChild("trail2");
+					wheel.trail!.Attachment0 = a0 && a0.IsA("Attachment") ? a0 : undefined;
+					wheel.trail!.Attachment1 = a1 && a1.IsA("Attachment") ? a1 : undefined;
+				});
+			}
+			wheel.trailEmitter.Destroy();
+		}
+	}
 }
 
 // ---- camera ----------------------------------------------------------------
@@ -674,6 +727,17 @@ function poseWheels(rig: Rig, visible: CFrame, dt: number) {
 			.mul(CFrame.Angles(0, steerAngle, 0))
 			.mul(CFrame.Angles(-wheel.spinAngle, 0, 0));
 		wheel.part.CFrame = wheelCF;
+		if (wheel.trailEmitter) {
+			// Bottom of the wheel, chassis-oriented (no spin, no steer): the
+			// trail ribbon stays flat and just above the ground.
+			wheel.trailEmitter.CFrame = visible.mul(
+				new CFrame(
+					wheel.localPos.add(
+						new Vector3(0, -drop - wheelVisualDrop - wheel.radius + TRAIL_GROUND_CLEARANCE, 0),
+					),
+				),
+			);
+		}
 		if (wheel.trail) {
 			const wantTrail = drifting && wheel.contactIndex >= 2;
 			if (wheel.trail.Enabled !== wantTrail) {

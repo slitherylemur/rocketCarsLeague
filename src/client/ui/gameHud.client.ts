@@ -16,8 +16,9 @@
 //     pure publication now).
 //   * BoostMeter.Visible — the old spawnVehicle write set it true right after
 //     seating and only a remount reset it; derived here from the seat state
-//     (visible while seated in a vehicle — vehicleRenderer.client.ts keeps
-//     rendering the fill).
+//     for legacy cars, and from an owned V2 match car under Workspace.Vehicles
+//     (V2 has no VehicleSeat — associateDriver replaces seat occupancy).
+//     vehicleRenderer.client.ts keeps rendering the fill.
 //   * Deathmatch chrome (dormant FFA/TDM support) — Information/Gamemode text
 //     and the Information/Leaderboard/TeamScore visibility derive from the
 //     CB_Gamemode replicated attribute (replaces roundHandler's StarterGui
@@ -35,6 +36,7 @@
 //     remote (contract unchanged).
 
 import { getUiIntentEvent } from "shared/UiIntents";
+import { CarModelAttr } from "shared/vehicleV2/CarState";
 
 const Players = game.GetService("Players");
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
@@ -128,13 +130,20 @@ function refreshMoney() {
 
 LocalPlayer.GetAttributeChangedSignal("CB_Money").Connect(refreshMoney);
 
-// ---- boost meter (visible while seated in a car) ---------------------------
+// ---- boost meter (visible while driving a car) -----------------------------
 
 let seatConnections: RBXScriptConnection[] = [];
+let legacySeated = false;
+const ownedV2Cars = new Set<Instance>();
 
-function refreshBoostMeter(humanoid: Humanoid | undefined) {
+function refreshBoostMeter() {
+	gameGui.BoostMeter.Visible = legacySeated || ownedV2Cars.size() > 0;
+}
+
+function refreshSeatState(humanoid: Humanoid | undefined) {
 	const seat = humanoid ? humanoid.SeatPart : undefined;
-	gameGui.BoostMeter.Visible = seat !== undefined && seat.IsA("VehicleSeat");
+	legacySeated = seat !== undefined && seat.IsA("VehicleSeat");
+	refreshBoostMeter();
 }
 
 function watchCharacterSeat(character: Model) {
@@ -142,15 +151,15 @@ function watchCharacterSeat(character: Model) {
 		connection.Disconnect();
 	}
 	seatConnections = [];
-	refreshBoostMeter(undefined);
+	refreshSeatState(undefined);
 	task.spawn(() => {
 		const humanoid = character.WaitForChild("Humanoid", 15) as Humanoid | undefined;
 		if (!humanoid || character.Parent === undefined) {
 			return;
 		}
-		seatConnections.push(humanoid.Seated.Connect(() => refreshBoostMeter(humanoid)));
-		seatConnections.push(humanoid.GetPropertyChangedSignal("SeatPart").Connect(() => refreshBoostMeter(humanoid)));
-		refreshBoostMeter(humanoid);
+		seatConnections.push(humanoid.Seated.Connect(() => refreshSeatState(humanoid)));
+		seatConnections.push(humanoid.GetPropertyChangedSignal("SeatPart").Connect(() => refreshSeatState(humanoid)));
+		refreshSeatState(humanoid);
 	});
 }
 
@@ -160,11 +169,39 @@ LocalPlayer.CharacterRemoving.Connect(() => {
 		connection.Disconnect();
 	}
 	seatConnections = [];
-	refreshBoostMeter(undefined);
+	refreshSeatState(undefined);
 });
 if (LocalPlayer.Character) {
 	watchCharacterSeat(LocalPlayer.Character);
 }
+
+// V2 cars are characterless and have no VehicleSeat, so the Humanoid.SeatPart
+// derivation above never fires for them. Derive instead from a match car in
+// Workspace.Vehicles owned by the local player: OwnerUserId/V2 are stamped
+// before the server parents the model, so the attributes are already
+// replicated when ChildAdded fires. Garage/menu display cars are parented
+// elsewhere and never match.
+task.spawn(() => {
+	const vehiclesFolder = game.Workspace.WaitForChild("Vehicles");
+	const onVehicleAdded = (model: Instance) => {
+		if (
+			model.GetAttribute(CarModelAttr.V2) !== undefined &&
+			model.GetAttribute(CarModelAttr.OwnerUserId) === LocalPlayer.UserId
+		) {
+			ownedV2Cars.add(model);
+			refreshBoostMeter();
+		}
+	};
+	vehiclesFolder.ChildAdded.Connect(onVehicleAdded);
+	vehiclesFolder.ChildRemoved.Connect((model) => {
+		if (ownedV2Cars.delete(model)) {
+			refreshBoostMeter();
+		}
+	});
+	for (const child of vehiclesFolder.GetChildren()) {
+		onVehicleAdded(child);
+	}
+});
 
 // ---- gamemode chrome (Information / Leaderboard / TeamScore) ---------------
 // Replaces roundHandler's StarterGui template mutations. Football (the only

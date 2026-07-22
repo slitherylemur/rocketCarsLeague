@@ -96,11 +96,19 @@ export interface PhysicsPreset {
 	readonly turnScrubFrac: number;
 
 	// ---- drift / handbrake ----
-	/** Commanded yaw rate at full steer + full speed while sliding (rad/s). */
-	readonly driftYawRate: number;
-	/** Yaw servo accel budget while sliding (decisively above grip). */
+	// Slip-angle drift model: steer commands a target angle between the car's
+	// facing and its travel direction; a yaw servo chases that moving target.
+	// Releasing steer realigns the nose with the slide, and left-right flicks
+	// swing through neutral (pendulum) instead of freezing at a fixed angle.
+	/** Slip angle commanded at full steer while sliding (rad). */
+	readonly driftMaxSlipAngle: number;
+	/** Proportional gain from slip-angle error to yaw-rate command (1/s). */
+	readonly driftSlipGain: number;
+	/** Yaw-rate command cap while sliding (rad/s) — bounds pendulum swings. */
+	readonly driftMaxSlipRate: number;
+	/** Yaw servo accel budget while sliding (rad/s²) — lower = swings ramp. */
 	readonly driftYawAccel: number;
-	/** Engine force multiplier while sliding (a handbrake brakes). */
+	/** Engine force multiplier while sliding (throttle powers the arc). */
 	readonly driftEngineMult: number;
 	/** Speed scrub per unit travel speed while sliding (1/s). */
 	readonly driftSpeedScrub: number;
@@ -201,13 +209,15 @@ const BASE = {
 	maxYawRate: 1.9, // radius starts widening above ~turnRadius×1.9 studs/s
 	rearPivotFrac: 1.5, // >1: exaggerated nose-led pivot behind the rear axle
 	turnScrubFrac: 0.1,
-	driftYawRate: 8,
-	driftYawAccel: 270,
-	driftEngineMult: 0.25,
-	driftSpeedScrub: 0.35,
-	driftSideAccel: 30,
-	driftMaxSideFrac: 0.45,
-	driftMinPropVel: 0.15,
+	driftMaxSlipAngle: math.rad(65),
+	driftSlipGain: 7,
+	driftMaxSlipRate: 4,
+	driftYawAccel: 50,
+	driftEngineMult: 0.9,
+	driftSpeedScrub: 0.05,
+	driftSideAccel: 110,
+	driftMaxSideFrac: 0.65,
+	driftMinPropVel: 0.1,
 	boostMax: 100,
 	boostDrainPerSecond: 20,
 	boostAccelMult: 5, // legacy BOOST_FORCE_MULT 4 × DRIVE_FORCE_MULT 1.25
@@ -276,14 +286,14 @@ export const PHYSICS_PRESETS: Record<string, PhysicsPreset> = {
 		topSpeed: 104, // Abrams/APC class 100-130 × 0.8 envelope
 		driveAccel: 55,
 		turnRadius: 54,
-		driftYawRate: 6.5,
+		driftMaxSlipAngle: math.rad(52),
 	}),
 	Truck: preset("Truck", {
 		boxSize: new Vector3(8, 4, 18),
 		topSpeed: 108,
 		driveAccel: 55,
 		turnRadius: 56,
-		driftYawRate: 6.5,
+		driftMaxSlipAngle: math.rad(52),
 	}),
 };
 

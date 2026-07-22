@@ -28,6 +28,7 @@ import {
 	gearMultiplier,
 	impulseAtPoint,
 	servoDeltaOmega,
+	signedPlanarAngle,
 	suspensionImpulse,
 	tireAccel,
 } from "shared/vehicleV2/CarMath";
@@ -789,12 +790,18 @@ function stepCar(entry: CarEntry, dt: number) {
 	}
 
 	// ---- drift state (hysteresis) ----
+	// Gated on planar TRAVEL speed, not nose-forward speed: in a deep slide
+	// the nose points driftMaxSlipAngle away from travel, so forward speed
+	// under-reads by cos(slip) and a nose-based gate cancels exactly the
+	// slides the model is built for.
 	const driftHeld = input.drift;
 	const wasDrifting = attrBool(root, CarAttr.DriftEngaged);
+	const planarVel = v.sub(groundNormal.mul(v.Dot(groundNormal)));
+	const travelPropVel = planarVel.Magnitude / preset.topSpeed;
 	let drifting = false;
-	if (driftHeld && wheelsGrounded && entry.propVelocity >= preset.driftMinPropVel) {
+	if (driftHeld && wheelsGrounded && travelPropVel >= preset.driftMinPropVel) {
 		drifting = true;
-	} else if (wasDrifting && driftHeld && wheelsGrounded && entry.propVelocity >= preset.driftMinPropVel * 0.7) {
+	} else if (wasDrifting && driftHeld && wheelsGrounded && travelPropVel >= preset.driftMinPropVel * 0.7) {
 		drifting = true; // regrip hysteresis: slides survive briefly below the engage speed
 	}
 	if (drifting !== wasDrifting) {
@@ -957,8 +964,24 @@ function stepCar(entry: CarEntry, dt: number) {
 	if (grounded) {
 		const dir = entry.velocity >= 0 ? 1 : -1;
 		if (drifting) {
-			const rate = -input.steer * preset.driftYawRate * dir * math.min(entry.propVelocity * 2, 1);
-			addAxisServo(entry, w, WORLD_UP, rate, preset.driftYawAccel, dt);
+			// Slip-angle drift: steer commands a target angle between facing and
+			// travel direction; the servo chases that moving frame. Releasing
+			// steer realigns the nose with the slide (target slip 0) and flicks
+			// swing through neutral — the body angle is always referenced to the
+			// velocity vector, never held in a vacuum.
+			if (planarVel.Magnitude > 1) {
+				const travel = planarVel.Unit.mul(dir);
+				// Nose-right-of-travel is a NEGATIVE planar angle about the
+				// normal, so steering right (+) commands a negative slip target.
+				const slip = signedPlanarAngle(travel, look, groundNormal);
+				const slipTargetAngle = -input.steer * preset.driftMaxSlipAngle * dir;
+				const rate = math.clamp(
+					(slipTargetAngle - slip) * preset.driftSlipGain,
+					-preset.driftMaxSlipRate,
+					preset.driftMaxSlipRate,
+				);
+				addAxisServo(entry, w, groundNormal, rate, preset.driftYawAccel, dt);
+			}
 		} else if (wheelsGrounded) {
 			const yawAccel = boosting ? preset.boostYawAccel : preset.gripYawAccel;
 			addAxisServo(entry, w, WORLD_UP, gripYawRate, yawAccel, dt);

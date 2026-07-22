@@ -86,7 +86,7 @@ export const ballTunables: BallTunables = {
 	worldBounce: 0.6,
 	worldFriction: 0.2,
 	carBounce: 0.5,
-	hitPower: 1.4,
+	hitPower: 1.2,
 	hitVerticalScale: 0.6,
 	hitCooldown: 0.15,
 	smoothEngageDistance: 2,

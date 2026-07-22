@@ -45,7 +45,9 @@ and handling, while render cosmetics never feed simulation (gate G-10).
 - Handling levers, in the order that usually matters:
   - `turnRadius` + `gripYawAccel` — cornering arc and how hard it's enforced
   - `lateralGripAccel` / `frictionBudgetAccel` — slide threshold
-  - `driftYawRate` / `driftGripMult` / `driftSpeedScrub` — handbrake feel
+  - `driftMaxSlipAngle` / `driftSlipGain` / `driftSideAccel` — slide angle,
+    how eagerly the nose chases it, and how tight the drift arc pulls
+  - `driftGripMult` / `driftSpeedScrub` — how icy the slide is / speed cost
   - `suspensionOmega` / `suspensionZeta` — ride stiffness (keep ζ ≥ 0.8)
   - `suspensionTorqueArmScale` — body pitch/roll response (0 = flat)
 - Never read model geometry into the sim. Never store cross-tick state

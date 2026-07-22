@@ -17,6 +17,7 @@ import {
 	offsetMagnitudes,
 	recomputeOffset,
 	servoDeltaOmega,
+	signedPlanarAngle,
 	suspensionImpulse,
 	tireAccel,
 } from "shared/vehicleV2/CarMath";
@@ -118,6 +119,22 @@ checkNear(directedThrustAccel(200, 1, 100), 100, 1e-9, "boost respects accelerat
 	checkNear(gearMultiplier(curve, 0.5), 0.55 + 0.7 - 0.5, 1e-9, "gear curve mid");
 	checkNear(gearMultiplier(curve, 1), 0.3, 1e-9, "gear curve at top speed");
 	checkNear(gearMultiplier(curve, 2), 0.3, 1e-9, "beyond top speed uses last gear torque");
+}
+
+// ---- slip angle (drift model) ----------------------------------------------
+{
+	const up = new Vector3(0, 1, 0);
+	const north = new Vector3(0, 0, -1);
+	checkNear(signedPlanarAngle(north, north, up), 0, 1e-9, "aligned vectors have zero slip");
+	// Nose 30° right of travel (clockwise from above) = NEGATIVE angle about +Y.
+	const noseRight = new Vector3(math.sin(math.rad(30)), 0, -math.cos(math.rad(30)));
+	checkNear(signedPlanarAngle(north, noseRight, up), -math.rad(30), 1e-9, "nose right of travel is negative");
+	checkNear(signedPlanarAngle(noseRight, north, up), math.rad(30), 1e-9, "swapping arguments flips the sign");
+	// Out-of-plane components are projected away before measuring.
+	const tilted = noseRight.add(up.mul(5));
+	checkNear(signedPlanarAngle(north, tilted, up), -math.rad(30), 1e-9, "axis component is projected out");
+	checkNear(signedPlanarAngle(north, north.mul(-1), up), math.pi, 1e-6, "opposed vectors measure pi");
+	checkNear(signedPlanarAngle(north, up, up), 0, 1e-9, "degenerate projection returns 0");
 }
 
 // ---- servo -----------------------------------------------------------------
