@@ -41,6 +41,7 @@ import {
 import { getPresetForBox } from "shared/vehicleV2/PhysicsPresets";
 import * as CarSim from "shared/vehicleV2/CarSim";
 import { RENDER_DEBUG_OVERLAY } from "shared/vehicleV2/FeatureFlags";
+import { maintainGameplayCarCamera, releaseGameplayCarCamera } from "shared/GameplayCarCamera";
 
 const RunService = game.GetService("RunService");
 const Players = game.GetService("Players");
@@ -135,7 +136,6 @@ interface Rig {
 }
 
 const rigs = new Map<Model, Rig>();
-let cameraSubjectOwned = false;
 
 // ---- telemetry (read by netHealth) ----------------------------------------
 
@@ -347,7 +347,11 @@ function buildRig(model: Model) {
 		rig.connections.push(model.DescendantAdded.Connect(adopt));
 		rig.connections.push(
 			model.GetAttributeChangedSignal(CarModelAttr.OwnerUserId).Connect(() => {
-				rig.isLocal = model.GetAttribute(CarModelAttr.OwnerUserId) === LocalPlayer.UserId;
+				const isLocal = model.GetAttribute(CarModelAttr.OwnerUserId) === LocalPlayer.UserId;
+				if (rig.isLocal && !isLocal) {
+					releaseGameplayCarCamera(rig.cameraTarget);
+				}
+				rig.isLocal = isLocal;
 			}),
 		);
 	});
@@ -364,10 +368,7 @@ function destroyRig(model: Model) {
 	}
 	// Release the camera only if THIS rig owns it — tearing down a remote car
 	// must not yank the subject off the local driven car for a frame.
-	const camera = game.Workspace.CurrentCamera;
-	if (camera && camera.CameraSubject === rig.cameraTarget) {
-		releaseCameraSubject();
-	}
+	releaseGameplayCarCamera(rig.cameraTarget);
 	// Hand the billboard back to its parent part before its adornee dies —
 	// the model (and billboard) may outlive this rig (streaming rebuild).
 	pcall(() => {
@@ -394,41 +395,6 @@ function destroyRig(model: Model) {
 			}
 			wheel.trailEmitter.Destroy();
 		}
-	}
-}
-
-// ---- camera ----------------------------------------------------------------
-
-function releaseCameraSubject() {
-	if (!cameraSubjectOwned) {
-		return;
-	}
-	cameraSubjectOwned = false;
-	const camera = game.Workspace.CurrentCamera;
-	if (!camera) {
-		return;
-	}
-	const character = LocalPlayer.Character;
-	const humanoid = character ? character.FindFirstChildOfClass("Humanoid") : undefined;
-	camera.CameraSubject = humanoid;
-}
-
-function updateCameraSubject(rig: Rig, driving: boolean) {
-	const camera = game.Workspace.CurrentCamera;
-	if (!camera) {
-		return;
-	}
-	if (driving) {
-		if (camera.CameraSubject !== rig.cameraTarget) {
-			const character = LocalPlayer.Character;
-			const humanoid = character ? character.FindFirstChildOfClass("Humanoid") : undefined;
-			if (camera.CameraSubject === humanoid || camera.CameraSubject === undefined || cameraSubjectOwned) {
-				camera.CameraSubject = rig.cameraTarget;
-				cameraSubjectOwned = true;
-			}
-		}
-	} else if (cameraSubjectOwned && camera.CameraSubject === rig.cameraTarget) {
-		releaseCameraSubject();
 	}
 }
 
@@ -785,7 +751,7 @@ function stepRig(rig: Rig, dt: number) {
 	}
 
 	if (rig.isLocal) {
-		updateCameraSubject(rig, rig.root.GetAttribute(CarAttr.Driving) === true);
+		maintainGameplayCarCamera(rig.cameraTarget, rig.root.GetAttribute(CarAttr.Driving) === true);
 	}
 }
 

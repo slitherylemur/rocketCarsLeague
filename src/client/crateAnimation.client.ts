@@ -3,12 +3,13 @@
 // Phase 5 (client-side UI migration): the reveal is driven by the
 // Ui_CrateResult RemoteEvent (same chosenItem/paddingItems payload the old
 // ShowCrateAnimationEvent.InvokeClient carried) instead of a server-blocking
-// callback. This script also owns hiding/restoring the client-owned Garage
-// around the animation — the server used to toggle Garage.Enabled around its
-// InvokeClient.
+// callback. The Garage controller remains the sole owner of Garage.Enabled;
+// this script publishes local reveal state and cancels itself if gameplay wins
+// while the animation is yielding.
 
 import populateCrateFrameModule from "shared/PopulateCrateFrame";
 import { getUiIntentEvent } from "shared/UiIntents";
+import { isGarageFlowActive, LOCAL_CRATE_REVEAL_ATTR } from "shared/ui/gameplayUiState";
 
 const player = game.GetService("Players").LocalPlayer;
 const TweenService = game.GetService("TweenService");
@@ -40,6 +41,28 @@ interface CrateGuiShape extends ScreenGui {
 }
 
 let highlightedUi: ItemGui | undefined = undefined;
+let animationGeneration = 0;
+let activeTweens: Tween[] = [];
+
+function crateGui(): CrateGuiShape | undefined {
+	const gui = player.FindFirstChild("PlayerGui");
+	const candidate = gui?.FindFirstChild("CrateMenu");
+	return candidate?.IsA("ScreenGui") ? (candidate as CrateGuiShape) : undefined;
+}
+
+function stopActiveAnimation() {
+	animationGeneration += 1;
+	for (const tween of activeTweens) {
+		tween.Cancel();
+	}
+	activeTweens = [];
+	pcall(() => runService.UnbindFromRenderStep("CrateAnimation"));
+	const gui = crateGui();
+	if (gui) {
+		gui.Enabled = false;
+	}
+	player.SetAttribute(LOCAL_CRATE_REVEAL_ATTR, undefined);
+}
 
 function clearItemGuisFromAnimationFrame(animationFrame: Frame) {
 	highlightedUi = undefined;
@@ -80,9 +103,12 @@ function highlightItemGuiThatIsBelowPickerUi(
 	}
 }
 
-function startCrateAnimation(item: CrateItemLike, paddingItems: CrateItemLike[]) {
+function startCrateAnimation(item: CrateItemLike, paddingItems: CrateItemLike[], generation: number) {
 	const gui = player.WaitForChild("PlayerGui");
 	const crateGui = gui.FindFirstChild("CrateMenu") as CrateGuiShape; //this is the crate gui
+	if (!crateGui || generation !== animationGeneration || !isGarageFlowActive(player)) {
+		return;
+	}
 	const animatedFrame = crateGui.Frame;
 
 	clearItemGuisFromAnimationFrame(animatedFrame);
@@ -114,8 +140,12 @@ function startCrateAnimation(item: CrateItemLike, paddingItems: CrateItemLike[])
 	const animatedFrameTween = TweenService.Create(animatedFrame, tweenInfo, {
 		Position: new UDim2(0.5, 0, 9.6, 0),
 	});
+	activeTweens = [animatedFrameTween];
 	animatedFrameTween.Play();
 	task.wait(6.2);
+	if (generation !== animationGeneration || !isGarageFlowActive(player)) {
+		return;
+	}
 
 	const tweenInfo2 = new TweenInfo(
 		4, // Time
@@ -125,13 +155,20 @@ function startCrateAnimation(item: CrateItemLike, paddingItems: CrateItemLike[])
 	const animatedFrameTween2 = TweenService.Create(animatedFrame, tweenInfo2, {
 		Position: new UDim2(0.5, 0, 9.88, 0),
 	});
+	activeTweens.push(animatedFrameTween2);
 	animatedFrameTween2.Play();
 	animatedFrameTween2.Completed.Wait();
+	if (generation !== animationGeneration || !isGarageFlowActive(player)) {
+		return;
+	}
 	crateGui.CompletionSound.Play();
 	runService.UnbindFromRenderStep("CrateAnimation");
 	//crateGui.Enabled = false
 	task.wait(2);
-	crateGui.Enabled = false;
+	if (generation === animationGeneration) {
+		crateGui.Enabled = false;
+		activeTweens = [];
+	}
 }
 
 /** Won a horn: play its preview locally after the reveal (the old server flow
@@ -162,17 +199,36 @@ getUiIntentEvent("Ui_CrateResult").OnClientEvent.Connect((...args: unknown[]) =>
 	if (!typeIs(item, "table") || !typeIs(paddingItems, "table")) {
 		return;
 	}
-	// Hide the client-owned Garage for the reveal (the server used to disable
-	// it around InvokeClient); restore it only if the player is still in the
-	// garage flow when the animation ends.
-	const playerGui = player.WaitForChild("PlayerGui");
-	const garage = playerGui.FindFirstChild("Garage");
-	if (garage && garage.IsA("ScreenGui")) {
-		garage.Enabled = false;
+	// A result can arrive after the shop-end spawn transition. It is no longer
+	// authorized to open any menu UI once the player has left the garage.
+	if (!isGarageFlowActive(player)) {
+		return;
 	}
-	startCrateAnimation(item, paddingItems);
-	playHornPreview(item);
-	if (garage && garage.IsA("ScreenGui")) {
-		garage.Enabled = player.GetAttribute("CB_FlowState") === "garage";
+
+	stopActiveAnimation();
+	const generation = animationGeneration;
+	player.SetAttribute(LOCAL_CRATE_REVEAL_ATTR, true);
+	const [ok, err] = pcall(() => startCrateAnimation(item, paddingItems, generation));
+	if (!ok) {
+		warn(`[CrateAnimation] reveal failed: ${err}`);
+		if (generation === animationGeneration) {
+			stopActiveAnimation();
+		}
+		return;
+	}
+	if (generation === animationGeneration) {
+		if (isGarageFlowActive(player)) {
+			playHornPreview(item);
+		}
+		player.SetAttribute(LOCAL_CRATE_REVEAL_ATTR, undefined);
 	}
 });
+
+function cancelIfGarageLost() {
+	if (!isGarageFlowActive(player)) {
+		stopActiveAnimation();
+	}
+}
+
+player.GetAttributeChangedSignal("CB_FlowState").Connect(cancelIfGarageLost);
+player.GetAttributeChangedSignal("CB_PitchId").Connect(cancelIfGarageLost);

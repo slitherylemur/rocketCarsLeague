@@ -62,7 +62,8 @@ const MOUNTS: Array<[string, () => React.Element]> = [
 	["RenamePopup", RenamePopupGui],
 	// Phase 5: the garage — pages/tiles rendered by src/client/ui/garage.client.ts
 	// from the Ui_GetProfile snapshot + shared crate catalog; Enabled derives
-	// from CB_FlowState == "garage".
+	// from CB_FlowState == "garage", guarded by CB_PitchId and the gameplay UI
+	// invariant so stale async shop work cannot overlay a match.
 	["Garage", GarageGui],
 	// Phase 5: crate reveal animation gui — driven by crateAnimation.client.ts
 	// from the Ui_CrateResult remote.

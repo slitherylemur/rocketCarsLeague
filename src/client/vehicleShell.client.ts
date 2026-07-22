@@ -32,8 +32,8 @@
 // Camera: while the local player is driving, CameraSubject is pointed at an
 // invisible CameraTarget part pinned to the RENDERED chassis — otherwise the
 // camera would follow the physical car and reveal every correction the shell
-// just hid. Restored to the humanoid when the drive ends (and never touched
-// while something else — spectate, menu — owns the subject).
+// just hid. The shared gameplay camera controller continuously enforces that
+// claim while driving and restores the humanoid when the drive ends.
 //
 // Known limits (accepted for this stage): particle/trail/sound effects stay
 // on the physical parts (their positions match the shell except during the
@@ -41,6 +41,7 @@
 // mirrored only at the Color/Material/Transparency property level.
 
 import { VehicleAttr, VehicleModelAttr } from "shared/vehicleSim/VehicleSim";
+import { maintainGameplayCarCamera, releaseGameplayCarCamera } from "shared/GameplayCarCamera";
 
 const RunService = game.GetService("RunService");
 const TweenService = game.GetService("TweenService");
@@ -110,7 +111,6 @@ interface Shell {
 }
 
 const shells = new Map<Model, Shell>();
-let cameraSubjectOwned = false; // we only restore a subject we set ourselves
 
 function attrNumber(instance: Instance, name: string, fallback: number): number {
 	const value = instance.GetAttribute(name);
@@ -235,8 +235,8 @@ function destroyShell(model: Model) {
 			}
 		});
 	}
+	releaseGameplayCarCamera(shell.cameraTarget);
 	shell.container.Destroy();
-	releaseCameraSubject();
 }
 
 function trackVehicle(model: Instance) {
@@ -298,7 +298,11 @@ function trackVehicle(model: Instance) {
 		// Ownership can replicate late — re-check when the attribute lands.
 		shell.connections.push(
 			model.GetAttributeChangedSignal(VehicleModelAttr.OwnerUserId).Connect(() => {
-				shell.isLocal = model.GetAttribute(VehicleModelAttr.OwnerUserId) === LocalPlayer.UserId;
+				const isLocal = model.GetAttribute(VehicleModelAttr.OwnerUserId) === LocalPlayer.UserId;
+				if (shell.isLocal && !isLocal) {
+					releaseGameplayCarCamera(shell.cameraTarget);
+				}
+				shell.isLocal = isLocal;
 			}),
 		);
 
@@ -341,41 +345,6 @@ function trackVehicle(model: Instance) {
 			}),
 		);
 	});
-}
-
-function releaseCameraSubject() {
-	if (!cameraSubjectOwned) {
-		return;
-	}
-	cameraSubjectOwned = false;
-	const camera = game.Workspace.CurrentCamera;
-	if (!camera) {
-		return;
-	}
-	const character = LocalPlayer.Character;
-	const humanoid = character ? character.FindFirstChildOfClass("Humanoid") : undefined;
-	camera.CameraSubject = humanoid;
-}
-
-function updateCameraSubject(shell: Shell, driving: boolean) {
-	const camera = game.Workspace.CurrentCamera;
-	if (!camera) {
-		return;
-	}
-	if (driving) {
-		if (camera.CameraSubject !== shell.cameraTarget) {
-			// Take the subject only from the default humanoid follow — never
-			// steal it from spectate/menu/showcase camera owners.
-			const character = LocalPlayer.Character;
-			const humanoid = character ? character.FindFirstChildOfClass("Humanoid") : undefined;
-			if (camera.CameraSubject === humanoid || camera.CameraSubject === undefined || cameraSubjectOwned) {
-				camera.CameraSubject = shell.cameraTarget;
-				cameraSubjectOwned = true;
-			}
-		}
-	} else if (cameraSubjectOwned && camera.CameraSubject === shell.cameraTarget) {
-		releaseCameraSubject();
-	}
 }
 
 interface MispredictedValues {
@@ -578,11 +547,10 @@ function stepShell(shell: Shell, dt: number) {
 	shell.cameraTarget.CFrame = renderedCF;
 
 	if (shell.isLocal) {
-		const character = LocalPlayer.Character;
-		const humanoid = character ? character.FindFirstChildOfClass("Humanoid") : undefined;
-		const seated =
-			humanoid !== undefined && humanoid.SeatPart !== undefined && humanoid.SeatPart.IsDescendantOf(shell.model);
-		updateCameraSubject(shell, seated && base.GetAttribute(VehicleAttr.Driving) === true);
+		// Driving is the authoritative replicated association. Do not also gate
+		// on Humanoid.SeatPart: VehicleSim explicitly allows Driving to replicate
+		// before Occupant/SeatPart, which made camera acquisition timing-dependent.
+		maintainGameplayCarCamera(shell.cameraTarget, base.GetAttribute(VehicleAttr.Driving) === true);
 	}
 }
 

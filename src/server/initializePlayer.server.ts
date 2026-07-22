@@ -133,6 +133,11 @@ function getFlowState(player: Player): FlowStateValue | undefined {
 	return typeIs(state, "string") ? (state as FlowStateValue) : undefined;
 }
 
+/** Independent gameplay authority used to reject stale menu/shop intents. */
+function hasPitchAssignment(player: Player): boolean {
+	return typeIs(player.GetAttribute("CB_PitchId"), "string");
+}
+
 /** Menu-family states: the player sits outside the play loop (client renders
  * the landing page / lobby, or the server-owned Garage screen is up). */
 function isMenuFamily(state: FlowStateValue | undefined): boolean {
@@ -1483,7 +1488,7 @@ task.spawn(() => {
 	// display-car/camera side effects (enterGarageState).
 	connectIntent("Intent_OpenGarage", (player) => {
 		const state = getFlowState(player);
-		if (state !== "menu" && state !== "lobby") {
+		if ((state !== "menu" && state !== "lobby") || hasPitchAssignment(player)) {
 			return;
 		}
 		const [ok, err] = pcall(() => enterGarageState(player));
@@ -1494,7 +1499,7 @@ task.spawn(() => {
 
 	// Garage BackToMenu (the client-built button fires this).
 	connectIntent("Intent_ExitToLanding", (player) => {
-		if (getFlowState(player) !== "garage") {
+		if (getFlowState(player) !== "garage" || hasPitchAssignment(player)) {
 			return;
 		}
 		const [ok, err] = pcall(() => exitToLanding(player));
@@ -1600,7 +1605,7 @@ task.spawn(() => {
 	// crateModule). Ownership and trophy thresholds are re-validated inside
 	// those bodies — the client's own checks are cosmetic only.
 
-	const inGarage = (player: Player) => getFlowState(player) === "garage";
+	const inGarage = (player: Player) => getFlowState(player) === "garage" && !hasPitchAssignment(player);
 
 	// Cars tab: equip an owned car (unowned names degrade to a preview spawn).
 	connectIntent("Intent_EquipVehicle", (player, vehicleName) => {

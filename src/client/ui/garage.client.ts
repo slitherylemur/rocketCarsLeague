@@ -6,7 +6,8 @@
 // initializePlayer's OpenInventory/OpenShop/openCrateMenu/ensureGarageMenuButtons
 // — rendering everything from replicated state:
 //
-//   * Garage.Enabled derives from CB_FlowState == "garage".
+//   * Garage.Enabled derives from CB_FlowState == "garage", independently
+//     vetoed by CB_PitchId and active crate-reveal state.
 //   * Inventory tiles come from the Ui_GetProfile snapshot (owned/equipped)
 //     + the ReplicatedStorage mirrors (VehicleModels/CarHorns/Colors/
 //     BoostTrails, mirrored by profileSnapshot.ts + CrateModule.ts) + the
@@ -38,6 +39,11 @@ import { PassIds } from "shared/Monetization";
 import { CASH_PURCHACE_MENU_OPEN_SIZE } from "shared/ui/uiConstants";
 import { NEXT_SELECTION_WIRINGS } from "./guiMetadata";
 import { aimMenuCamera } from "shared/ui/menuCameraBus";
+import {
+	isGarageFlowActive,
+	LOCAL_CRATE_REVEAL_ATTR,
+	shouldShowGarage,
+} from "shared/ui/gameplayUiState";
 import type { UiProfileSnapshot } from "shared/UiProfile";
 
 const Players = game.GetService("Players");
@@ -176,11 +182,6 @@ const uiTemplates = ReplicatedStorage.WaitForChild("Ui") as Instance & {
 };
 
 // ---- replicated-state readers -----------------------------------------------
-
-function flowState(): string | undefined {
-	const state = LocalPlayer.GetAttribute("CB_FlowState");
-	return typeIs(state, "string") ? state : undefined;
-}
 
 function myMoney(): number {
 	const money = LocalPlayer.GetAttribute("CB_Money");
@@ -1228,7 +1229,7 @@ for (const [sourcePath, propName, targetPath] of NEXT_SELECTION_WIRINGS) {
 let wasInGarage = false;
 
 function applyFlowState() {
-	const inGarage = flowState() === "garage";
+	const inGarage = isGarageFlowActive(LocalPlayer);
 	if (inGarage && !wasInGarage) {
 		// Fresh entry: reset transient chrome (a persistent client gui keeps
 		// state across visits, unlike the old per-mount server tree).
@@ -1236,19 +1237,39 @@ function applyFlowState() {
 		cashPurchace.Visible = false;
 		enableEquipState();
 		refreshTeamControls();
-		garage.Enabled = true;
 		openInventoryPage(true);
-	} else if (!inGarage) {
-		garage.Enabled = false;
-		if (wasInGarage) {
-			returnUiSelectedValues();
-			cashPurchace.Visible = false;
+	} else if (!inGarage && wasInGarage) {
+		returnUiSelectedValues();
+		cashPurchace.Visible = false;
+	}
+
+	// This is the sole normal owner of Garage.Enabled. Pitch assignment is an
+	// independent gameplay guard, and an active crate reveal temporarily hides
+	// the underlying garage without giving the animation permission to restore
+	// it later from a stale snapshot.
+	garage.Enabled = shouldShowGarage(LocalPlayer);
+	if (!inGarage) {
+		cashPurchace.Visible = false;
+		if (restrictedModal) {
+			restrictedModal.Enabled = false;
+		}
+		if (LocalPlayer.GetAttribute(LOCAL_CRATE_REVEAL_ATTR) === true) {
+			LocalPlayer.SetAttribute(LOCAL_CRATE_REVEAL_ATTR, undefined);
 		}
 	}
 	wasInGarage = inGarage;
 }
 
 LocalPlayer.GetAttributeChangedSignal("CB_FlowState").Connect(applyFlowState);
+LocalPlayer.GetAttributeChangedSignal("CB_PitchId").Connect(applyFlowState);
+LocalPlayer.GetAttributeChangedSignal(LOCAL_CRATE_REVEAL_ATTR).Connect(applyFlowState);
+
+// Belt-and-braces against any future async UI code bypassing the owner above.
+garage.GetPropertyChangedSignal("Enabled").Connect(() => {
+	if (garage.Enabled !== shouldShowGarage(LocalPlayer)) {
+		task.defer(applyFlowState);
+	}
+});
 
 // ---- boot -------------------------------------------------------------------
 
