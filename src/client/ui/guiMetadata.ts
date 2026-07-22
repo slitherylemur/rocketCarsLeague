@@ -1,11 +1,15 @@
-// GENERATED metadata for PlayerGuiManager (from the original place file).
+// GENERATED metadata (from the original place file's StarterGui tree).
+// Client-only since Phase 8 (garage.client.ts is the single consumer; the
+// server never touches gui metadata anymore).
 
 // NextSelection* gamepad-navigation references that existed inside the
 // original StarterGui tree. React cannot express instance references
 // declaratively. Every entry lives inside the Garage, which is CLIENT-owned
 // since Phase 5 — src/client/ui/garage.client.ts applies these after its
-// mount (PlayerGuiManager no longer does).
-// Paths are relative to PlayerGui, '/'-separated.
+// mount. Paths are relative to PlayerGui, '/'-separated.
+//
+// (SCREEN_GUI_RESET_ON_SPAWN was dropped in Phase 8: every ScreenGui is
+// client-mounted once with ResetOnSpawn=false, so the map had no consumers.)
 export const NEXT_SELECTION_WIRINGS: Array<[string, string, string]> = [
 	// (Multipliers panel removed; Nuke + Low Gravity products removed. Layout
 	// is now Purchases (VIP only) on the LEFT, Crates on the RIGHT.)
@@ -16,15 +20,3 @@ export const NEXT_SELECTION_WIRINGS: Array<[string, string, string]> = [
 	["Garage/Shop/Purchases/VIP", "NextSelectionDown", "Garage/Inventory/Codes/TextBox"],
 	["Garage/Shop/Purchases/VIP", "NextSelectionRight", "Garage/Shop/Crates/Normal/1"],
 ];
-
-// ResetOnSpawn per original ScreenGui — drives remount-on-respawn behaviour.
-export const SCREEN_GUI_RESET_ON_SPAWN = new Map<string, boolean>([
-	["Game", true],
-	["MobileInterface", true],
-	// Garage/CrateMenu: client-mounted with ResetOnSpawn=false since Phase 5
-	// (see src/client/ui/bootstrap.client.ts) — no longer in the server tree.
-	// TimerGui: client-mounted with ResetOnSpawn=false (see
-	// src/client/ui/bootstrap.client.ts) — no longer in the server tree.
-	["PlayerMoneyGainedPopups", true],
-	["DataLoss", true],
-]);

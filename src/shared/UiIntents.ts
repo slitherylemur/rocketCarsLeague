@@ -11,8 +11,8 @@
 //   * Ui_*     — server → client RemoteEvents (pushed UI payloads) and the
 //                Ui_GetProfile RemoteFunction (client-invoked profile snapshot).
 //
-// Most of these remotes are wired in LATER migration phases — they are defined
-// now so the folder shape is final and both sides can adopt them incrementally.
+// The migration is complete (Phase 8): every remote listed here has exactly
+// one server side and one client side — keep it that way when adding names.
 
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
 

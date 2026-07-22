@@ -1,19 +1,15 @@
-// Client UI bootstrap (client-side UI migration, Phase 1).
+// Client UI bootstrap (client-side UI migration, Phase 1; the single UI owner
+// since Phase 8 demolished the server's PlayerGuiManager).
 //
-// Mounts the CLIENT-owned ScreenGuis into PlayerGui with ONE React legacy
-// root portaled into PlayerGui — the same mount technique as the server's
-// PlayerGuiManager (legacy root + portal), so instances exist synchronously
-// the moment render() returns.
+// Mounts EVERY ScreenGui into PlayerGui with ONE React legacy root portaled
+// into PlayerGui — legacy root + portal so instances exist synchronously the
+// moment render() returns (translated game code dot-accesses them).
 //
-// Client-created ScreenGuis never replicate to the server, so the server's
-// destroy-all PlayerGui loops (ResetAndInitialisePlayerMenuUI / SpawnInPlayer)
-// cannot touch them; each component here sets ResetOnSpawn = false so the
-// engine leaves them alone across respawns too. One ScreenGui = one owner:
-// anything mounted here must NOT also be mounted by the server's
-// PlayerGuiManager.
-//
-// Later migration phases move more components from the server tree into
-// MOUNTS below.
+// Client-created ScreenGuis never replicate to the server (which no longer
+// touches PlayerGui at all); each component here sets ResetOnSpawn = false so
+// the engine leaves them alone across respawns too — everything mounts
+// exactly once per session and re-renders from replicated CB_*/FB_*
+// attributes and the Ui_*/Intent_* remotes.
 
 import React from "@rbxts/react";
 import ReactRoblox from "@rbxts/react-roblox";
@@ -88,7 +84,7 @@ const MOUNTS: Array<[string, () => React.Element]> = [
 ];
 
 // The holder is only the React root container bookkeeping object; the actual
-// ScreenGuis are portaled into PlayerGui (mirrors PlayerGuiManager.mountAll).
+// ScreenGuis are portaled into PlayerGui.
 const holder = new Instance("Folder");
 holder.Name = "ClientUiRootHolder";
 const root = ReactRoblox.createLegacyRoot(holder);

@@ -1,5 +1,7 @@
-// Keep Roblox chat scoped to active gameplay. Camera transitions alone are not
-// authoritative because PlayerGui is remounted when entering/leaving matches.
+// Keep Roblox chat scoped to active gameplay, derived from which client-owned
+// ScreenGuis are Enabled. (The ChildAdded hook covers mount ordering: the guis
+// are mounted once at boot by bootstrap.client.ts, which may run after this
+// script.)
 
 const Players = game.GetService("Players");
 const StarterGui = game.GetService("StarterGui");

@@ -154,7 +154,8 @@ function playHornPreview(item: CrateItemLike) {
 }
 
 // Ui_CrateResult replaces the old ShowCrateAnimationEvent.OnClientInvoke
-// callback (the RemoteFunction instance stays in the place file until Phase 8).
+// callback (Phase 8 pruned that remote's typed accessor; the place-file
+// RemoteFunction instance remains, unused).
 getUiIntentEvent("Ui_CrateResult").OnClientEvent.Connect((...args: unknown[]) => {
 	const item = args[0] as CrateItemLike;
 	const paddingItems = args[1] as CrateItemLike[];

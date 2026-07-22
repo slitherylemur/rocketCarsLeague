@@ -36,7 +36,7 @@ import { getCarTrophyCost } from "shared/carTrophyCosts";
 import populateCrateFrameModule from "shared/PopulateCrateFrame";
 import { PassIds } from "shared/Monetization";
 import { CASH_PURCHACE_MENU_OPEN_SIZE } from "shared/ui/uiConstants";
-import { NEXT_SELECTION_WIRINGS } from "shared/ui/components/guiMetadata";
+import { NEXT_SELECTION_WIRINGS } from "./guiMetadata";
 import { aimMenuCamera } from "shared/ui/menuCameraBus";
 import type { UiProfileSnapshot } from "shared/UiProfile";
 

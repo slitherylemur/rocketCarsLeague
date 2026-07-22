@@ -17,7 +17,6 @@ import UiState from "./ui/UiState";
 import { getUiIntentEvent, type UiIntentEventName } from "shared/UiIntents";
 import type { LadderTeam } from "./Modules/TeamRegistry";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
-import { PlayerGuiManager } from "./ui/PlayerGuiManager";
 import VehicleInputActions from "./Modules/vehicleInputActions";
 
 const HttpService = game.GetService("HttpService");
@@ -41,10 +40,9 @@ const MemoryStoreService = game.GetService("MemoryStoreService");
 const testStoreMap = MemoryStoreService.GetSortedMap("testStoreMap");
 
 // (GarageGuiShape retired in Phase 5; GameGuiShape/playerGuiOf in Phase 6;
-// RoundSummary/LadderMap moved client-side in Phase 7: EVERY ScreenGui is
-// CLIENT-owned now — the server publishes attributes/remotes only and never
-// touches PlayerGui instances. PlayerGuiManager renders an empty tree until
-// the Phase 8 demolition.)
+// RoundSummary/LadderMap moved client-side in Phase 7; PlayerGuiManager
+// demolished in Phase 8: EVERY ScreenGui is CLIENT-owned — the server
+// publishes attributes/remotes only and never touches PlayerGui instances.)
 
 Players.PlayerRemoving.Connect((player) => {
 	const playerMoney = DataStore2("money", player).Get(0) as number;
@@ -773,7 +771,7 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 	if (startedAt !== undefined && os.clock() - startedAt < SPAWN_IN_FLIGHT_TIMEOUT) {
 		warn(`[SpawnInPlayer] ${player.Name} is already spawning — duplicate call ignored`);
 		// "true": the in-flight spawn is handling this player; a false here
-		// would make spawnIntoMatch remount the menu OVER the live spawn.
+		// would make spawnIntoMatch force the menu state OVER the live spawn.
 		return true;
 	}
 	spawnInFlight.set(player, os.clock());
@@ -796,7 +794,7 @@ function spawnInPlayerInner(player: Player): boolean {
 	// spawn was inside one of its yields — i.e. CB_FlowState is no longer the
 	// "spawning" this thread wrote. Returning true afterwards is deliberate:
 	// the newer flow owns the UI, so spawnIntoMatch's failure path must NOT
-	// stomp it with yet another menu remount.
+	// stomp it by forcing the menu flow state on top.
 	const standDownIfSuperseded = (stage: string): boolean => {
 		const state = getFlowState(player);
 		if (state === "spawning") {
@@ -857,8 +855,9 @@ function spawnInPlayerInner(player: Player): boolean {
 	}
 	Globals.clearPlayerGarage(player);
 
-	// Original: for i,v in pairs(player.PlayerGui:GetChildren()) do v:Destroy() end
-	PlayerGuiManager.destroyAll(player);
+	// (The original destroyed every PlayerGui child here; since Phase 7 every
+	// ScreenGui is client-owned and never destroyed — the client menus hide
+	// themselves when CB_FlowState reads "spawning".)
 
 	// Mark this engine spawn as requested: initializePlayer's CharacterAdded
 	// guard destroys any character that appears WITHOUT this mark (boot-race
@@ -869,9 +868,9 @@ function spawnInPlayerInner(player: Player): boolean {
 	if (standDownIfSuperseded("during LoadCharacter")) {
 		return true;
 	}
-	// Original: the engine re-cloned StarterGui into PlayerGui on LoadCharacter
-	// (every ScreenGui has ResetOnSpawn = true) — the React equivalent mounts here.
-	PlayerGuiManager.mountAll(player);
+	// (The original relied on the engine re-cloning StarterGui into PlayerGui on
+	// LoadCharacter; the client-owned guis are mounted once at boot instead and
+	// derive their visibility from CB_FlowState & friends.)
 	FunctionsAndEvents.ToggleMenuCamera.FireClient(player, false);
 
 	// (The original's "Spawning in N" TimerGui countdown was already retired;
@@ -942,10 +941,10 @@ function spawnInPlayerInner(player: Player): boolean {
 	spawnVehicle.SpawnVehicle(player, true, DataUtilities.getPlayerEquippedVehicle(player), spawnCFrame);
 
 	// SpawnVehicle spans ~2s of internal waits — the widest window for a
-	// round-end sendToMenu / accepted invite to remount the menus. Without this
-	// check the code below ran match bookkeeping (onPlayerSpawned) on top of a
-	// fresh MENU mount and the player ended up seated in a match car with the
-	// menu still on screen.
+	// round-end sendToMenu / accepted invite to claim the menu flow state.
+	// Without this check the code below ran match bookkeeping (onPlayerSpawned)
+	// on top of a menu-family CB_FlowState and the player ended up seated in a
+	// match car with the client-rendered menu still on screen.
 	if (standDownIfSuperseded("during SpawnVehicle")) {
 		return true;
 	}
@@ -982,27 +981,10 @@ function spawnInPlayerInner(player: Player): boolean {
 		// Enabled from the CB_PitchId attribute the roster flow already set.)
 		footballMatch.onPlayerSpawned(player);
 	}
-	//game.ReplicatedStorage.FunctionsAndEvents.ToggleMenuCamera:FireClient(player,false)
-	// player.PlayerGui.Game.KillVehicle.MouseButton1Click:Connect(function()
-	// 	if not resetting[player] then
-	// 		resetting[player] = true
-	//
-	// 		player.PlayerGui.Game.KillVehicle.Text = "Resetting in 10 seconds"
-	// 		task.delay(10, function()
-	// 			if _G.killstreak[player] ~= 0 then
-	// 				_G.killstreak[player] = 0
-	// 			end
-	// 			if player.Character then
-	// 				player.Character.Humanoid.Health = 0
-	// 			end
-	// 			spawnVehicle.KillVehicle(player, true)
-	//
-	// 			player.PlayerGui.Game.KillVehicle.Text = "Reset"
-	// 			ResetAndInitialisePlayerMenuUI(player)
-	// 			resetting[player] = false
-	// 		end)
-	// 	end
-	// end)
+	// (Legacy KillVehicle reset button, long disabled: 10 s "Resetting in 10
+	// seconds" delay, then killstreak zeroed, character killed,
+	// spawnVehicle.KillVehicle(player, true) and back to the menu via
+	// ResetAndInitialisePlayerMenuUI — the `resetting` debounce map guarded it.)
 
 	task.wait(1);
 	//game.ReplicatedStorage.FunctionsAndEvents.ToggleMenuCamera:FireClient(player,false)
@@ -1157,11 +1139,10 @@ function ResetAndInitialisePlayerMenuUI(player: Player) {
 	if (leftoverCharacter) {
 		leftoverCharacter.Destroy();
 	}
-	player.WaitForChild("PlayerGui");
-	// Original: destroy every PlayerGui child, then clone every StarterGui child
-	// back in — PlayerGuiManager reproduces both steps.
-	PlayerGuiManager.destroyAll(player);
-	PlayerGuiManager.mountAll(player);
+	// (The original destroyed every PlayerGui child and re-cloned StarterGui
+	// here — since Phase 7 the client-owned guis mount once and re-render from
+	// the "menu" flow state written above; a PlayerGui barrier is no longer
+	// needed because no server-side GUI work follows.)
 
 	initialisePlayerUi(player);
 }
@@ -1236,14 +1217,14 @@ function initializePlayer(player: Player) {
 	//task.wait(0.2)
 	Globals.PlayerJoinedTimes[player.UserId] = os.time();
 
-	const ui = player.WaitForChild("PlayerGui");
+	// (The old `player.WaitForChild("PlayerGui")` barrier + StarterGui clone
+	// step is gone — the client mounts its own guis; nothing below touches
+	// PlayerGui or depends on it existing yet.)
 
 	// Initial flow state: the menu. Written BEFORE the (yieldy)
 	// initialisePlayerUi so the client-owned landing page can paint
 	// immediately and order-independently of the DataStore reads.
 	UiState.setFlowState(player, "menu");
-	// Original: clone every StarterGui child into PlayerGui.
-	PlayerGuiManager.mountAll(player);
 
 	// Phase 5: CB_ProfileVersion counter + OnUpdate hooks on every
 	// owned/equipped dataset (the client garage refetches Ui_GetProfile on
@@ -1316,8 +1297,9 @@ for (const player of Players.GetPlayers()) {
 // spectate screen is up" — is client-local too now (gameHud.client.ts fires
 // Intent_ReturnToMenu when Y is pressed with the spectate frame visible).
 // VehicleKeyHandler.client.ts no longer fires GamePadButtonYDown/BDown (B had
-// no server consumer for a long time) — the remotes themselves are Phase 8
-// demolition candidates.
+// no server consumer for a long time) — the remotes' typed accessors were
+// pruned from shared/FunctionsAndEvents.ts in Phase 8 (the place-file
+// instances remain, unused).
 
 (
 	game.GetService("ServerStorage") as unknown as { Events: { PlayerDamaged: BindableEvent } }
@@ -1528,7 +1510,7 @@ task.spawn(() => {
 	// server-wired Respawn click: the connection only existed after
 	// enableSpectateScreen (CB_Killer set here now) and the player was outside
 	// the menus (a menu-family flow state means the menus already own the UI —
-	// remounting them again would double-init).
+	// re-running the menu init on top would double-init).
 	connectIntent("Intent_ReturnToMenu", (player) => {
 		if (isMenuFamily(getFlowState(player))) {
 			return;

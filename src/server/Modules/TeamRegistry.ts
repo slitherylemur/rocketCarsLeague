@@ -100,22 +100,17 @@ let nextTeamNumber = 1;
 
 // Runtime remotes folder (nothing place-file-side): SubmitTeamName carries the
 // rename popup's typed text (player-typed TextBox.Text never replicates).
-// PromptGameInvite is RETIRED as of migration Phase 4 (the client-owned team
-// page calls SocialService.PromptGameInvite directly) — the remote is still
-// created so the folder shape stays stable until the contract is removed.
+// (PromptGameInvite was removed in Phase 8 — the client-owned team page calls
+// SocialService.PromptGameInvite directly since Phase 4.)
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
 const carBallFolder = new Instance("Folder");
 carBallFolder.Name = "CarBall";
-const promptGameInviteRemote = new Instance("RemoteEvent");
-promptGameInviteRemote.Name = "PromptGameInvite";
-promptGameInviteRemote.Parent = carBallFolder;
 const submitTeamNameRemote = new Instance("RemoteEvent");
 submitTeamNameRemote.Name = "SubmitTeamName";
 submitTeamNameRemote.Parent = carBallFolder;
 carBallFolder.Parent = ReplicatedStorage;
 
 export const CarBallRemotes = {
-	PromptGameInvite: promptGameInviteRemote,
 	SubmitTeamName: submitTeamNameRemote,
 };
 

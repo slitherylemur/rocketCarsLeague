@@ -554,36 +554,10 @@ function showPlayerBanner(rewardsTable: Map<Player, number>) {
 	}
 }
 
-// function populatePlayerList(winnerTable)
-// 	if #winnerTable < 4 then
-// 		return
-// 	end
-//
-// 	for i, player in pairs(PlayerService:GetPlayers()) do
-// 		pcall(function()
-// 			for i=4, #winnerTable do
-// 				local winner = winnerTable[i]
-//
-// 				local scrollFrame = player.PlayerGui:WaitForChild("Game").ResultScreen.List.Names
-// 				local winnerEntry = ReplicatedStorage.Ui.playerEntry:Clone()
-// 				winnerEntry.name.Text = i .. ". " .. winner.Name
-//
-// 				if _G.gamemode == "FFA" then
-// 					winnerEntry.Knockouts.Text = winner:WaitForChild("kills").Value
-// 				elseif _G.gamemode == "LMS" then
-// 					winnerEntry.Knockouts.Text = winner:WaitForChild("survivalTime").Value
-// 				end
-//
-// 				winnerEntry.Parent = scrollFrame
-// 				winnerEntry.LayoutOrder = i
-// 			end
-// 			player.PlayerGui.Game.ResultScreen.List.Tabs.Knockouts.Text = gamemodeStat(_G.gamemode)
-// 			player.PlayerGui.Game.ResultScreen.Visible = true
-// 		end)
-//
-// 	end
-//
-// end
+// (Legacy populatePlayerList, never reimplemented: places 4+ of winnerTable
+// were listed on the ResultScreen with the per-mode stat — kills for FFA,
+// survivalTime for LMS. If the dormant FFA/TDM path ever revives it, publish
+// the list in the CB_EndScreen payload and render it in gameHud.client.ts.)
 
 function clearVictoryStage() {
 	const VictoryStage = (game.Workspace as unknown as { VictoryStage: VictoryStageModel }).VictoryStage;

@@ -13,7 +13,8 @@
 //   - mobile: joystick sampling fired into ThrottleTouch/SteerTouch actions,
 //     and UIButton wiring for the Drift/Boost/Jump touch bindings
 //   - the keybindings menu UI (rebinds now apply live via SetKeyBinding)
-//   - gamepad menu buttons + GetPlayerPointToScreenSpace (unchanged)
+// (The gamepad menu-button fires and the GetPlayerPointToScreenSpace handler
+// are gone — retired across Phases 5-8 with their server halves.)
 
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import keyCodeImages from "shared/KeyCodeImages";
@@ -306,15 +307,14 @@ UserInputService.InputChanged.Connect((input) => {
 	}
 });
 
-// MobileInterface is CLIENT-mounted once at boot now (Phase 3,
-// src/client/ui/bootstrap.client.ts, ResetOnSpawn=false) — one instance for
-// the whole session. The re-wire-on-instance-change machinery below predates
-// that and stays as harmless robustness: it's retried from the per-sit
-// maintenance loop (and the PlayerGui.ChildAdded hook, which now fires at
-// most once at boot) until the base buttons exist — the React mount can
-// parent the ScreenGui before its children finish building, and dot-accessing
-// a button that hadn't arrived yet used to error and kill the whole seating
-// thread, leaving visible-but-dead buttons.
+// MobileInterface is CLIENT-mounted once at boot (Phase 3,
+// src/client/ui/bootstrap.client.ts, ResetOnSpawn=false) — ONE instance for
+// the whole session, never recreated. wireTouchButtons is still retried from
+// the per-sit maintenance loop until the base buttons exist, because the
+// React mount can parent the ScreenGui before its children finish building —
+// dot-accessing a button that hadn't arrived yet used to error and kill the
+// whole seating thread, leaving visible-but-dead buttons. The
+// wiredMobileInterface guard makes the retries idempotent.
 let wiredMobileInterface: Instance | undefined = undefined;
 
 function wireTouchButtons(mobileInterface: ScreenGui) {
@@ -335,11 +335,12 @@ function wireTouchButtons(mobileInterface: ScreenGui) {
 		return; // children still replicating — caller retries
 	}
 	wiredMobileInterface = mobileInterface;
-	// The old instance (and its connections) is gone; nothing may stay held.
+	// Fresh wiring baseline: nothing may stay held from before the buttons
+	// existed.
 	releaseAllTouches();
 
-	// The server React mount can parent the ScreenGui before its children
-	// finish building — wait for each button instead of dot-indexing.
+	// The React mount can parent the ScreenGui before its children finish
+	// building — wait for each button instead of dot-indexing.
 	const hook = (actionName: string, parent: Instance, buttonName: string) => {
 		task.spawn(() => {
 			const button = parent.WaitForChild(buttonName, 10);
@@ -501,11 +502,6 @@ let seatPartConnection: RBXScriptConnection | undefined = undefined;
 let drivingActive = false;
 let seatSession = 0;
 
-// True while seated in a vehicle on a touch device — gates the async
-// MobileInterface enable (the interface can mount AFTER the seat event) and
-// the PlayerGui.ChildAdded re-mount below.
-let touchSeated = false;
-
 // While driving, the Roblox core touch controls (dynamic thumbstick + jump
 // button) steer the HUMANOID, not the car — next to the custom MovePad they
 // are pure noise. GuiService.TouchControlsEnabled hides them entirely,
@@ -601,7 +597,6 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 		});
 
 		if (UserInputService.TouchEnabled) {
-			touchSeated = true;
 			setCoreTouchControlsEnabled(false); // the humanoid thumbstick is useless in a car
 			// Idempotent re-bind: a missed exit edge (character destroyed while
 			// seated) can leave the old binding behind.
@@ -646,7 +641,6 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 		ContextActionService.UnbindAction("HonkHorn");
 
 		if (UserInputService.TouchEnabled) {
-			touchSeated = false;
 			setCoreTouchControlsEnabled(true); // back on foot — restore the normal joystick
 			pcall(() => {
 				RunService.UnbindFromRenderStep("MobileSteer");
@@ -716,36 +710,14 @@ if (Player.Character) {
 	task.spawn(() => connectCharacter(Player.Character!));
 }
 
-// Remount robustness: MobileInterface is client-mounted once at boot (Phase 3)
-// so this ChildAdded simply fires once when bootstrap parents it. Kept in case
-// a fresh instance ever arrives while already driving — show and re-wire it
-// instead of driving blind with no buttons for the rest of the round.
-if (UserInputService.TouchEnabled) {
-	task.spawn(() => {
-		const playerGui = Player.WaitForChild("PlayerGui") as PlayerGui;
-		playerGui.ChildAdded.Connect((child) => {
-			if (child.Name === "MobileInterface" && child.IsA("ScreenGui")) {
-				task.defer(() => {
-					if (touchSeated && child.Parent === playerGui) {
-						child.Enabled = true;
-						wireTouchButtons(child);
-					}
-				});
-			}
-		});
-	});
-}
+// (The old PlayerGui.ChildAdded re-mount hook is gone — MobileInterface is
+// mounted exactly once at boot and never recreated; the per-sit maintenance
+// loop in onSeated covers enabling + wiring it for every sit.)
 
-// ---------------------------------------------------------------------------
-// Gamepad menu buttons
-// ---------------------------------------------------------------------------
-// Phase 6: nothing is fired to the server any more. Phase 5 stopped
-// X/R1/L1/R2 (garage navigation went client-local in garage.client.ts); the
-// last Y consumer — the spectate-screen respawn — is client-local now too
-// (gameHud.client.ts fires Intent_ReturnToMenu on Y while spectating), and B
-// has had no server consumer for a long time, so both fires are gone. The
-// GamePadButtonYDown/BDown remotes themselves are Phase 8 demolition
-// candidates.
+// (Gamepad menu buttons: all fires retired — Phase 5 made X/R1/L1/R2 garage
+// navigation client-local in garage.client.ts, Phase 6 made the spectate
+// Y-respawn client-local in gameHud.client.ts, and Phase 8 pruned the
+// GamePadButton*Down typed accessors from shared/FunctionsAndEvents.ts.)
 
 // ---------------------------------------------------------------------------
 // Keybinding menu UI (unchanged — SetKeyBinding now also retargets the live
@@ -848,12 +820,3 @@ function wireMenuGui(descendant: Instance) {
 		task.spawn(() => wireMenuGui(child));
 	}
 }
-
-// Phase 3: the server's only caller (VehicleClass money popups) now fires
-// Ui_MoneyGained with a WORLD point instead of invoking this — the handler is
-// kept for safety and is slated for retirement with the remote in Phase 8.
-FunctionsAndEvents.GetPlayerPointToScreenSpace.OnClientInvoke = (position) => {
-	const camera = game.Workspace.CurrentCamera!;
-	const [vector, onScreen] = camera.WorldToScreenPoint(position as Vector3);
-	return vector;
-};
