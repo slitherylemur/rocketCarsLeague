@@ -820,7 +820,10 @@ function stepCar(entry: CarEntry, dt: number) {
 			accelBudget -= gravity * look.Y; // downhill reverse assist
 		}
 	} else {
-		accelBudget = 0;
+		// Throttle released: the legacy drive servo held LineVelocity = 0 at
+		// FULL force — engine braking to a stop, not a coast. Preserved.
+		targetSpeed = 0;
+		accelBudget = grounded ? preset.driveAccel : 0;
 	}
 
 	if (drifting) {
@@ -842,7 +845,6 @@ function stepCar(entry: CarEntry, dt: number) {
 	let driveAccelWanted = 0;
 	if (accelBudget > 0 && (grounded || boosting)) {
 		const speedErr = targetSpeed - entry.velocity;
-		const maxDv = accelBudget * dt;
 		driveAccelWanted = math.clamp(speedErr / dt, -accelBudget, accelBudget);
 		// Airborne boost pushes along the car's look axis directly.
 		if (!grounded && boosting) {
@@ -850,7 +852,6 @@ function stepCar(entry: CarEntry, dt: number) {
 			entry.dv = entry.dv.add(dir.mul(math.min(math.abs(driveAccelWanted), accelBudget) * dt));
 			driveAccelWanted = 0;
 		}
-		void maxDv;
 	}
 
 	// ---- tires (grounded contact response) ----
@@ -923,7 +924,10 @@ function stepCar(entry: CarEntry, dt: number) {
 	}
 
 	// ---- jump ----
-	if (wantJump && driving && now >= attrNumber(root, CarAttr.JumpReadyAt, 0) && (wheelsGrounded || inCoyote)) {
+	// No grounded gate — legacy tryJump allowed airborne jumps (debounce is
+	// the only limiter); the launch direction just falls back to world up.
+	void inCoyote;
+	if (wantJump && driving && now >= attrNumber(root, CarAttr.JumpReadyAt, 0)) {
 		root.SetAttribute(CarAttr.JumpForceUntil, now + preset.jumpForceTime);
 		root.SetAttribute(CarAttr.JumpReadyAt, now + preset.jumpForceTime + preset.jumpDebounce);
 		// Launch along the floor normal (side ramps launch laterally), capped

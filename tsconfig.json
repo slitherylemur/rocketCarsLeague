@@ -23,5 +23,9 @@
 		"baseUrl": "src",
 		"incremental": true,
 		"tsBuildInfoFile": "out/tsconfig.tsbuildinfo"
-	}
+	},
+	// tests/ + tools/ run under Node (tools/runTests.js transpiles them with
+	// its own shims) and must not enter the rbxtsc program.
+	"include": ["src"],
+	"exclude": ["tests", "tools", "node_modules", "out"]
 }
