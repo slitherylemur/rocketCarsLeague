@@ -36,11 +36,14 @@
 				"$path": "out/shared"
 			}
 		},
-		"StarterPlayer": {
-			"$className": "StarterPlayer",
+		"Players": {
+			"$className": "Players",
 			"$properties": {
 				"CharacterAutoLoads": false
-			},
+			}
+		},
+		"StarterPlayer": {
+			"$className": "StarterPlayer",
 			"StarterPlayerScripts": {
 				"$className": "StarterPlayerScripts",
 				"TS": {
