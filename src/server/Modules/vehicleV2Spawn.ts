@@ -174,6 +174,9 @@ export function buildProxy(model: Model, templateName: string, owner?: Player): 
 	if (wheelsFolder) skipRoots.add(wheelsFolder);
 	if (seats) skipRoots.add(seats);
 	if (hitboxes) skipRoots.add(hitboxes);
+	// Base is destroyed below — anything a template nests under it would be
+	// stamped and then deleted; skip its subtree entirely.
+	skipRoots.add(oldBase);
 	skipRoots.add(renderSource);
 
 	for (const descendant of model.GetDescendants()) {

@@ -43,8 +43,9 @@ const WORLD_UP = new Vector3(0, 1, 0);
 
 // Extra pitch/yaw feel state (legacy ReleasedThrottle semantics: airborne
 // pitch control engages only after the throttle has been released once).
-const ATTR_RELEASED_THROTTLE = "RelThrottle";
-const ATTR_LAST_THROTTLE = "LastThrottle";
+// Defined in CarState so the payload-budget guard counts them.
+const ATTR_RELEASED_THROTTLE = CarAttr.ReleasedThrottle;
+const ATTR_LAST_THROTTLE = CarAttr.LastThrottle;
 
 // ---- registry -------------------------------------------------------------
 

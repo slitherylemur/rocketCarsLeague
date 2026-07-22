@@ -48,6 +48,9 @@ export const CarAttr = {
 	// showcase pin
 	ShowcaseLockActive: "ShowLock",
 	ShowcaseLockPos: "ShowLockPos", // Vector3
+	// aerial pitch feel state (legacy ReleasedThrottle semantics)
+	ReleasedThrottle: "RelThrottle",
+	LastThrottle: "LastThrottle",
 } as const;
 
 // Attributes on the vehicle MODEL (not predicted; identity + gameplay).
@@ -109,6 +112,7 @@ const NUMBER_ATTRS: readonly string[] = [
 	CarAttr.LastGrounded,
 	CarAttr.FlipUntil,
 	CarAttr.FlipReadyAt,
+	CarAttr.LastThrottle,
 ];
 const BOOL_ATTRS: readonly string[] = [
 	CarAttr.Driving,
@@ -121,6 +125,7 @@ const BOOL_ATTRS: readonly string[] = [
 	CarAttr.DriftEngaged,
 	CarAttr.JumpStabilizing,
 	CarAttr.ShowcaseLockActive,
+	CarAttr.ReleasedThrottle,
 ];
 const VECTOR_ATTRS: readonly string[] = [CarAttr.JumpLaunchDir, CarAttr.ShowcaseLockPos];
 
