@@ -1,29 +1,19 @@
 // Client half of the Top Table menus:
-//  * PromptGameInvite remote → Roblox's native invite-friends prompt
-//    (SocialService is client-only).
 //  * Rename popup Confirm → fires the typed name to the server
-//    (player-typed TextBox.Text never replicates on its own).
+//    (player-typed TextBox.Text never replicates on its own). The popup's
+//    open/close/status rendering lives in src/client/ui/menu.client.ts —
+//    only the Confirm submit is wired here.
+//
+// (The PromptGameInvite bounce is retired since Phase 4: the CreateTeam page
+// is client-owned and menu.client.ts calls SocialService.PromptGameInvite
+// directly on the INVITE ROBLOX FRIENDS press.)
 
 const Players = game.GetService("Players");
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
-const SocialService = game.GetService("SocialService");
 const LocalPlayer = Players.LocalPlayer;
 
 const carBall = ReplicatedStorage.WaitForChild("CarBall");
-const promptGameInvite = carBall.WaitForChild("PromptGameInvite") as RemoteEvent;
 const submitTeamName = carBall.WaitForChild("SubmitTeamName") as RemoteEvent;
-
-promptGameInvite.OnClientEvent.Connect(() => {
-	pcall(() => {
-		let canSend = true;
-		pcall(() => {
-			canSend = SocialService.CanSendGameInviteAsync(LocalPlayer);
-		});
-		if (canSend) {
-			SocialService.PromptGameInvite(LocalPlayer);
-		}
-	});
-});
 
 function wireRenamePopup(popup: Instance) {
 	if (!popup.IsA("ScreenGui")) {

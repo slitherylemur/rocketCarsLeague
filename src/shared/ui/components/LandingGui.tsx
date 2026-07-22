@@ -69,7 +69,9 @@ export function LandingGui(): React.Element {
 			Name: "Landing",
 			DisplayOrder: 1,
 			Enabled: false,
-			ResetOnSpawn: true,
+			// Client-owned (Phase 4): mounted once by bootstrap.client.ts and
+			// driven by menu.client.ts — the engine must leave it alone.
+			ResetOnSpawn: false,
 			ScreenInsets: Enum.ScreenInsets.DeviceSafeInsets,
 			ZIndexBehavior: Enum.ZIndexBehavior.Sibling,
 		} as never,

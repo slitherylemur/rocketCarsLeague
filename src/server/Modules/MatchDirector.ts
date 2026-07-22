@@ -63,17 +63,15 @@ function isInMenuFlow(player: Player): boolean {
 	if (player.GetAttribute("CB_PendingLaunch") === true) {
 		return false;
 	}
-	const playerGui = player.FindFirstChild("PlayerGui");
-	if (!playerGui) {
-		return false;
-	}
-	for (const screenName of ["CreateTeam", "Landing"]) {
-		const screen = playerGui.FindFirstChild(screenName);
-		if (screen !== undefined && screen.IsA("ScreenGui") && screen.Enabled) {
-			return true;
-		}
-	}
-	return false;
+	// Phase 4: Landing/CreateTeam are CLIENT-owned — their Enabled no longer
+	// exists server-side. CB_FlowState (UiState.setFlowState) is the server's
+	// own record of the same fact: "menu" = landing page, "lobby" = Friends
+	// Team mini lobby. "garage" is deliberately NOT exempt — a player on the
+	// shop-phase CARS page is in the shop BECAUSE they played, exactly the
+	// audience the countdown/auto-spawn is for (matches the old check, which
+	// only looked at the Landing/CreateTeam screens).
+	const state = player.GetAttribute("CB_FlowState");
+	return state === "menu" || state === "lobby";
 }
 
 const MatchDirector = {

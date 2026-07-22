@@ -24,6 +24,8 @@ import { VictoryGui } from "shared/ui/components/VictoryGui";
 import { MobileInterfaceGui } from "shared/ui/components/MobileInterfaceGui";
 import { PlayerMoneyGainedPopupsGui } from "shared/ui/components/PlayerMoneyGainedPopupsGui";
 import { DataLossGui } from "shared/ui/components/DataLossGui";
+import { LandingGui } from "shared/ui/components/LandingGui";
+import { CreateTeamGui, InvitePopupGui, RenamePopupGui } from "shared/ui/components/CarBallMenusGui";
 
 const Players = game.GetService("Players");
 const LocalPlayer = Players.LocalPlayer;
@@ -51,6 +53,12 @@ const MOUNTS: Array<[string, () => React.Element]> = [
 	// Phase 3: Enabled derived from the CB_DataLoss player attribute by
 	// src/client/ui/dataLoss.client.ts.
 	["DataLoss", DataLossGui],
+	// Phase 4: the menu flow — rendered by src/client/ui/menu.client.ts from
+	// CB_FlowState, replicated Team state, CB_Invite and CB_RenameStatus.
+	["Landing", LandingGui],
+	["CreateTeam", CreateTeamGui],
+	["InvitePopup", InvitePopupGui],
+	["RenamePopup", RenamePopupGui],
 ];
 
 // The holder is only the React root container bookkeeping object; the actual

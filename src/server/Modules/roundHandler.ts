@@ -391,17 +391,13 @@ function loadMap(): import("./PitchManager").Pitch[] {
  * them: destroying a mid-vote lobby dumped its members onto the shop page,
  * where the auto-spawn would launch the team without a completed vote. */
 function isInMenus(player: Player): boolean {
-	const playerGui = player.FindFirstChild("PlayerGui");
-	if (!playerGui) {
-		return false;
-	}
-	for (const screenName of ["Landing", "CreateTeam", "Garage"]) {
-		const screen = playerGui.FindFirstChild(screenName);
-		if (screen !== undefined && screen.IsA("ScreenGui") && screen.Enabled) {
-			return true;
-		}
-	}
-	return false;
+	// Phase 4: Landing/CreateTeam are client-owned — read the server's own
+	// CB_FlowState record instead of ScreenGui.Enabled. "garage" counts as a
+	// menu here (unlike MatchDirector.isInMenuFlow) because the old check
+	// included the Garage screen: the round-end remount must not yank a player
+	// browsing cars, whichever page they came from.
+	const state = player.GetAttribute("CB_FlowState");
+	return state === "menu" || state === "lobby" || state === "garage";
 }
 
 function sendToMenu() {

@@ -31,8 +31,6 @@ import ReactRoblox from "@rbxts/react-roblox";
 import { GameGui } from "shared/ui/components/GameGui";
 import { GarageGui } from "shared/ui/components/GarageGui";
 import { CrateMenuGui } from "shared/ui/components/CrateMenuGui";
-import { LandingGui } from "shared/ui/components/LandingGui";
-import { CreateTeamGui, InvitePopupGui, RenamePopupGui } from "shared/ui/components/CarBallMenusGui";
 import { RoundSummaryGui } from "shared/ui/components/RoundSummaryGui";
 import { LadderMapGui } from "shared/ui/components/LadderMapGui";
 import { NEXT_SELECTION_WIRINGS } from "shared/ui/components/guiMetadata";
@@ -59,19 +57,15 @@ function buildTree(): React.Element {
 	// CrateMenu, Steer). (Multipliers retired with the timed cash-multiplier
 	// products. CLIENT-mounted now — src/client/ui/bootstrap.client.ts owns:
 	// TimerGui [Phase 2]; MatchHud, FaceOff, Victory, MobileInterface,
-	// PlayerMoneyGainedPopups, DataLoss [Phase 3].)
+	// PlayerMoneyGainedPopups, DataLoss [Phase 3]; Landing, CreateTeam,
+	// InvitePopup, RenamePopup [Phase 4 — rendered by
+	// src/client/ui/menu.client.ts from CB_FlowState & friends].)
 	return React.createElement(
 		React.Fragment,
 		undefined,
 		React.createElement(GameGui, { key: "Game" }),
 		React.createElement(GarageGui, { key: "Garage" }),
 		React.createElement(CrateMenuGui, { key: "CrateMenu" }),
-		// Car Ball landing page (Top Table Phase 1).
-		React.createElement(LandingGui, { key: "Landing" }),
-		// Top Table Phase 2 menus.
-		React.createElement(CreateTeamGui, { key: "CreateTeam" }),
-		React.createElement(InvitePopupGui, { key: "InvitePopup" }),
-		React.createElement(RenamePopupGui, { key: "RenamePopup" }),
 		React.createElement(RoundSummaryGui, { key: "RoundSummary" }),
 		// Ladder map after the victory scene + summary (Top Table Phase 4b);
 		// doubles as the session-end champions screen (Phase 5).

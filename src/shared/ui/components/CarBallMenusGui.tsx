@@ -1,8 +1,10 @@
 // Top Table Phase 2 menus: the team page (invites, allow-randoms, rename,
-// play), the invite popup, and the rename popup. Structure only — server
-// code (initializePlayer) wires buttons and fills texts; the rename Confirm
-// is the one client-wired control (typed TextBox text never replicates), see
-// carBallMenu.client.ts.
+// play), the invite popup, and the rename popup. Structure only — CLIENT-owned
+// since migration Phase 4: mounted by src/client/ui/bootstrap.client.ts, wired
+// and filled by src/client/ui/menu.client.ts from replicated state
+// (CB_FlowState / Team attributes / CB_Invite / CB_RenameStatus). The rename
+// Confirm is wired by carBallMenu.client.ts (typed TextBox text never
+// replicates on its own).
 
 import React from "@rbxts/react";
 
@@ -144,7 +146,9 @@ export function CreateTeamGui(): React.Element {
 			Name: "CreateTeam",
 			DisplayOrder: 1,
 			Enabled: false,
-			ResetOnSpawn: true,
+			// Client-owned (Phase 4): mounted once by bootstrap.client.ts and
+			// driven by menu.client.ts — the engine must leave it alone.
+			ResetOnSpawn: false,
 			ScreenInsets: Enum.ScreenInsets.DeviceSafeInsets,
 			ZIndexBehavior: Enum.ZIndexBehavior.Sibling,
 		} as never,
@@ -370,7 +374,8 @@ export function InvitePopupGui(): React.Element {
 			Name: "InvitePopup",
 			DisplayOrder: 5,
 			Enabled: false,
-			ResetOnSpawn: true,
+			// Client-owned (Phase 4) — see CreateTeamGui above.
+			ResetOnSpawn: false,
 			ScreenInsets: Enum.ScreenInsets.DeviceSafeInsets,
 			ZIndexBehavior: Enum.ZIndexBehavior.Sibling,
 		} as never,
@@ -440,7 +445,8 @@ export function RenamePopupGui(): React.Element {
 			Name: "RenamePopup",
 			DisplayOrder: 6,
 			Enabled: false,
-			ResetOnSpawn: true,
+			// Client-owned (Phase 4) — see CreateTeamGui above.
+			ResetOnSpawn: false,
 			ScreenInsets: Enum.ScreenInsets.DeviceSafeInsets,
 			ZIndexBehavior: Enum.ZIndexBehavior.Sibling,
 		} as never,

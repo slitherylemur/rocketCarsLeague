@@ -31,23 +31,21 @@ const playerGui = LocalPlayer.WaitForChild("PlayerGui") as Instance;
 
 const UPDATE_INTERVAL = 0.25;
 
-/** Client mirror of MatchDirector.isInMenuFlow: landing page / Friends Team
- * mini lobby players sit outside the play loop, so the shop countdown must
- * not show for them — UNLESS the lobby vote completed while no round was
- * spawnable (CB_PendingLaunch), in which case they ride the countdown. The
- * Landing/CreateTeam ScreenGuis are still server-mounted, but their Enabled
- * state replicates and can be read here fine. */
+/** Client mirror of MatchDirector.isInMenuFlow: landing page ("menu") /
+ * Friends Team mini lobby ("lobby") players sit outside the play loop, so the
+ * shop countdown must not show for them — UNLESS the lobby vote completed
+ * while no round was spawnable (CB_PendingLaunch), in which case they ride the
+ * countdown. Phase 4: derived from the CB_FlowState player attribute (the
+ * Landing/CreateTeam ScreenGuis are client-owned now — CB_FlowState is the
+ * replicated truth their Enabled is itself derived from). "garage" is NOT
+ * exempt: the shop-phase CARS page is exactly the audience the countdown is
+ * for. */
 function isInMenuFlow(): boolean {
 	if (LocalPlayer.GetAttribute("CB_PendingLaunch") === true) {
 		return false;
 	}
-	for (const screenName of ["CreateTeam", "Landing"]) {
-		const screen = playerGui.FindFirstChild(screenName);
-		if (screen !== undefined && screen.IsA("ScreenGui") && screen.Enabled) {
-			return true;
-		}
-	}
-	return false;
+	const state = LocalPlayer.GetAttribute("CB_FlowState");
+	return state === "menu" || state === "lobby";
 }
 
 function deriveText(): string | undefined {

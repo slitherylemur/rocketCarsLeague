@@ -17,6 +17,7 @@ import { Globals } from "./Globals";
 import footballMatch from "./Modules/footballMatch";
 import TeamRegistry, { CarBallRemotes, RENAME_PRODUCT_ID } from "./Modules/TeamRegistry";
 import UiState from "./ui/UiState";
+import { getUiIntentEvent, type UiIntentEventName } from "shared/UiIntents";
 import { ProductIds } from "shared/Monetization";
 import type { LadderTeam } from "./Modules/TeamRegistry";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
@@ -26,6 +27,7 @@ import { CASH_PURCHACE_MENU_OPEN_SIZE } from "shared/ui/uiConstants";
 import type { CrateItem } from "./Modules/dataTypes";
 
 const TweenService = game.GetService("TweenService");
+const HttpService = game.GetService("HttpService");
 // Original: game.StarterGui.Garage.cashPurchace.Size (an unused local; the
 // template value now lives in uiConstants)
 const cashPurchaceMenuOpenSize = CASH_PURCHACE_MENU_OPEN_SIZE;
@@ -152,30 +154,33 @@ const selectedCrate = new Map<Player, number>();
 
 // ---- UI flow ownership (menu vs spawn) -------------------------------------
 // SpawnInPlayer and the menu (re)initialisers both span yields (LoadCharacter,
-// SpawnVehicle's internal ~2s of waits, cold/throttled DataStore Gets) and
-// both rewrite the whole PlayerGui. When they interleave for the same player —
-// round-end sendToMenu firing while a PLAY press is mid-spawn, the shop-end
-// auto-spawn landing inside a datastore-delayed initialisePlayerUi, an invite
-// accepted mid-spawn — whichever thread resumes LAST wins, so a player could
-// end up seated in a match car with the landing/garage menu enabled on top
-// (or vice versa). Same idiom as shopGen/inviteGen: every flow that takes over
-// the player's UI claims a generation; long flows re-check after their yields
-// and stand down when superseded, so the NEWEST intent always wins.
-type UiFlowKind = "menu" | "spawn";
-const uiFlowGen = new Map<Player, number>();
-const uiFlowKind = new Map<Player, UiFlowKind>();
+// SpawnVehicle's internal ~2s of waits, cold/throttled DataStore Gets). When
+// they interleave for the same player — round-end sendToMenu firing while a
+// PLAY press is mid-spawn, the shop-end auto-spawn landing inside a
+// datastore-delayed initialisePlayerUi, an invite accepted mid-spawn —
+// whichever thread resumes LAST wins, so a player could end up seated in a
+// match car with the landing/garage menu enabled on top (or vice versa).
+//
+// Phase 4: the CB_FlowState player attribute (UiState.setFlowState) IS the
+// flow claim now — it replaces the old uiFlowGen/uiFlowKind generation maps.
+// Every flow that takes the player over writes its state ("menu" / "lobby" /
+// "garage" from menu flows, "spawning" from SpawnInPlayer); long flows
+// re-check after their yields and stand down when the state is no longer the
+// one they wrote, so the NEWEST intent always wins. The same attribute is what
+// the client menu router renders from, and what MatchDirector/roundHandler
+// read for their menu-exemption rules.
+type FlowStateValue = "menu" | "lobby" | "garage" | "spawning" | "match";
 
-function claimUiFlow(player: Player, kind: UiFlowKind): number {
-	const gen = (uiFlowGen.get(player) ?? 0) + 1;
-	uiFlowGen.set(player, gen);
-	uiFlowKind.set(player, kind);
-	return gen;
+function getFlowState(player: Player): FlowStateValue | undefined {
+	const state = player.GetAttribute("CB_FlowState");
+	return typeIs(state, "string") ? (state as FlowStateValue) : undefined;
 }
 
-Players.PlayerRemoving.Connect((player) => {
-	uiFlowGen.delete(player);
-	uiFlowKind.delete(player);
-});
+/** Menu-family states: the player sits outside the play loop (client renders
+ * the landing page / lobby, or the server-owned Garage screen is up). */
+function isMenuFamily(state: FlowStateValue | undefined): boolean {
+	return state === "menu" || state === "lobby" || state === "garage";
+}
 
 DataStore2.Combine(
 	"BumperCarsRelease",
@@ -604,16 +609,15 @@ function OpenInventory(player: Player) {
 	inventory.Visible = true;
 }
 
-interface LandingGuiShape extends ScreenGui {
-	Panel: Frame & { Buttons: Frame & { JoinTeam: TextButton; CreateTeam: TextButton; Cars: TextButton } };
-}
-
 /** Landing page (Top Table §5): title + Join Team / Create Team / Cars, car
- * in view via the menu camera. Buttons are wired server-side like every other
- * menu screen. */
-function showLanding(player: Player) {
+ * in view via the menu camera. The Landing ScreenGui itself is CLIENT-owned
+ * (Phase 4): src/client/ui/menu.client.ts enables it while CB_FlowState is
+ * "menu" and fires the Intent_* remotes for its buttons. This function is the
+ * server half of "show the landing page": flow-state transition, menu camera
+ * aim, garage display car. */
+function enterLandingState(player: Player) {
 	// Landing = menu state: invalidate any in-flight spawn for this player.
-	claimUiFlow(player, "menu");
+	UiState.setFlowState(player, "menu");
 	if (!uiConnections.get(player)) {
 		uiConnections.set(player, new Map());
 	}
@@ -622,13 +626,11 @@ function showLanding(player: Player) {
 	}
 
 	const gui = playerGuiOf(player);
-	const landing = player.WaitForChild("PlayerGui").WaitForChild("Landing") as LandingGuiShape;
 	gui.Garage.Enabled = false;
-	landing.Enabled = true;
 
 	// Landing is outside the play loop — the client-rendered shop countdown
-	// (src/client/ui/timer.client.ts) hides itself while the Landing screen is
-	// enabled, so no server-side TimerGui clear is needed here any more.
+	// (src/client/ui/timer.client.ts) hides itself while CB_FlowState is a
+	// menu-family value, so no server-side TimerGui clear is needed here.
 
 	// Aim the menu camera at the garage car. setTab.Inventory used to do this
 	// as a side effect of OpenInventory on join; the landing page must send a
@@ -663,41 +665,28 @@ function showLanding(player: Player) {
 		});
 	}
 
-	uiConnections.get(player)!.set(
-		"landingJoin",
-		landing.Panel.Buttons.JoinTeam.MouseButton1Click.Connect(() => {
-			TeamRegistry.joinRandom(player);
-			landing.Enabled = false;
-			spawnIntoMatch(player);
-		}),
-	);
-	uiConnections.get(player)!.set(
-		"landingCreate",
-		landing.Panel.Buttons.CreateTeam.MouseButton1Click.Connect(() => {
-			// Creates the (locked) team immediately, then opens the team page
-			// for invites/settings — Play there spawns in.
-			if (!TeamRegistry.getTeamOf(player)) {
-				TeamRegistry.createTeam(player, false);
-			}
-			landing.Enabled = false;
-			showTeamPage(player);
-		}),
-	);
-	uiConnections.get(player)!.set(
-		"landingCars",
-		landing.Panel.Buttons.Cars.MouseButton1Click.Connect(() => {
-			landing.Enabled = false;
-			gui.Garage.Enabled = true;
-			const [ok, err] = pcall(() => OpenInventory(player));
-			if (!ok) {
-				warn(`[Landing] OpenInventory error: ${err}`);
-			}
-			ensureGarageMenuButtons(player);
-		}),
-	);
+	// (Landing button wiring lives client-side now — menu.client.ts fires
+	// Intent_PlayRandom / Intent_CreateTeam / Intent_OpenGarage, handled in the
+	// intent section at the bottom of this file.)
+}
+
+/** Friends Team mini lobby = "lobby" state: the CreateTeam ScreenGui is
+ * client-rendered from replicated team state; the server only records the
+ * transition and drops its own menu screen (the lobby can be entered from the
+ * garage or mid-match via an accepted invite). */
+function enterLobbyState(player: Player) {
+	pcall(() => {
+		playerGuiOf(player).Garage.Enabled = false;
+	});
+	UiState.setFlowState(player, "lobby");
 }
 
 function spawnIntoMatch(player: Player) {
+	// The spawn owns the UI from the moment of the press (set synchronously,
+	// BEFORE the interlude hold below): the client menus hide as soon as
+	// CB_FlowState leaves the menu family, and any later menu transition
+	// supersedes this spawn at its next checkpoint.
+	UiState.setFlowState(player, "spawning");
 	task.spawn(() => {
 		// Round-end interlude: the old round is being torn down and rebuilt
 		// (~20 s of victory scene / ladder map / summary). A SpawnInPlayer
@@ -725,38 +714,16 @@ function spawnIntoMatch(player: Player) {
 			ResetAndInitialisePlayerMenuUI(player);
 			return;
 		}
-		// Teammates still in the lobby see this member flip to IN MATCH.
-		const team = TeamRegistry.getTeamOf(player);
-		if (team) {
-			for (const member of team.members) {
-				if (member !== player) {
-					refreshTeamPage(member);
-				}
-			}
-		}
+		// Teammates still in the lobby re-render client-side from the attribute
+		// changes the spawn published (CB_InPlay via markInPlay, CB_Ready via
+		// the vote clear) — no server-side page refresh any more.
 	});
 }
 
 // ---- Top Table Phase 2: team page, invites, rename ------------------------
-
-type TeamMemberSlot = Frame & { Avatar: ImageLabel; PlayerName: TextLabel; ReadyTag: TextLabel };
-interface CreateTeamGuiShape extends ScreenGui {
-	Panel: Frame & {
-		Header: Frame & { TeamName: TextLabel; Rename: TextButton };
-		Members: Frame & { Slot1: TeamMemberSlot; Slot2: TeamMemberSlot; Slot3: TeamMemberSlot };
-		PlayerList: ScrollingFrame & { EmptyHint: TextLabel };
-		InviteFriends: TextButton;
-		AllowRandoms: TextButton & { SwitchTrack: Frame & { SwitchKnob: Frame } };
-		Play: TextButton;
-		Leave: TextButton;
-	};
-}
-interface InvitePopupShape extends ScreenGui {
-	Panel: Frame & { Message: TextLabel; Accept: TextButton; Decline: TextButton };
-}
-interface RenamePopupShape extends ScreenGui {
-	Panel: Frame & { NameBox: TextBox; Status: TextLabel; Confirm: TextButton; Close: TextButton };
-}
+// (The CreateTeam / InvitePopup / RenamePopup ScreenGuis are CLIENT-owned
+// since migration Phase 4 — the server publishes team/vote/invite/rename
+// state as attributes and the client renders it.)
 
 const MENU_FONT = new Font("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Heavy, Enum.FontStyle.Normal);
 
@@ -769,6 +736,24 @@ const MENU_FONT = new Font("rbxasset://fonts/families/GothamSSm.json", Enum.Font
 // votes.
 const teamReadyVotes = new Map<string, Set<Player>>();
 
+/** Publishes each member's vote as the CB_Ready player attribute (the client
+ * lobby renders the READY checkmarks from it). */
+function publishReadyVotes(team: LadderTeam) {
+	const votes = teamReadyVotes.get(team.id);
+	for (const member of team.members) {
+		UiState.setPlayerAttr(member, "CB_Ready", votes !== undefined && votes.has(member) ? true : undefined);
+	}
+}
+
+/** Drops a team's vote set AND clears the published CB_Ready mirrors —
+ * everywhere the old code did teamReadyVotes.delete(team.id). */
+function clearTeamVotes(team: LadderTeam) {
+	teamReadyVotes.delete(team.id);
+	for (const member of team.members) {
+		UiState.setPlayerAttr(member, "CB_Ready", undefined);
+	}
+}
+
 // Lobbies whose vote completed while no round was spawnable (the end-of-round
 // interlude, or the shop window): held on "STARTING SOON…" and launched by the
 // shop-phase auto start — members carry CB_PendingLaunch so MatchDirector
@@ -779,6 +764,7 @@ function cancelPendingLaunch(team: LadderTeam) {
 	if (!pendingLaunchTeams.delete(team.id)) {
 		return;
 	}
+	pcall(() => team.robloxTeam.SetAttribute("CB_Pending", false));
 	for (const member of team.members) {
 		member.SetAttribute("CB_PendingLaunch", undefined);
 	}
@@ -801,20 +787,18 @@ function tryLaunchTeam(team: LadderTeam) {
 	}
 	if (!footballMatch.isRoundLive() || Globals.shopPhaseActive === true) {
 		pendingLaunchTeams.add(team.id);
+		pcall(() => team.robloxTeam.SetAttribute("CB_Pending", true));
 		for (const member of team.members) {
 			member.SetAttribute("CB_PendingLaunch", true);
-			refreshTeamPage(member);
 		}
 		warn(`[TeamLobby] ${team.name} vote complete — STARTING SOON (rides the next-round countdown)`);
 		return;
 	}
-	teamReadyVotes.delete(team.id);
+	clearTeamVotes(team);
 	warn(`[TeamLobby] ${team.name} vote complete — launching ${team.members.size()} player(s)`);
 	for (const member of team.members) {
-		const page = member.FindFirstChild("PlayerGui")?.FindFirstChild("CreateTeam");
-		if (page && page.IsA("ScreenGui")) {
-			page.Enabled = false;
-		}
+		// spawnIntoMatch flips each member to "spawning", which hides their
+		// client-rendered lobby page.
 		spawnIntoMatch(member);
 	}
 }
@@ -833,9 +817,7 @@ Players.PlayerRemoving.Connect((player) => {
 		for (const teamId of affectedIds) {
 			const team = TeamRegistry.getTeamById(teamId);
 			if (team) {
-				for (const member of team.members) {
-					refreshTeamPage(member);
-				}
+				publishReadyVotes(team);
 				tryLaunchTeam(team);
 			}
 		}
@@ -845,380 +827,220 @@ Players.PlayerRemoving.Connect((player) => {
 TeamRegistry.onTeamDisbanded((team) => {
 	teamReadyVotes.delete(team.id);
 	pendingLaunchTeams.delete(team.id);
+	// Outstanding invites to the dead team are void — clear them so the client
+	// popups close (accepting would only have hit the teamExists failure path).
+	for (const player of Players.GetPlayers()) {
+		const invite = decodeInvite(player);
+		if (invite !== undefined && invite.teamId === team.id) {
+			UiState.setPlayerAttr(player, "CB_Invite", undefined);
+		}
+	}
 });
 
-function refreshTeamPage(player: Player) {
-	const page = player.WaitForChild("PlayerGui").FindFirstChild("CreateTeam") as CreateTeamGuiShape | undefined;
+// ---- lobby intents (old CreateTeam page button bodies) ---------------------
+// The CreateTeam ScreenGui is client-rendered (menu.client.ts) from team
+// attributes + CB_Ready; its buttons arrive as intents handled at the bottom
+// of this file, which call these bodies — the same logic the server-wired
+// buttons ran, minus the UI writes.
+
+/** Intent_ReadyVote — the old team-page Play button body. */
+function readyVote(player: Player) {
 	const team = TeamRegistry.getTeamOf(player);
-	if (!page || !team) {
+	if (!team || pendingLaunchTeams.has(team.id)) {
 		return;
 	}
-	page.Panel.Header.TeamName.Text = team.name.upper();
-	page.Panel.AllowRandoms.SwitchTrack.BackgroundColor3 = team.open ? Color3.fromRGB(0, 190, 100) : Color3.fromRGB(75, 84, 98);
-	page.Panel.AllowRandoms.SwitchTrack.SwitchKnob.Position = UDim2.fromScale(team.open ? 0.73 : 0.27, 0.5);
-
-	// Member cards: slot i shows team.members[i] (index 0 = creator = crown).
-	const votes = teamReadyVotes.get(team.id);
-	const slots = [page.Panel.Members.Slot1, page.Panel.Members.Slot2, page.Panel.Members.Slot3];
-	for (let i = 0; i < slots.size(); i++) {
-		const slot = slots[i];
-		const member = team.members[i] as Player | undefined;
-		if (member) {
-			slot.Avatar.Image = `rbxthumb://type=AvatarHeadShot&id=${member.UserId}&w=150&h=150`;
-			slot.PlayerName.Text = i === 0 ? `👑 ${member.DisplayName}` : member.DisplayName;
-			slot.PlayerName.TextColor3 = member === player ? Color3.fromRGB(255, 214, 120) : new Color3(1, 1, 1);
-			slot.PlayerName.TextTransparency = 0;
-			slot.ReadyTag.Visible = votes !== undefined && votes.has(member);
-		} else {
-			slot.Avatar.Image = "";
-			slot.PlayerName.Text = "EMPTY SLOT";
-			slot.PlayerName.TextColor3 = new Color3(1, 1, 1);
-			slot.PlayerName.TextTransparency = 0.5;
-			slot.ReadyTag.Visible = false;
-		}
+	let votes = teamReadyVotes.get(team.id);
+	if (!votes) {
+		votes = new Set();
+		teamReadyVotes.set(team.id, votes);
 	}
-
-	// Play button doubles as the vote button once the team has 2+ members.
-	let readyCount = 0;
-	for (const member of team.members) {
-		if (votes !== undefined && votes.has(member)) {
-			readyCount += 1;
-		}
-	}
-	if (pendingLaunchTeams.has(team.id)) {
-		page.Panel.Play.Text = "STARTING SOON…";
-	} else if (team.members.size() <= 1) {
-		page.Panel.Play.Text = "PLAY";
-	} else if (votes !== undefined && votes.has(player)) {
-		page.Panel.Play.Text = `CANCEL — ${readyCount}/${team.members.size()} READY`;
+	if (team.members.size() <= 1) {
+		// Solo team: no vote to hold — tryLaunchTeam spawns immediately,
+		// or holds on STARTING SOON when no round is spawnable.
+		votes.add(player);
+	} else if (votes.has(player)) {
+		votes.delete(player);
 	} else {
-		page.Panel.Play.Text = `READY UP (${readyCount}/${team.members.size()})`;
+		votes.add(player);
 	}
-
-	for (const child of page.Panel.PlayerList.GetChildren()) {
-		if (child.IsA("Frame")) {
-			child.Destroy();
-		}
-	}
-	let rowCount = 0;
-	for (const other of Players.GetPlayers()) {
-		if (other === player || TeamRegistry.getTeamOf(other) === team) {
-			continue;
-		}
-		rowCount += 1;
-		const row = new Instance("Frame");
-		row.Name = "InviteRow";
-		row.Size = new UDim2(1, -16, 0, 46);
-		row.BackgroundColor3 = Color3.fromRGB(30, 43, 60);
-		row.BorderSizePixel = 0;
-		const rowCorner = new Instance("UICorner");
-		rowCorner.CornerRadius = new UDim(0, 8);
-		rowCorner.Parent = row;
-		const rowStroke = new Instance("UIStroke");
-		rowStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border;
-		rowStroke.Color = Color3.fromRGB(105, 135, 175);
-		rowStroke.Transparency = 0.55;
-		rowStroke.Parent = row;
-
-		const avatar = new Instance("ImageLabel");
-		avatar.Name = "Avatar";
-		avatar.AnchorPoint = new Vector2(0, 0.5);
-		avatar.BackgroundColor3 = Color3.fromRGB(46, 60, 80);
-		avatar.BorderSizePixel = 0;
-		avatar.Image = `rbxthumb://type=AvatarHeadShot&id=${other.UserId}&w=48&h=48`;
-		avatar.Position = new UDim2(0, 8, 0.5, 0);
-		avatar.Size = new UDim2(0, 34, 0, 34);
-		const avatarCorner = new Instance("UICorner");
-		avatarCorner.CornerRadius = new UDim(0.5, 0);
-		avatarCorner.Parent = avatar;
-		avatar.Parent = row;
-
-		const nameLabel = new Instance("TextLabel");
-		nameLabel.Name = "PlayerName";
-		nameLabel.AnchorPoint = new Vector2(0, 0.5);
-		nameLabel.BackgroundTransparency = 1;
-		nameLabel.FontFace = MENU_FONT;
-		nameLabel.Position = new UDim2(0, 52, 0.5, 0);
-		nameLabel.Size = new UDim2(1, -180, 0, 22);
-		nameLabel.Text = other.DisplayName;
-		nameLabel.TextColor3 = new Color3(1, 1, 1);
-		nameLabel.TextScaled = true;
-		nameLabel.TextXAlignment = Enum.TextXAlignment.Left;
-		nameLabel.Parent = row;
-
-		const inviteButton = new Instance("TextButton");
-		inviteButton.Name = "Invite";
-		inviteButton.AnchorPoint = new Vector2(1, 0.5);
-		inviteButton.AutoButtonColor = true;
-		inviteButton.BackgroundColor3 = Color3.fromRGB(166, 235, 187);
-		inviteButton.BorderSizePixel = 0;
-		inviteButton.FontFace = MENU_FONT;
-		inviteButton.Position = new UDim2(1, -8, 0.5, 0);
-		inviteButton.Size = new UDim2(0, 108, 0, 30);
-		inviteButton.Text = "INVITE";
-		inviteButton.TextColor3 = Color3.fromRGB(20, 76, 43);
-		inviteButton.TextScaled = true;
-		const inviteCorner = new Instance("UICorner");
-		inviteCorner.CornerRadius = new UDim(0, 15);
-		inviteCorner.Parent = inviteButton;
-		const invitePadding = new Instance("UIPadding");
-		invitePadding.PaddingTop = new UDim(0, 6);
-		invitePadding.PaddingBottom = new UDim(0, 6);
-		invitePadding.Parent = inviteButton;
-		inviteButton.MouseButton1Click.Connect(() => {
-			inviteButton.Text = "SENT ✓";
-			sendInvitePopup(other, player);
-		});
-		inviteButton.Parent = row;
-		row.Parent = page.Panel.PlayerList;
-	}
-	page.Panel.PlayerList.EmptyHint.Visible = rowCount === 0;
+	publishReadyVotes(team);
+	tryLaunchTeam(team);
 }
 
-function showTeamPage(player: Player) {
-	// The mini lobby = menu state: an invite accepted while a spawn is in
-	// flight must win over that spawn, not be buried by its tail (which used
-	// to leave the accepter seated in a car with the team page on screen).
-	claimUiFlow(player, "menu");
-	if (!uiConnections.get(player)) {
-		uiConnections.set(player, new Map());
+/** Intent_LeaveTeam — the old team-page Leave button body. */
+function leaveTeamToLanding(player: Player) {
+	const team = TeamRegistry.getTeamOf(player);
+	if (team) {
+		// Cancel BEFORE leaveTeam so the leaver's pending marker clears too.
+		cancelPendingLaunch(team);
 	}
-	for (const [, connection] of pairs(uiConnections.get(player)!)) {
-		connection.Disconnect();
+	// The leaver drops out of team.members inside leaveTeam, so clear their
+	// published vote explicitly.
+	UiState.setPlayerAttr(player, "CB_Ready", undefined);
+	TeamRegistry.leaveTeam(player);
+	if (team) {
+		// Membership changed: stale votes must not launch the rest.
+		clearTeamVotes(team);
 	}
-	const page = player.WaitForChild("PlayerGui").WaitForChild("CreateTeam") as CreateTeamGuiShape;
-	// The lobby can open from anywhere (landing button, invite acceptance
-	// mid-menu or mid-match) — make sure the other menu screens drop away.
-	pcall(() => {
-		playerGuiOf(player).Garage.Enabled = false;
-	});
-	const landingGui = player.FindFirstChild("PlayerGui")?.FindFirstChild("Landing");
-	if (landingGui && landingGui.IsA("ScreenGui")) {
-		landingGui.Enabled = false;
-	}
-	page.Enabled = true;
-	refreshTeamPage(player);
+	enterLandingState(player);
+}
 
-	const wire = (key: string, buttonInstance: TextButton, handler: () => void) => {
-		uiConnections.get(player)!.set(key, buttonInstance.MouseButton1Click.Connect(handler));
-	};
-	wire("teamAllow", page.Panel.AllowRandoms, () => {
-		const team = TeamRegistry.getTeamOf(player);
-		if (team) {
-			team.open = !team.open;
-			refreshTeamPage(player);
-		}
-	});
-	wire("teamInviteFriends", page.Panel.InviteFriends, () => {
-		// Roblox's native invite prompt must run client-side.
-		CarBallRemotes.PromptGameInvite.FireClient(player);
-	});
-	wire("teamRename", page.Panel.Header.Rename, () => {
-		handleRenameRequest(player);
-	});
-	wire("teamPlay", page.Panel.Play, () => {
-		const team = TeamRegistry.getTeamOf(player);
-		if (!team || pendingLaunchTeams.has(team.id)) {
-			return;
-		}
-		let votes = teamReadyVotes.get(team.id);
-		if (!votes) {
-			votes = new Set();
-			teamReadyVotes.set(team.id, votes);
-		}
-		if (team.members.size() <= 1) {
-			// Solo team: no vote to hold — tryLaunchTeam spawns immediately,
-			// or holds on STARTING SOON when no round is spawnable.
-			votes.add(player);
-		} else if (votes.has(player)) {
-			votes.delete(player);
-		} else {
-			votes.add(player);
-		}
-		for (const member of team.members) {
-			refreshTeamPage(member);
-		}
-		tryLaunchTeam(team);
-	});
-	wire("teamLeave", page.Panel.Leave, () => {
-		const team = TeamRegistry.getTeamOf(player);
-		page.Enabled = false;
-		if (team) {
-			// Cancel BEFORE leaveTeam so the leaver's pending marker clears too.
-			cancelPendingLaunch(team);
-		}
+/** Garage BackToMenu / Intent_ExitToLanding — the old back-button body.
+ * EXIT TEAM: leaving the team is what disconnects the player from the
+ * shop-phase auto start (auto-spawn only takes teamed players). */
+function exitToLanding(player: Player) {
+	const team = TeamRegistry.getTeamOf(player);
+	if (team) {
+		// Defensive: if this player is somehow still rostered on a pitch (menu
+		// shown over a live match), leaving the TEAM without leaving the MATCH
+		// stranded a teamless roster entry nothing ever cleaned. No-op for the
+		// normal shop-phase press.
+		footballMatch.leaveMatch(player);
+		UiState.setPlayerAttr(player, "CB_Ready", undefined);
 		TeamRegistry.leaveTeam(player);
-		if (team) {
-			// Membership changed: stale votes must not launch the rest.
-			teamReadyVotes.delete(team.id);
-			for (const member of team.members) {
-				refreshTeamPage(member);
-			}
-		}
-		showLanding(player);
-	});
-	// Keep the roster live while the page is open: players joining/leaving the
-	// server change both the invite list and (via TeamRegistry's own
-	// PlayerRemoving) possibly the member cards. Deferred so registry cleanup
-	// runs first.
-	uiConnections.get(player)!.set(
-		"teamRosterAdded",
-		Players.PlayerAdded.Connect(() => task.defer(() => refreshTeamPage(player))),
-	);
-	uiConnections.get(player)!.set(
-		"teamRosterRemoved",
-		Players.PlayerRemoving.Connect((leaving) => {
-			if (leaving !== player) {
-				task.defer(() => refreshTeamPage(player));
-			}
-		}),
-	);
+		clearTeamVotes(team);
+	}
+	enterLandingState(player);
 }
 
-const inviteGen = new Map<Player, number>();
-const inviteConnections = new Map<Player, RBXScriptConnection[]>();
+// ---- published invite state ------------------------------------------------
+// One outstanding invite per target, published as the CB_Invite player
+// attribute (JSON) — the client renders the popup from it and answers with
+// Intent_ResolveInvite. Replaces the old sendInvitePopup + inviteGen /
+// inviteConnections server-side popup wiring.
 
-Players.PlayerRemoving.Connect((player) => {
-	inviteGen.delete(player);
-	for (const connection of inviteConnections.get(player) ?? []) {
-		connection.Disconnect();
+interface InvitePayload {
+	fromUserId: number;
+	fromName: string;
+	teamId: string;
+	teamName: string;
+}
+
+const INVITE_LIFETIME = 30;
+
+function decodeInvite(player: Player): InvitePayload | undefined {
+	const raw = player.GetAttribute("CB_Invite");
+	if (!typeIs(raw, "string") || raw === "") {
+		return undefined;
 	}
-	inviteConnections.delete(player);
-});
+	const [ok, decoded] = pcall(() => HttpService.JSONDecode(raw) as InvitePayload);
+	if (!ok || !typeIs(decoded, "table")) {
+		return undefined;
+	}
+	return decoded as InvitePayload;
+}
 
-function sendInvitePopup(target: Player, from: Player) {
+function sendInvite(target: Player, from: Player) {
 	const team = TeamRegistry.getTeamOf(from);
 	// No invites for playing teams (referral popups can arrive long after the
 	// lobby launched) — joining mid-play is only via the allow-randoms path.
 	if (!team || team.inPlay || team.members.size() >= 3) {
 		return;
 	}
-	const popup = target.FindFirstChild("PlayerGui")?.FindFirstChild("InvitePopup") as InvitePopupShape | undefined;
-	if (!popup) {
+	// Same audience the old invite rows offered: anyone in the server who is
+	// not already on the inviter's team.
+	if (target === from || TeamRegistry.getTeamOf(target) === team) {
 		return;
 	}
-	const gen = (inviteGen.get(target) ?? 0) + 1;
-	inviteGen.set(target, gen);
-	popup.Panel.Message.Text = `${from.DisplayName} invited you to ${team.name}`;
-	// A previous invite may have ended on the buttons-hidden failure message.
-	popup.Panel.Accept.Visible = true;
-	popup.Panel.Decline.Visible = true;
-	popup.Enabled = true;
-
-	// A superseded invite's handlers would otherwise stay connected forever
-	// (their gen guard keeps them inert but they leak).
-	for (const connection of inviteConnections.get(target) ?? []) {
-		connection.Disconnect();
-	}
-	const connections: RBXScriptConnection[] = [];
-	inviteConnections.set(target, connections);
-	const finish = () => {
-		popup.Enabled = false;
-		for (const connection of connections) {
-			connection.Disconnect();
-		}
-		if (inviteConnections.get(target) === connections) {
-			inviteConnections.delete(target);
-		}
+	const payload: InvitePayload = {
+		fromUserId: from.UserId,
+		fromName: from.DisplayName,
+		teamId: team.id,
+		teamName: team.name,
 	};
-	connections.push(
-		popup.Panel.Accept.MouseButton1Click.Connect(() => {
-			if (inviteGen.get(target) !== gen) {
-				return;
-			}
-			// Validate BEFORE joining: during the invite's 30s lifetime the
-			// lobby may have launched into a round, filled up, or disbanded —
-			// accepting must fail with a message, never join a playing team.
-			let failText: string | undefined;
-			if (!TeamRegistry.teamExists(team)) {
-				failText = `${team.name} no longer exists`;
-			} else if (team.inPlay) {
-				failText = `${team.name} already started playing`;
-			} else if (team.members.size() >= 3) {
-				failText = `${team.name} is full`;
-			}
-			if (failText !== undefined) {
-				finish();
-				popup.Panel.Message.Text = `Sorry — ${failText}!`;
-				popup.Panel.Accept.Visible = false;
-				popup.Panel.Decline.Visible = false;
-				popup.Enabled = true;
-				task.delay(2.5, () => {
-					if (inviteGen.get(target) === gen) {
-						popup.Enabled = false;
-					}
-				});
-				return;
-			}
-			finish();
-			const oldTeam = TeamRegistry.getTeamOf(target);
-			const wasInMatch = footballMatch.isInMatch(target);
-			if (!TeamRegistry.addToTeam(target, team)) {
-				warn(`[Invite] ${target.Name} accepted but ${team.name} is full/gone`);
-			} else {
-				// Membership changed on both sides — stale ready votes or a
-				// pending launch must not carry anyone who didn't vote.
-				cancelPendingLaunch(team);
-				teamReadyVotes.delete(team.id);
-				if (oldTeam) {
-					cancelPendingLaunch(oldTeam);
-					teamReadyVotes.delete(oldTeam.id);
-				}
-				target.SetAttribute("CB_PendingLaunch", undefined);
-				// Accepting mid-match pulls the player off their pitch (the
-				// pitch falls back / rebalances like a disconnect), then the
-				// accepter lands in the new team's mini lobby.
-				const [ok, err] = pcall(() => {
-					if (wasInMatch) {
-						footballMatch.leaveMatch(target);
-						ResetAndInitialisePlayerMenuUI(target);
-					}
-					showTeamPage(target);
-				});
-				if (!ok) {
-					warn(`[Invite] opening the lobby for ${target.Name} failed: ${err}`);
-				}
-				// Every member with a mounted team page sees the roster update
-				// (refreshTeamPage no-ops for players without page/team).
-				for (const member of team.members) {
-					refreshTeamPage(member);
-				}
-			}
-		}),
-	);
-	connections.push(
-		popup.Panel.Decline.MouseButton1Click.Connect(() => {
-			if (inviteGen.get(target) !== gen) {
-				return;
-			}
-			finish();
-		}),
-	);
-	task.delay(30, () => {
-		if (inviteGen.get(target) === gen) {
-			finish();
+	const encoded = HttpService.JSONEncode(payload);
+	UiState.setPlayerAttr(target, "CB_Invite", encoded);
+	// Same 30 s lifetime the old inviteGen timeout enforced. A newer invite
+	// overwrites the attribute, so a stale timer only ever clears its own
+	// payload (an identical re-sent invite shares the fate of the first —
+	// acceptable, the re-send window is the same 30 s).
+	task.delay(INVITE_LIFETIME, () => {
+		if (target.Parent !== undefined && target.GetAttribute("CB_Invite") === encoded) {
+			UiState.setPlayerAttr(target, "CB_Invite", undefined);
 		}
 	});
 }
 
-function showRenamePopup(player: Player, statusText?: string) {
-	const popup = player.WaitForChild("PlayerGui").FindFirstChild("RenamePopup") as RenamePopupShape | undefined;
-	if (!popup) {
+/** Intent_ResolveInvite: validate against the published invite + the CURRENT
+ * team state (during the invite's 30 s lifetime the lobby may have launched
+ * into a round, filled up, or disbanded — accepting must fail with a message,
+ * never join a playing team), then run the old Accept body. */
+function resolveInvite(target: Player, accept: boolean) {
+	const invite = decodeInvite(target);
+	if (invite === undefined) {
 		return;
 	}
-	popup.Panel.Status.Text = statusText ?? "";
-	popup.Enabled = true;
-	if (!popup.GetAttribute("CloseWired")) {
-		popup.SetAttribute("CloseWired", true);
-		popup.Panel.Close.MouseButton1Click.Connect(() => {
-			popup.Enabled = false;
+	UiState.setPlayerAttr(target, "CB_Invite", undefined);
+	if (!accept) {
+		return;
+	}
+	const team = TeamRegistry.getTeamById(invite.teamId);
+	let failText: string | undefined;
+	if (team === undefined) {
+		failText = `${invite.teamName} no longer exists`;
+	} else if (team.inPlay) {
+		failText = `${invite.teamName} already started playing`;
+	} else if (team.members.size() >= 3) {
+		failText = `${invite.teamName} is full`;
+	}
+	if (failText !== undefined || team === undefined) {
+		// The old popup swapped to a buttons-hidden "Sorry — X!" for 2.5 s; the
+		// client renders the same from CB_InviteError.
+		const message = `Sorry — ${failText}!`;
+		UiState.setPlayerAttr(target, "CB_InviteError", message);
+		task.delay(2.5, () => {
+			if (target.Parent !== undefined && target.GetAttribute("CB_InviteError") === message) {
+				UiState.setPlayerAttr(target, "CB_InviteError", undefined);
+			}
 		});
+		return;
+	}
+	const oldTeam = TeamRegistry.getTeamOf(target);
+	const wasInMatch = footballMatch.isInMatch(target);
+	if (!TeamRegistry.addToTeam(target, team)) {
+		warn(`[Invite] ${target.Name} accepted but ${team.name} is full/gone`);
+		return;
+	}
+	// Membership changed on both sides — stale ready votes or a pending launch
+	// must not carry anyone who didn't vote.
+	cancelPendingLaunch(team);
+	clearTeamVotes(team);
+	if (oldTeam) {
+		cancelPendingLaunch(oldTeam);
+		clearTeamVotes(oldTeam);
+	}
+	target.SetAttribute("CB_PendingLaunch", undefined);
+	// Accepting mid-match pulls the player off their pitch (the pitch falls
+	// back / rebalances like a disconnect), then the accepter lands in the new
+	// team's mini lobby. Accepting mid-SPAWN is covered by the flow state:
+	// enterLobbyState writes "lobby", and the in-flight spawn stands down at
+	// its next checkpoint (menu-family supersession also cleans up its car).
+	const [ok, err] = pcall(() => {
+		if (wasInMatch) {
+			footballMatch.leaveMatch(target);
+			ResetAndInitialisePlayerMenuUI(target);
+		}
+		enterLobbyState(target);
+	});
+	if (!ok) {
+		warn(`[Invite] opening the lobby for ${target.Name} failed: ${err}`);
 	}
 }
 
+// ---- rename ----------------------------------------------------------------
+// The RenamePopup ScreenGui is client-owned: the client opens it locally when
+// the lobby Rename button is pressed with credits in hand (CB_RenameCredits),
+// or when CB_RenamePrompt is bumped (the server-wired Garage TeamNameStrip
+// click), or when a purchased credit arrives (the client watches
+// CB_RenameCredits — the old server-side watcher moved there). Submission
+// still travels over CarBallRemotes.SubmitTeamName; feedback is published as
+// CB_RenameStatus.
+
 function handleRenameRequest(player: Player) {
 	if (TeamRegistry.getRenameCredits(player) > 0) {
-		showRenamePopup(player);
+		// Ping the client-owned popup open.
+		const count = player.GetAttribute("CB_RenamePrompt");
+		UiState.setPlayerAttr(player, "CB_RenamePrompt", (typeIs(count, "number") ? count : 0) + 1);
 		return;
 	}
 	if (RENAME_PRODUCT_ID === 0) {
@@ -1226,34 +1048,36 @@ function handleRenameRequest(player: Player) {
 		// stays testable in Studio.
 		warn("[Rename] RENAME_PRODUCT_ID not set — granting a free test credit");
 		TeamRegistry.grantRenameCredit(player);
-		return; // the credit-attribute watcher opens the popup
+		return; // the client's credit-attribute watcher opens the popup
 	}
 	MarketplaceService.PromptProductPurchase(player, RENAME_PRODUCT_ID);
 }
 
-// Typed rename submissions (client fires with the TextBox contents).
+// Typed rename submissions (client fires with the TextBox contents). Result
+// feedback via CB_RenameStatus: "" closes the popup ("ok" — and "nocredit",
+// which closed it before too), "moderated"/"error" show the matching status
+// line client-side.
 CarBallRemotes.SubmitTeamName.OnServerEvent.Connect((player, raw) => {
 	if (!typeIs(raw, "string")) {
 		return;
 	}
+	UiState.setPlayerAttr(player, "CB_RenameStatus", "pending");
 	const result = TeamRegistry.tryRename(player, raw);
-	const popup = player.FindFirstChild("PlayerGui")?.FindFirstChild("RenamePopup") as RenamePopupShape | undefined;
-	if (!popup) {
-		return;
-	}
-	if (result === "ok") {
-		popup.Enabled = false;
-		const teamName = playerGuiOf(player).Garage.FindFirstChild("CurrentTeamName", true);
-		if (teamName?.IsA("TextLabel")) {
-			teamName.Text = TeamRegistry.getTeamOf(player)?.name ?? "NO TEAM";
+	if (result === "ok" || result === "nocredit") {
+		if (result === "ok") {
+			// Garage is still server-owned — keep its team-name strip fresh.
+			pcall(() => {
+				const teamName = playerGuiOf(player).Garage.FindFirstChild("CurrentTeamName", true);
+				if (teamName?.IsA("TextLabel")) {
+					teamName.Text = TeamRegistry.getTeamOf(player)?.name ?? "NO TEAM";
+				}
+			});
 		}
-		refreshTeamPage(player);
+		UiState.setPlayerAttr(player, "CB_RenameStatus", "");
 	} else if (result === "moderated") {
-		popup.Panel.Status.Text = "That name was moderated — try another";
-	} else if (result === "nocredit") {
-		popup.Enabled = false;
+		UiState.setPlayerAttr(player, "CB_RenameStatus", "moderated");
 	} else {
-		popup.Panel.Status.Text = "Something went wrong — try again";
+		UiState.setPlayerAttr(player, "CB_RenameStatus", "error");
 	}
 });
 
@@ -1323,20 +1147,10 @@ function ensureGarageMenuButtons(player: Player) {
 	backShadow.Parent = backButton;
 	backButton.MouseButton1Click.Connect(() => {
 		const [ok, err] = pcall(() => {
-			// EXIT TEAM: leaving the team is what disconnects the player from
-			// the shop-phase auto start (auto-spawn only takes teamed players).
-			const team = TeamRegistry.getTeamOf(player);
-			if (team) {
-				// Defensive: if this player is somehow still rostered on a pitch
-				// (menu shown over a live match), leaving the TEAM without
-				// leaving the MATCH stranded a teamless roster entry nothing
-				// ever cleaned. No-op for the normal shop-phase press.
-				footballMatch.leaveMatch(player);
-				TeamRegistry.leaveTeam(player);
-				teamReadyVotes.delete(team.id);
-			}
+			// Shared with Intent_ExitToLanding — leave-team guards + the
+			// landing transition (the Landing page itself renders client-side).
+			exitToLanding(player);
 			backButton.Text = backButtonLabel(player);
-			showLanding(player);
 		});
 		if (!ok) {
 			warn(`[Garage] back to menu failed: ${err}`);
@@ -1425,17 +1239,23 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 
 function spawnInPlayerInner(player: Player): boolean {
 	warn(`[SpawnInPlayer] ENTER ${player.Name}`);
-	const flowGen = claimUiFlow(player, "spawn");
+	// The spawn claims the UI flow: CB_FlowState = "spawning". (spawnIntoMatch
+	// already wrote it at the button press; writing again here also covers the
+	// direct Globals.SpawnInPlayer callers — the shop auto-spawn and the
+	// gamepad Y handler.)
+	UiState.setFlowState(player, "spawning");
 	// True (and cleans up) when a newer flow claimed the player's UI while this
-	// spawn was inside one of its yields. Returning true afterwards is
-	// deliberate: the newer flow owns the UI, so spawnIntoMatch's failure path
-	// must NOT stomp it with yet another menu remount.
+	// spawn was inside one of its yields — i.e. CB_FlowState is no longer the
+	// "spawning" this thread wrote. Returning true afterwards is deliberate:
+	// the newer flow owns the UI, so spawnIntoMatch's failure path must NOT
+	// stomp it with yet another menu remount.
 	const standDownIfSuperseded = (stage: string): boolean => {
-		if (uiFlowGen.get(player) === flowGen) {
+		const state = getFlowState(player);
+		if (state === "spawning") {
 			return false;
 		}
-		warn(`[SpawnInPlayer] superseded ${stage} for ${player.Name} — standing down`);
-		if (uiFlowKind.get(player) === "menu") {
+		warn(`[SpawnInPlayer] superseded ${stage} for ${player.Name} (flow state ${tostring(state)}) — standing down`);
+		if (isMenuFamily(state)) {
 			// A menu flow owns the UI now (round-end sendToMenu, an accepted
 			// invite, a menu re-init) — put the world half back the way menu
 			// players are left (stop()/leaveMatch idiom): off any pitch
@@ -1532,8 +1352,10 @@ function spawnInPlayerInner(player: Player): boolean {
 		const ladderTeam = TeamRegistry.getTeamOf(player);
 		if (ladderTeam) {
 			TeamRegistry.markInPlay(ladderTeam);
-			pendingLaunchTeams.delete(ladderTeam.id);
-			teamReadyVotes.delete(ladderTeam.id);
+			if (pendingLaunchTeams.delete(ladderTeam.id)) {
+				pcall(() => ladderTeam.robloxTeam.SetAttribute("CB_Pending", false));
+			}
+			clearTeamVotes(ladderTeam);
 		}
 		player.SetAttribute("CB_PendingLaunch", undefined);
 		spawnCFrame = footballMatch.getSpawnCFrame(player);
@@ -1637,13 +1459,15 @@ function spawnInPlayerInner(player: Player): boolean {
 	if (standDownIfSuperseded("after spawn")) {
 		return true;
 	}
+	// Spawn completed and still owns the flow — the player is in the match.
+	UiState.setFlowState(player, "match");
 	return true;
 }
 
 function initialisePlayerUi(player: Player) {
-	// Callers (initializePlayer / ResetAndInitialisePlayerMenuUI) claimed the
-	// menu flow; remember which claim this run belongs to.
-	const flowGen = uiFlowGen.get(player);
+	// Callers (initializePlayer / ResetAndInitialisePlayerMenuUI) set the
+	// flow state to "menu" before calling; this run owns the UI only while
+	// CB_FlowState still reads "menu" after its yields.
 	task.spawn(() => {
 		DataStore2.SaveAll(player);
 	});
@@ -1671,11 +1495,17 @@ function initialisePlayerUi(player: Player) {
 	setPlayerTrophies(player, DataStore2("trophies", player).Get(DataStoreDefaults.trophies) as number);
 
 	// The Gets above yield on a cold/throttled datastore (live-server latency
-	// Studio never showed). If a spawn flow claimed the UI in that window (the
-	// shop-end auto-spawn, a PLAY press), enabling the menus now would paint
-	// them over a player who is already seated in the match — stand down.
-	if (uiFlowGen.get(player) !== flowGen) {
-		warn(`[initialisePlayerUi] superseded for ${player.Name} — leaving the UI to the newer flow`);
+	// Studio never showed). If a NEWER flow claimed the UI in that window — a
+	// spawn ("spawning"/"match": the shop-end auto-spawn, a PLAY press) or
+	// another menu flow (an accepted invite's "lobby") — enabling the menus /
+	// re-forcing the menu camera now would paint over it. Callers set "menu"
+	// right before this ran, so any other value means superseded — stand down.
+	if (getFlowState(player) !== "menu") {
+		warn(
+			`[initialisePlayerUi] superseded for ${player.Name} (flow state ${tostring(
+				getFlowState(player),
+			)}) — leaving the UI to the newer flow`,
+		);
 		return;
 	}
 
@@ -1705,8 +1535,11 @@ function initialisePlayerUi(player: Player) {
 			garageUi.Enabled = true;
 			OpenInventory(player);
 			ensureGarageMenuButtons(player);
+			// CARS page = "garage": counted by the shop countdown/auto-spawn
+			// (unlike "menu"/"lobby"), skipped by the round-end sendToMenu.
+			UiState.setFlowState(player, "garage");
 		} else {
-			showLanding(player);
+			enterLandingState(player);
 		}
 	});
 	if (!landOk) {
@@ -1789,7 +1622,7 @@ function enableSpectateScreen(player: Player, playerToWatch: Player | undefined)
 function ResetAndInitialisePlayerMenuUI(player: Player) {
 	// Take the UI over from any in-flight spawn (it stands down at its next
 	// checkpoint instead of re-enabling gameplay UI on top of the menus).
-	claimUiFlow(player, "menu");
+	UiState.setFlowState(player, "menu");
 	// Menu-flow players never have a character (menu camera + garage). Any
 	// character reaching here is a leftover: SpawnInPlayer's LoadCharacter
 	// after a failed spawn attempt, or a boot-race engine auto-load — standing
@@ -1883,21 +1716,19 @@ function initializePlayer(player: Player) {
 
 	const ui = player.WaitForChild("PlayerGui");
 
-	claimUiFlow(player, "menu");
+	// Initial flow state: the menu. Written BEFORE the (yieldy)
+	// initialisePlayerUi so the client-owned landing page can paint
+	// immediately and order-independently of the DataStore reads.
+	UiState.setFlowState(player, "menu");
 	// Original: clone every StarterGui child into PlayerGui.
 	PlayerGuiManager.mountAll(player);
 
 	createValues(player);
 	initialisePlayerUi(player);
 
-	// Rename purchase completions open the naming popup (credits arrive
-	// asynchronously via purchaseHandler's receipt processor).
-	player.GetAttributeChangedSignal("CB_RenameCredits").Connect(() => {
-		const credits = player.GetAttribute("CB_RenameCredits");
-		if (typeIs(credits, "number") && credits > 0) {
-			showRenamePopup(player);
-		}
-	});
+	// (Rename purchase completions: the CLIENT watches CB_RenameCredits and
+	// opens its own RenamePopup when a credit arrives — the server-side
+	// watcher moved to menu.client.ts in Phase 4.)
 
 	// Game-invited friends: offer the referrer's team on arrival (join data
 	// carries ReferredByPlayerId for game invites; absent in Studio tests).
@@ -1911,7 +1742,7 @@ function initializePlayer(player: Player) {
 			const referrer = Players.GetPlayerByUserId(referrerId);
 			if (referrer && TeamRegistry.getTeamOf(referrer)) {
 				task.wait(3); // let the landing page mount first
-				sendInvitePopup(player, referrer);
+				sendInvite(player, referrer);
 			}
 		}
 	});
@@ -2077,6 +1908,178 @@ FunctionsAndEvents.PlayerReset.OnServerEvent.Connect((player) => {
 		resetting.set(player, false);
 		//ResetAndInitialisePlayerMenuUI(player)
 	}
+});
+
+// ---- Phase 4: client menu intents ------------------------------------------
+// Landing / CreateTeam / InvitePopup / RenamePopup are CLIENT-owned; their
+// button presses arrive on the UiIntents remotes. Validation first (flow
+// state + typeIs + per-player debounce), then the same bodies the old
+// server-wired buttons ran. Wired here (not a separate .server.ts) because
+// the handlers need this script's locals (spawnIntoMatch, enterLandingState,
+// readyVote, ...).
+
+const intentLastFired = new Map<Player, Map<string, number>>();
+const INTENT_DEBOUNCE = 0.15;
+
+Players.PlayerRemoving.Connect((player) => {
+	intentLastFired.delete(player);
+});
+
+function passesIntentDebounce(player: Player, key: string): boolean {
+	let byKey = intentLastFired.get(player);
+	if (!byKey) {
+		byKey = new Map();
+		intentLastFired.set(player, byKey);
+	}
+	const now = os.clock();
+	const last = byKey.get(key);
+	if (last !== undefined && now - last < INTENT_DEBOUNCE) {
+		return false;
+	}
+	byKey.set(key, now);
+	return true;
+}
+
+// task.spawn: getUiIntentEvent WaitForChilds the UiIntents folder, which
+// UiIntents.server.ts may not have created yet at this point in boot.
+task.spawn(() => {
+	const connectIntent = (
+		name: UiIntentEventName,
+		handler: (player: Player, ...args: unknown[]) => void,
+		debounceKey?: (player: Player, ...args: unknown[]) => string,
+	) => {
+		getUiIntentEvent(name).OnServerEvent.Connect((player, ...args) => {
+			const key = debounceKey !== undefined ? debounceKey(player, ...args) : name;
+			if (!passesIntentDebounce(player, key)) {
+				return;
+			}
+			handler(player, ...args);
+		});
+	};
+
+	// Landing.JoinTeam (PLAY): join/create an open team and spawn in.
+	connectIntent("Intent_PlayRandom", (player) => {
+		if (getFlowState(player) !== "menu") {
+			return;
+		}
+		TeamRegistry.joinRandom(player);
+		spawnIntoMatch(player);
+	});
+
+	// Landing.CreateTeam (FRIENDS TEAM): create the (locked) team immediately,
+	// then open the team page for invites/settings — Play there spawns in.
+	connectIntent("Intent_CreateTeam", (player) => {
+		if (getFlowState(player) !== "menu") {
+			return;
+		}
+		if (!TeamRegistry.getTeamOf(player)) {
+			TeamRegistry.createTeam(player, false);
+		}
+		enterLobbyState(player);
+	});
+
+	// Landing.Cars (SELECT CAR): the Garage is still fully server-owned this
+	// phase — enabling it and wiring its pages here is required.
+	connectIntent("Intent_OpenGarage", (player) => {
+		const state = getFlowState(player);
+		if (state !== "menu" && state !== "lobby") {
+			return;
+		}
+		// State first so the client menus drop before the (potentially
+		// yieldy) inventory build.
+		UiState.setFlowState(player, "garage");
+		const [ok, err] = pcall(() => {
+			playerGuiOf(player).Garage.Enabled = true;
+			OpenInventory(player);
+			ensureGarageMenuButtons(player);
+		});
+		if (!ok) {
+			warn(`[Menu] OpenGarage error: ${err}`);
+		}
+	});
+
+	// Garage BackToMenu equivalent (the server-wired button calls the same
+	// exitToLanding body — this intent exists for a future client-owned
+	// garage).
+	connectIntent("Intent_ExitToLanding", (player) => {
+		if (getFlowState(player) !== "garage") {
+			return;
+		}
+		const [ok, err] = pcall(() => exitToLanding(player));
+		if (!ok) {
+			warn(`[Garage] back to menu failed: ${err}`);
+		}
+	});
+
+	// CreateTeam.Play: ready vote (launch when everyone voted).
+	connectIntent("Intent_ReadyVote", (player) => {
+		if (getFlowState(player) !== "lobby") {
+			return;
+		}
+		readyVote(player);
+	});
+
+	// CreateTeam.Leave.
+	connectIntent("Intent_LeaveTeam", (player) => {
+		if (getFlowState(player) !== "lobby") {
+			return;
+		}
+		leaveTeamToLanding(player);
+	});
+
+	// CreateTeam.AllowRandoms toggle.
+	connectIntent("Intent_SetTeamOpen", (player, open) => {
+		if (!typeIs(open, "boolean")) {
+			return;
+		}
+		if (getFlowState(player) !== "lobby") {
+			return;
+		}
+		const team = TeamRegistry.getTeamOf(player);
+		if (team) {
+			TeamRegistry.setTeamOpen(team, open);
+		}
+	});
+
+	// CreateTeam invite-row buttons. Debounced per target so inviting several
+	// players in quick succession still works.
+	connectIntent(
+		"Intent_InvitePlayer",
+		(player, targetUserId) => {
+			if (!typeIs(targetUserId, "number")) {
+				return;
+			}
+			if (getFlowState(player) !== "lobby") {
+				return;
+			}
+			const target = Players.GetPlayerByUserId(targetUserId);
+			if (!target) {
+				return;
+			}
+			sendInvite(target, player);
+		},
+		(player, targetUserId) => `Intent_InvitePlayer:${tostring(targetUserId)}`,
+	);
+
+	// InvitePopup Accept/Decline — no flow-state requirement: the popup
+	// overlays any state (the old popup did too); resolveInvite re-validates
+	// everything against CB_Invite + the current team state.
+	connectIntent("Intent_ResolveInvite", (player, accept) => {
+		if (!typeIs(accept, "boolean")) {
+			return;
+		}
+		resolveInvite(player, accept);
+	});
+
+	// CreateTeam.Rename (the Garage TeamNameStrip click stays server-wired and
+	// calls handleRenameRequest directly).
+	connectIntent("Intent_RequestRename", (player) => {
+		const state = getFlowState(player);
+		if (state !== "lobby" && state !== "garage") {
+			return;
+		}
+		handleRenameRequest(player);
+	});
 });
 
 // The whole round system hangs off this one boot call. If it throws (a
