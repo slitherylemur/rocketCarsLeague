@@ -104,15 +104,27 @@ const crateDebounces = new Map<Player, boolean>();
 // whichever thread resumes LAST wins, so a player could end up seated in a
 // match car with the landing/garage menu enabled on top (or vice versa).
 //
-// Phase 4: the CB_FlowState player attribute (UiState.setFlowState) IS the
-// flow claim now — it replaces the old uiFlowGen/uiFlowKind generation maps.
-// Every flow that takes the player over writes its state ("menu" / "lobby" /
-// "garage" from menu flows, "spawning" from SpawnInPlayer); long flows
-// re-check after their yields and stand down when the state is no longer the
-// one they wrote, so the NEWEST intent always wins. The same attribute is what
-// the client menu router renders from, and what MatchDirector/roundHandler
-// read for their menu-exemption rules.
+// CB_FlowState remains the replicated state rendered by the client and read by
+// MatchDirector/roundHandler. It is paired with a server-only generation token
+// so yielding operations can prove they still own the current transition.
 type FlowStateValue = "menu" | "lobby" | "garage" | "spawning" | "match";
+const flowGeneration = new Map<Player, number>();
+
+/** Replicate the visible state and issue a unique server-side ownership token.
+ * The token detects ABA transitions (menu -> spawning -> menu) which cannot be
+ * distinguished by comparing CB_FlowState alone after a yielding operation. */
+function claimFlowState(player: Player, state: FlowStateValue): number {
+	const generation = (flowGeneration.get(player) ?? 0) + 1;
+	flowGeneration.set(player, generation);
+	UiState.setFlowState(player, state);
+	return generation;
+}
+
+function ownsFlow(player: Player, generation: number): boolean {
+	return flowGeneration.get(player) === generation;
+}
+
+Players.PlayerRemoving.Connect((player) => flowGeneration.delete(player));
 
 function getFlowState(player: Player): FlowStateValue | undefined {
 	const state = player.GetAttribute("CB_FlowState");
@@ -270,7 +282,7 @@ function enterLandingState(player: Player) {
 	// Landing = menu state: invalidate any in-flight spawn for this player.
 	// (The client-owned Garage derives its Enabled from CB_FlowState, so the
 	// old server-side Garage.Enabled=false is this same write now.)
-	UiState.setFlowState(player, "menu");
+	const flowGen = claimFlowState(player, "menu");
 
 	// Landing is outside the play loop — the client-rendered shop countdown
 	// (src/client/ui/timer.client.ts) hides itself while CB_FlowState is a
@@ -295,13 +307,11 @@ function enterLandingState(player: Player) {
 	if (playerGarage) {
 		task.spawn(() => {
 			const [okSpawn, errSpawn] = pcall(() => {
-				spawnVehicle.SpawnVehicle(
-					player,
-					false,
-					DataUtilities.getPlayerEquippedVehicle(player),
-					playerGarage.spawnPlate.CFrame,
-					true,
-				);
+				const vehicleName = DataUtilities.getPlayerEquippedVehicle(player);
+				if (!ownsFlow(player, flowGen)) {
+					return;
+				}
+				spawnVehicle.SpawnVehicle(player, false, vehicleName, playerGarage.spawnPlate.CFrame, true);
 			});
 			if (!okSpawn) {
 				warn(`[Landing] garage display SpawnVehicle failed: ${errSpawn}`);
@@ -320,7 +330,7 @@ function enterLandingState(player: Player) {
  * setTab.Inventory side effect; tab SWITCHES aim locally on the client) and
  * the equipped display car on the plate. */
 function enterGarageState(player: Player) {
-	UiState.setFlowState(player, "garage");
+	const flowGen = claimFlowState(player, "garage");
 
 	const playerGarage = Globals.findPlayerGarage(player);
 	const bodyCamera = playerGarage && playerGarage.Cameras.FindFirstChild("Body");
@@ -334,13 +344,11 @@ function enterGarageState(player: Player) {
 	if (playerGarage) {
 		task.spawn(() => {
 			const [okSpawn, errSpawn] = pcall(() => {
-				spawnVehicle.SpawnVehicle(
-					player,
-					false,
-					DataUtilities.getPlayerEquippedVehicle(player),
-					playerGarage.spawnPlate.CFrame,
-					true,
-				);
+				const vehicleName = DataUtilities.getPlayerEquippedVehicle(player);
+				if (!ownsFlow(player, flowGen)) {
+					return;
+				}
+				spawnVehicle.SpawnVehicle(player, false, vehicleName, playerGarage.spawnPlate.CFrame, true);
 			});
 			if (!okSpawn) {
 				warn(`[Garage] display SpawnVehicle failed: ${errSpawn}`);
@@ -355,7 +363,7 @@ function enterGarageState(player: Player) {
  * garage or mid-match via an accepted invite). */
 function enterLobbyState(player: Player) {
 	// (Client-owned Garage hides itself when CB_FlowState leaves "garage".)
-	UiState.setFlowState(player, "lobby");
+	claimFlowState(player, "lobby");
 }
 
 function spawnIntoMatch(player: Player) {
@@ -363,7 +371,7 @@ function spawnIntoMatch(player: Player) {
 	// BEFORE the interlude hold below): the client menus hide as soon as
 	// CB_FlowState leaves the menu family, and any later menu transition
 	// supersedes this spawn at its next checkpoint.
-	UiState.setFlowState(player, "spawning");
+	const flowGen = claimFlowState(player, "spawning");
 	task.spawn(() => {
 		// Round-end interlude: the old round is being torn down and rebuilt
 		// (~20 s of victory scene / ladder map / summary). A SpawnInPlayer
@@ -384,6 +392,12 @@ function spawnIntoMatch(player: Player) {
 			if (player.Parent === undefined) {
 				return;
 			}
+		}
+		// The interlude wait yields for many seconds. A newer menu/lobby claim
+		// must cancel this launch instead of being overwritten when it resumes.
+		if (!ownsFlow(player, flowGen)) {
+			UiState.setPlayerAttr(player, "CB_InterludeHold", undefined);
+			return;
 		}
 		const [ok, result] = pcall(() => Globals.SpawnInPlayer(player));
 		if (!ok || result !== true) {
@@ -764,32 +778,63 @@ const resetting = new Map<Player, boolean>();
 // controls, for the whole round. os.clock stamp (not a plain flag) so a spawn
 // thread that dies mid-flight can never lock the player out forever.
 const spawnInFlight = new Map<Player, number>();
+const activeSpawnGeneration = new Map<Player, number>();
+const pendingSpawnGeneration = new Map<Player, number>();
 const SPAWN_IN_FLIGHT_TIMEOUT = 45;
 
 Globals.SpawnInPlayer = (player: Player): boolean => {
 	const startedAt = spawnInFlight.get(player);
 	if (startedAt !== undefined && os.clock() - startedAt < SPAWN_IN_FLIGHT_TIMEOUT) {
 		warn(`[SpawnInPlayer] ${player.Name} is already spawning — duplicate call ignored`);
-		// "true": the in-flight spawn is handling this player; a false here
-		// would make spawnIntoMatch force the menu state OVER the live spawn.
+		// If a menu claim occurred between the two spawn requests, the active
+		// generation will stand down. Remember the newer request so the wrapper
+		// starts it after the old operation releases the single-flight lock.
+		const currentGeneration = flowGeneration.get(player);
+		if (
+			getFlowState(player) === "spawning" &&
+			currentGeneration !== undefined &&
+			currentGeneration !== activeSpawnGeneration.get(player)
+		) {
+			pendingSpawnGeneration.set(player, currentGeneration);
+		}
+		// "true": either the active spawn is handling this request or the retry
+		// above will. A false would force the menu over both operations.
 		return true;
 	}
+	const flowGen = claimFlowState(player, "spawning");
 	spawnInFlight.set(player, os.clock());
-	const [ok, result] = pcall(() => spawnInPlayerInner(player));
+	activeSpawnGeneration.set(player, flowGen);
+	const [ok, result] = pcall(() => spawnInPlayerInner(player, flowGen));
 	spawnInFlight.delete(player);
+	activeSpawnGeneration.delete(player);
+	const retryGeneration = pendingSpawnGeneration.get(player);
+	pendingSpawnGeneration.delete(player);
+	if (
+		retryGeneration !== undefined &&
+		ownsFlow(player, retryGeneration) &&
+		getFlowState(player) === "spawning" &&
+		player.Parent !== undefined
+	) {
+		task.defer(() => {
+			const [retryOk, retryResult] = pcall(() => Globals.SpawnInPlayer(player));
+			if (!retryOk || retryResult !== true) {
+				warn(`[SpawnInPlayer] queued retry failed for ${player.Name} — returning to menu`);
+				ResetAndInitialisePlayerMenuUI(player);
+			}
+		});
+	}
 	if (!ok) {
 		error(result);
 	}
 	return result === true;
 };
 
-function spawnInPlayerInner(player: Player): boolean {
+function spawnInPlayerInner(player: Player, flowGen: number): boolean {
 	warn(`[SpawnInPlayer] ENTER ${player.Name}`);
 	// The spawn claims the UI flow: CB_FlowState = "spawning". (spawnIntoMatch
 	// already wrote it at the button press; writing again here also covers the
 	// direct Globals.SpawnInPlayer callers — the shop auto-spawn and the
 	// gamepad Y handler.)
-	UiState.setFlowState(player, "spawning");
 	// True (and cleans up) when a newer flow claimed the player's UI while this
 	// spawn was inside one of its yields — i.e. CB_FlowState is no longer the
 	// "spawning" this thread wrote. Returning true afterwards is deliberate:
@@ -797,7 +842,7 @@ function spawnInPlayerInner(player: Player): boolean {
 	// stomp it by forcing the menu flow state on top.
 	const standDownIfSuperseded = (stage: string): boolean => {
 		const state = getFlowState(player);
-		if (state === "spawning") {
+		if (ownsFlow(player, flowGen)) {
 			return false;
 		}
 		warn(`[SpawnInPlayer] superseded ${stage} for ${player.Name} (flow state ${tostring(state)}) — standing down`);
@@ -994,11 +1039,11 @@ function spawnInPlayerInner(player: Player): boolean {
 		return true;
 	}
 	// Spawn completed and still owns the flow — the player is in the match.
-	UiState.setFlowState(player, "match");
+	claimFlowState(player, "match");
 	return true;
 }
 
-function initialisePlayerUi(player: Player) {
+function initialisePlayerUi(player: Player, flowGen: number) {
 	// Callers (initializePlayer / ResetAndInitialisePlayerMenuUI) set the
 	// flow state to "menu" before calling; this run owns the UI only while
 	// CB_FlowState still reads "menu" after its yields.
@@ -1034,7 +1079,7 @@ function initialisePlayerUi(player: Player) {
 	// another menu flow (an accepted invite's "lobby") — enabling the menus /
 	// re-forcing the menu camera now would paint over it. Callers set "menu"
 	// right before this ran, so any other value means superseded — stand down.
-	if (getFlowState(player) !== "menu") {
+	if (!ownsFlow(player, flowGen) || getFlowState(player) !== "menu") {
 		warn(
 			`[initialisePlayerUi] superseded for ${player.Name} (flow state ${tostring(
 				getFlowState(player),
@@ -1069,7 +1114,6 @@ function initialisePlayerUi(player: Player) {
 	//local rand = math.random(1, #workspace.SpawnPoints:GetChildren())
 	//local spawnPoint = workspace.SpawnPoints:GetChildren()[rand]
 	//spawnVehicle.SpawnVehicle(player, true, DataUtilities.getPlayerEquippedVehicle(player), spawnPoint.CFrame)
-
 }
 
 //removes players garage and sets door playerValue to nil
@@ -1122,7 +1166,7 @@ function beginSpectate(player: Player, killer: Player) {
 function ResetAndInitialisePlayerMenuUI(player: Player) {
 	// Take the UI over from any in-flight spawn (it stands down at its next
 	// checkpoint instead of re-enabling gameplay UI on top of the menus).
-	UiState.setFlowState(player, "menu");
+	const flowGen = claimFlowState(player, "menu");
 	// Any spectate/killed-by presentation ends with the return to the menu
 	// (the old flow hid both frames on the Respawn press; every path into the
 	// menu goes through here).
@@ -1144,7 +1188,7 @@ function ResetAndInitialisePlayerMenuUI(player: Player) {
 	// the "menu" flow state written above; a PlayerGui barrier is no longer
 	// needed because no server-side GUI work follows.)
 
-	initialisePlayerUi(player);
+	initialisePlayerUi(player, flowGen);
 }
 
 Globals.PlayerJoinedTimes = {};
@@ -1224,7 +1268,7 @@ function initializePlayer(player: Player) {
 	// Initial flow state: the menu. Written BEFORE the (yieldy)
 	// initialisePlayerUi so the client-owned landing page can paint
 	// immediately and order-independently of the DataStore reads.
-	UiState.setFlowState(player, "menu");
+	const flowGen = claimFlowState(player, "menu");
 
 	// Phase 5: CB_ProfileVersion counter + OnUpdate hooks on every
 	// owned/equipped dataset (the client garage refetches Ui_GetProfile on
@@ -1232,7 +1276,7 @@ function initializePlayer(player: Player) {
 	profileSnapshot.registerPlayer(player);
 
 	createValues(player);
-	initialisePlayerUi(player);
+	initialisePlayerUi(player, flowGen);
 
 	// (Rename purchase completions: the CLIENT watches CB_RenameCredits and
 	// opens its own RenamePopup when a credit arrives — the server-side
@@ -1329,6 +1373,8 @@ for (const player of Players.GetPlayers()) {
 game.GetService("Players").PlayerRemoving.Connect((player) => {
 	Globals.clearPlayerGarage(player);
 	spawnInFlight.delete(player);
+	activeSpawnGeneration.delete(player);
+	pendingSpawnGeneration.delete(player);
 });
 
 //DUPLICATE OF PLAYER DAMAGED WITH NO ATTACKER

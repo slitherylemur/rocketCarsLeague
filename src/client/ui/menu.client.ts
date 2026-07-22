@@ -265,12 +265,20 @@ function renderTeamPage() {
 
 function applyFlowState() {
 	const state = flowState();
-	landing.Enabled = state === "menu";
-	const lobby = state === "lobby";
+	// A pitch assignment is the hard gameplay signal and is cleared before a
+	// legitimate return to the menus. It guards against a delayed/stale flow
+	// update painting the menu over an active player.
+	const inMatch = typeIs(LocalPlayer.GetAttribute("CB_PitchId"), "string");
+	landing.Enabled = state === "menu" && !inMatch;
+	const lobby = state === "lobby" && !inMatch;
 	if (lobby) {
 		renderTeamPage();
 	}
 	teamPage.Enabled = lobby;
+	if (inMatch || (state !== "menu" && state !== "lobby" && state !== "garage")) {
+		// This popup opens locally, so it needs an explicit play-transition edge.
+		renamePopup.Enabled = false;
+	}
 }
 
 // Team-scoped connections (attribute/name watchers on the current team and
@@ -326,6 +334,7 @@ Players.PlayerRemoving.Connect((player) => {
 });
 
 LocalPlayer.GetAttributeChangedSignal("CB_FlowState").Connect(applyFlowState);
+LocalPlayer.GetAttributeChangedSignal("CB_PitchId").Connect(applyFlowState);
 LocalPlayer.GetPropertyChangedSignal("Team").Connect(() => {
 	watchTeam();
 });

@@ -23,7 +23,9 @@ export function VictoryGui(): React.Element {
 			// CLIENT-mounted once by src/client/ui/bootstrap.client.ts — must
 			// survive respawns (matchHud.client.ts drives it from attributes).
 			ResetOnSpawn: false,
-			ScreenInsets: Enum.ScreenInsets.DeviceSafeInsets,
+			// Confetti uses this root's bounds, so a safe-area root visibly moves
+			// both emitters inward/upward instead of using the viewport corners.
+			ScreenInsets: Enum.ScreenInsets.None,
 			ZIndexBehavior: Enum.ZIndexBehavior.Sibling,
 		} as never,
 		[
