@@ -1279,6 +1279,11 @@ function ensureGarageMenuButtons(player: Player) {
 			// the shop-phase auto start (auto-spawn only takes teamed players).
 			const team = TeamRegistry.getTeamOf(player);
 			if (team) {
+				// Defensive: if this player is somehow still rostered on a pitch
+				// (menu shown over a live match), leaving the TEAM without
+				// leaving the MATCH stranded a teamless roster entry nothing
+				// ever cleaned. No-op for the normal shop-phase press.
+				footballMatch.leaveMatch(player);
 				TeamRegistry.leaveTeam(player);
 				teamReadyVotes.delete(team.id);
 			}
@@ -1343,8 +1348,52 @@ function ensureGarageMenuButtons(player: Player) {
 
 const resetting = new Map<Player, boolean>();
 
+// One spawn flight per player. Concurrent SpawnInPlayer calls (shop auto-spawn
+// firing while a manual click's LoadCharacter is still in flight, double
+// clicks during the round-boundary hold below) ran two LoadCharacter +
+// SpawnVehicle sequences at once: the second KillVehicle destroyed the first
+// car mid-SeatPlayer and left the player seated in nothing — no car, no
+// controls, for the whole round. os.clock stamp (not a plain flag) so a spawn
+// thread that dies mid-flight can never lock the player out forever.
+const spawnInFlight = new Map<Player, number>();
+const SPAWN_IN_FLIGHT_TIMEOUT = 45;
+
 Globals.SpawnInPlayer = (player: Player): boolean => {
+	const startedAt = spawnInFlight.get(player);
+	if (startedAt !== undefined && os.clock() - startedAt < SPAWN_IN_FLIGHT_TIMEOUT) {
+		warn(`[SpawnInPlayer] ${player.Name} is already spawning — duplicate call ignored`);
+		// "true": the in-flight spawn is handling this player; a false here
+		// would make spawnIntoMatch remount the menu OVER the live spawn.
+		return true;
+	}
+	spawnInFlight.set(player, os.clock());
+	const [ok, result] = pcall(() => spawnInPlayerInner(player));
+	spawnInFlight.delete(player);
+	if (!ok) {
+		error(result);
+	}
+	return result === true;
+};
+
+function spawnInPlayerInner(player: Player): boolean {
 	warn(`[SpawnInPlayer] ENTER ${player.Name}`);
+	// Round-boundary hold: pressing a spawn button during the end-of-round
+	// interlude (victory scene → ladder map → summary, ~20 s) used to roster
+	// the player onto a pitch stop() was about to tear down — the car died
+	// mid-seat and the roster entry leaked into the next round. Hold here
+	// until the next round's pitches exist, then spawn into them normally
+	// (same as the "landing buttons still work during the shop" path).
+	if (Globals.gamemode === "Football" && !footballMatch.isRoundLive()) {
+		warn(`[SpawnInPlayer] ${player.Name} spawning during the interlude — holding for the next round`);
+		let waited = 0;
+		while (!footballMatch.isRoundLive() && waited < 30 && player.Parent !== undefined) {
+			task.wait(0.5);
+			waited += 0.5;
+		}
+		if (player.Parent === undefined) {
+			return false;
+		}
+	}
 	Globals.clearPlayerGarage(player);
 
 	// Original: for i,v in pairs(player.PlayerGui:GetChildren()) do v:Destroy() end
@@ -1450,7 +1499,7 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 	task.wait(1);
 	//game.ReplicatedStorage.FunctionsAndEvents.ToggleMenuCamera:FireClient(player,false)
 	return true;
-};
+}
 
 function initialisePlayerUi(player: Player) {
 	task.spawn(() => {
@@ -1814,6 +1863,7 @@ FunctionsAndEvents.GamePadButtonR2Down.OnServerEvent.Connect((player) => {
 
 game.GetService("Players").PlayerRemoving.Connect((player) => {
 	Globals.clearPlayerGarage(player);
+	spawnInFlight.delete(player);
 });
 
 //DUPLICATE OF PLAYER DAMAGED WITH NO ATTACKER
