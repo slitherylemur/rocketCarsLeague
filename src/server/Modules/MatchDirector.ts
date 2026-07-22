@@ -1,5 +1,5 @@
 // MatchDirector (Top Table Phase 4 core): ladder movement between rounds and
-// the 30-second shop phase that auto-spawns everyone into the next round.
+// the one-minute shop phase that auto-spawns everyone into the next round.
 // The visual interlude (victory cameras, ladder map UI, rewards panel, coin
 // flip animation) layers on top of this in Phase 4b.
 
@@ -9,7 +9,7 @@ import type { RoundResult } from "./footballMatch";
 
 const Players = game.GetService("Players");
 
-const SHOP_TIME = 30;
+const SHOP_TIME = 60;
 /** Rounds per session (Phase 5): after this many, champions + shuffle. */
 export const SESSION_ROUNDS = 6;
 
@@ -239,7 +239,7 @@ const MatchDirector = {
 		warn(`[Director] session over — ladder shuffled (${teams.size()} team(s)), session stats reset`);
 	},
 
-	/** 30 s (or `seconds` — the session-end shop runs 60) in the menu/shop,
+	/** 60 s (or `seconds`) in the menu/shop,
 	 * countdown on every screen, then everyone with a team auto-spawns into
 	 * the (already rebuilt) round. */
 	startShopPhase(seconds?: number) {

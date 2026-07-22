@@ -74,8 +74,8 @@ const handler = {} as {
 
 Globals.gamemode = "FFA";
 Globals.roundTime = 0;
-Globals.FFA_GAME_TIME = 600;
-Globals.TDM_GAME_TIME = 600;
+Globals.FFA_GAME_TIME = 4 * 60 + 30;
+Globals.TDM_GAME_TIME = 4 * 60 + 30;
 Globals.FFA_MAX_KILLS = 20;
 Globals.TDM_MAX_KILLS = 40;
 //_G.LMS_SPAWN_TIME = 60
@@ -92,8 +92,8 @@ const FIRST_PLACE_MONEY = 1000;
 const SECOND_PLACE_MONEY = 400;
 const THIRD_PLACE_MONEY = 200;
 
-// Phase 5 sessions: champion payout per gold-table member + the longer
-// session-end shop phase (regular rounds keep MatchDirector's default 30 s).
+// Phase 5 sessions: champion payout per gold-table member + an explicit
+// session-end shop duration (regular rounds use the same one-minute duration).
 const CHAMPION_MONEY = 1500;
 const SESSION_END_SHOP_TIME = 60;
 
@@ -300,7 +300,7 @@ handler.endRound = () => {
 		}
 		// Shop phase flag BEFORE the menu remount so players land on the CARS
 		// page with the restart countdown, not the landing page.
-		warn(`[Round] shop phase (${sessionEnd ? SESSION_END_SHOP_TIME : 30}s)`);
+		warn(`[Round] shop phase (${SESSION_END_SHOP_TIME}s)`);
 		MatchDirector.startShopPhase(sessionEnd ? SESSION_END_SHOP_TIME : undefined);
 		sendToMenu();
 		return;

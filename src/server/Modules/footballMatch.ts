@@ -39,7 +39,7 @@ const ReplicatedStorage = game.GetService("ReplicatedStorage");
 export type TeamName = "Red" | "Blue";
 const TEAM_NAMES: TeamName[] = ["Blue", "Red"];
 
-const MATCH_TIME = 30;
+const MATCH_TIME = 4 * 60 + 30;
 const KICKOFF_COUNTDOWN = 3;
 const FACE_OFF_TIME = 7; // was 10 — cut by a third per playtest
 const RESPAWN_DELAY = 1.5;
