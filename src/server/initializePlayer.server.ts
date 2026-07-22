@@ -3,7 +3,6 @@
 import spawnVehicle from "./Modules/spawnVehicle";
 
 import DataUtilities from "./Modules/DataUtilities";
-import GeneralUtils from "./GeneralUtils";
 import DataStoreDefaults from "./Modules/DataStoreDefaults";
 import roundHandler from "./Modules/roundHandler";
 //local playerGarage = workspace.garageModel
@@ -41,26 +40,11 @@ Players.CharacterAutoLoads = false;
 const MemoryStoreService = game.GetService("MemoryStoreService");
 const testStoreMap = MemoryStoreService.GetSortedMap("testStoreMap");
 
-// ---- PlayerGui instance shapes (server-rendered React tree) ----
-// (GarageGuiShape retired in Phase 5: the Garage/CrateMenu ScreenGuis are
-// CLIENT-owned — the server never touches their instances any more.)
-
-interface GameGuiShape extends ScreenGui {
-	Money: Frame & { Currency: Frame & { TextLabel: TextLabel } };
-	WhoKilledYou: TextButton & {
-		Content: Frame & { KillerName: TextLabel; kills: TextLabel; Person: ImageLabel };
-	};
-	Spectate: Frame & { Information: Frame & { Respawn: TextButton } };
-	BoostMeter: CanvasGroup;
-}
-
-type PlayerGuiShape = Instance & {
-	Game: GameGuiShape;
-};
-
-function playerGuiOf(player: Player): PlayerGuiShape {
-	return (player as unknown as { PlayerGui: PlayerGuiShape }).PlayerGui;
-}
+// (GarageGuiShape retired in Phase 5; GameGuiShape/playerGuiOf in Phase 6: the
+// Garage/CrateMenu/Game ScreenGuis are CLIENT-owned — the server never touches
+// their instances any more. The server-rendered tree is down to RoundSummary +
+// LadderMap, whose instances only PlayerGuiManager/LadderMapScreen/
+// footballMatch access.)
 
 Players.PlayerRemoving.Connect((player) => {
 	const playerMoney = DataStore2("money", player).Get(0) as number;
@@ -897,7 +881,11 @@ function spawnInPlayerInner(player: Player): boolean {
 	// top of this spawn.)
 	//workspace:WaitForChild(player.Name)
 	(player.FindFirstChild("spawned") as NumberValue).Value += 1;
-	playerGuiOf(player).Game.Enabled = true;
+	// (Phase 6: Game.Enabled is CLIENT-derived — gameHud.client.ts enables the
+	// HUD while CB_FlowState is "match", or "spawning" once the character
+	// exists, which is exactly this point: the flow wrote "spawning" above and
+	// LoadCharacter just ran. The old playerGuiOf(player).Game.Enabled = true
+	// write is that same edge.)
 
 	const playerMoney = DataStore2("money", player);
 	setPlayerCash(player, playerMoney.Get(DataStoreDefaults.money) as number);
@@ -1105,13 +1093,9 @@ function initialisePlayerUi(player: Player) {
 //removes players garage and sets door playerValue to nil
 
 function setPlayerCash(player: Player, money: number) {
-	// The Game gui is still SERVER-owned (until Phase 6) — keep its label
-	// write. The Garage half moved client-side: the client-owned Garage money
-	// label renders from the CB_Money attribute published here.
-	const moneyString = "$" + GeneralUtils.CommaNumber(money);
-	pcall(() => {
-		playerGuiOf(player).Game.Money.Currency.TextLabel.Text = moneyString;
-	});
+	// Pure publication since Phase 6: BOTH money labels are client-rendered now
+	// (the Garage's by garage.client.ts, the Game HUD's by gameHud.client.ts)
+	// from this attribute.
 	UiState.setPlayerAttr(player, "CB_Money", money);
 }
 
@@ -1121,25 +1105,6 @@ function setPlayerTrophies(player: Player, trophies: number) {
 	UiState.setPlayerAttr(player, "CB_Trophies", trophies);
 }
 
-function showKilledByScreen(player: Player, killer: Player) {
-	const killedByScreen = playerGuiOf(player).Game.WhoKilledYou;
-	killedByScreen.Content.KillerName.Text = killer.Name;
-	killedByScreen.Content.kills.Text = tostring((killer as unknown as { kills: NumberValue }).kills.Value + 1);
-	killedByScreen.Content.Person.Image = Globals.getPlayerIcon(killer);
-	killedByScreen.MouseButton1Click.Connect(() => {
-		killedByScreen.Visible = false;
-	});
-	task.delay(9, () => {
-		killedByScreen.Visible = false;
-	});
-	killedByScreen.Visible = true;
-}
-
-function hideKilledByScreen(player: Player) {
-	const killedByScreen = playerGuiOf(player).Game.WhoKilledYou;
-	killedByScreen.Visible = false;
-}
-
 // (enablePayOrSpectate DELETED in Phase 5: it was the deathmatch-era writer of
 // the payOrSpectate frame INSIDE the Garage gui, and nothing has called it
 // since the Football rework — dead code, and the Garage is client-owned now.
@@ -1147,21 +1112,25 @@ function hideKilledByScreen(player: Player) {
 // GarageGui component; if a deathmatch mode returns, publish a CB_* attribute
 // and let the client render them.)
 
-function enableSpectateScreen(player: Player, playerToWatch: Player | undefined) {
-	const spectateScreen = (player.WaitForChild("PlayerGui").WaitForChild("Game") as GameGuiShape).Spectate;
-
-	let resConnect: RBXScriptConnection | undefined = undefined;
-	resConnect = spectateScreen.Information.Respawn.MouseButton1Click.Connect(() => {
-		resConnect!.Disconnect();
-		spectateScreen.Visible = false;
-		hideKilledByScreen(player);
-		ResetAndInitialisePlayerMenuUI(player);
-	});
-	spectateScreen.Information.Respawn.Visible = true;
-
-	spectateScreen.Visible = true;
-
-	FunctionsAndEvents.spectatePlayer.FireClient(player, playerToWatch);
+/** Phase 6 replacement for showKilledByScreen + enableSpectateScreen (the
+ * dormant non-football death path): the Game gui is CLIENT-owned, so the
+ * server publishes WHO killed the player as the CB_Killer attribute (JSON) and
+ * fires the existing spectatePlayer remote (gameUi.client.ts still owns the
+ * spectate camera + Left/Right cycling — contract unchanged).
+ * gameHud.client.ts renders the WhoKilledYou banner (9 s auto-hide,
+ * click-dismiss — both client-local now) and the Spectate frame from the
+ * attribute; its Respawn button fires Intent_ReturnToMenu, handled below.
+ * kills+1 mirrors the original label (it read the stat before roundHandler's
+ * increment landed); the headshot is fetched client-side from the userId. */
+function beginSpectate(player: Player, killer: Player) {
+	const killsValue = killer.FindFirstChild("kills");
+	const payload = {
+		name: killer.Name,
+		kills: (killsValue && killsValue.IsA("NumberValue") ? killsValue.Value : 0) + 1,
+		userId: killer.UserId,
+	};
+	UiState.setPlayerAttr(player, "CB_Killer", HttpService.JSONEncode(payload));
+	FunctionsAndEvents.spectatePlayer.FireClient(player, killer);
 }
 
 // (CharacterAutoLoads = false moved to the top of this script's body — see the
@@ -1172,6 +1141,10 @@ function ResetAndInitialisePlayerMenuUI(player: Player) {
 	// Take the UI over from any in-flight spawn (it stands down at its next
 	// checkpoint instead of re-enabling gameplay UI on top of the menus).
 	UiState.setFlowState(player, "menu");
+	// Any spectate/killed-by presentation ends with the return to the menu
+	// (the old flow hid both frames on the Respawn press; every path into the
+	// menu goes through here).
+	UiState.setPlayerAttr(player, "CB_Killer", undefined);
 	// Menu-flow players never have a character (menu camera + garage). Any
 	// character reaching here is a leftover: SpawnInPlayer's LoadCharacter
 	// after a failed spawn attempt, or a boot-race engine auto-load — standing
@@ -1338,25 +1311,13 @@ for (const player of Players.GetPlayers()) {
 }
 
 // ---- gamepad menu buttons ---------------------------------------------------
-// Phase 5: the garage-navigation halves of the gamepad handlers (X page
-// cycling, Y unlock/crate-open, R2 cash menu, R1/L1 tab cycling, plus
-// MakeAllUisNotSelectable/ReturnUiSelectedValues) are CLIENT-LOCAL now — see
-// src/client/ui/garage.client.ts. VehicleKeyHandler.client.ts stopped firing
-// GamePadButtonXDown/R1Down/L1Down/R2Down (no server consumer remains). Y is
-// still fired: its remaining server half below drives the SERVER-owned Game
-// gui's spectate screen (Phase 6 moves it client-side too).
-
-FunctionsAndEvents.GamePadButtonYDown.OnServerEvent.Connect((player) => {
-	// The Garage is client-owned and invisible to the server; while the player
-	// is in a menu-family flow the garage gamepad semantics run client-side.
-	if (isMenuFamily(getFlowState(player))) {
-		return;
-	}
-	const gameUi = playerGuiOf(player).Game;
-	if (gameUi.Enabled && gameUi.Spectate.Visible) {
-		ResetAndInitialisePlayerMenuUI(player);
-	}
-});
+// Phase 6: ALL gamepad menu handlers are gone. Phase 5 moved the garage halves
+// (X/Y/R1/L1/R2) client-local; the last server half — Y = "respawn while the
+// spectate screen is up" — is client-local too now (gameHud.client.ts fires
+// Intent_ReturnToMenu when Y is pressed with the spectate frame visible).
+// VehicleKeyHandler.client.ts no longer fires GamePadButtonYDown/BDown (B had
+// no server consumer for a long time) — the remotes themselves are Phase 8
+// demolition candidates.
 
 (
 	game.GetService("ServerStorage") as unknown as { Events: { PlayerDamaged: BindableEvent } }
@@ -1370,8 +1331,7 @@ FunctionsAndEvents.GamePadButtonYDown.OnServerEvent.Connect((player) => {
 			return;
 		}
 		if (attacker) {
-			showKilledByScreen(player, attacker);
-			enableSpectateScreen(player, attacker);
+			beginSpectate(player, attacker);
 		} else {
 			ResetAndInitialisePlayerMenuUI(player);
 		}
@@ -1561,6 +1521,25 @@ task.spawn(() => {
 			return;
 		}
 		resolveInvite(player, accept);
+	});
+
+	// Spectate Respawn button / gamepad Y while spectating (Phase 6 — the
+	// dormant non-football death path). Preconditions mirror the old
+	// server-wired Respawn click: the connection only existed after
+	// enableSpectateScreen (CB_Killer set here now) and the player was outside
+	// the menus (a menu-family flow state means the menus already own the UI —
+	// remounting them again would double-init).
+	connectIntent("Intent_ReturnToMenu", (player) => {
+		if (isMenuFamily(getFlowState(player))) {
+			return;
+		}
+		if (player.GetAttribute("CB_Killer") === undefined) {
+			return;
+		}
+		// ResetAndInitialisePlayerMenuUI clears CB_Killer, which hides the
+		// client-rendered Spectate/WhoKilledYou frames — the old handler's
+		// explicit Visible=false writes.
+		ResetAndInitialisePlayerMenuUI(player);
 	});
 
 	// Rename purchase path (lobby header Rename / Garage TeamNameStrip — both

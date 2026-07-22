@@ -28,6 +28,7 @@ import { LandingGui } from "shared/ui/components/LandingGui";
 import { CreateTeamGui, InvitePopupGui, RenamePopupGui } from "shared/ui/components/CarBallMenusGui";
 import { GarageGui } from "shared/ui/components/GarageGui";
 import { CrateMenuGui } from "shared/ui/components/CrateMenuGui";
+import { GameGui } from "shared/ui/components/GameGui";
 
 const Players = game.GetService("Players");
 const LocalPlayer = Players.LocalPlayer;
@@ -68,6 +69,12 @@ const MOUNTS: Array<[string, () => React.Element]> = [
 	// Phase 5: crate reveal animation gui — driven by crateAnimation.client.ts
 	// from the Ui_CrateResult remote.
 	["CrateMenu", CrateMenuGui],
+	// Phase 6: the in-game HUD (money label, boost meter, spectate/killed-by,
+	// dormant deathmatch chrome). Enabled + content derived by
+	// src/client/ui/gameHud.client.ts from CB_FlowState / CB_Money / CB_Killer /
+	// CB_Gamemode / CB_EndScreen; the legacy remote consumers (UiTimer,
+	// spectatePlayer, infoUi, CloseToWin) stay in src/client/gameUi.client.ts.
+	["Game", GameGui],
 ];
 
 // The holder is only the React root container bookkeeping object; the actual

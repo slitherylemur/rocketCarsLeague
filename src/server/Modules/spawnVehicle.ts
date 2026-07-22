@@ -290,11 +290,9 @@ const spawnVehicleModule = {
 
 			SeatPlayer(player, newModel);
 
-			(
-				player as unknown as {
-					PlayerGui: { Game: { BoostMeter: CanvasGroup } };
-				}
-			).PlayerGui.Game.BoostMeter.Visible = true;
+			// (Phase 6: the Game gui is CLIENT-owned — BoostMeter.Visible is
+			// derived in src/client/ui/gameHud.client.ts from the seat state,
+			// replacing the old server write here.)
 
 			task.wait(2);
 		}

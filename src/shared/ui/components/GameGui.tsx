@@ -16,7 +16,9 @@ export function GameGui(): React.Element {
 		ClipToDeviceSafeArea: true,
 		DisplayOrder: 0,
 		Enabled: false,
-		ResetOnSpawn: true,
+		// Phase 6: CLIENT-mounted (bootstrap.client.ts) — must survive respawns;
+		// Enabled derives from CB_FlowState in src/client/ui/gameHud.client.ts.
+		ResetOnSpawn: false,
 		SafeAreaCompatibility: Enum.SafeAreaCompatibility.FullscreenExtension,
 		ScreenInsets: Enum.ScreenInsets.DeviceSafeInsets,
 		SelectionBehaviorDown: Enum.SelectionBehavior.Escape,

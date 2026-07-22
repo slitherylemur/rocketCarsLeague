@@ -739,22 +739,13 @@ if (UserInputService.TouchEnabled) {
 // ---------------------------------------------------------------------------
 // Gamepad menu buttons
 // ---------------------------------------------------------------------------
-// Phase 5: X/R1/L1/R2 are no longer fired — their only server consumers were
-// the garage-navigation handlers, which are client-local in
-// src/client/ui/garage.client.ts now. Y still fires: the SERVER-owned Game
-// gui's spectate screen consumes it until Phase 6 (the garage half of Y also
-// runs client-locally in garage.client.ts). B keeps its historical fire (it
-// has had no server consumer for a while — slated for Phase 8 cleanup).
-
-UserInputService.InputBegan.Connect((input, gameProcessed) => {
-	if (input.UserInputType === Enum.UserInputType.Gamepad1) {
-		if (input.KeyCode === Enum.KeyCode.ButtonY) {
-			FunctionsAndEvents.GamePadButtonYDown.FireServer();
-		} else if (input.KeyCode === Enum.KeyCode.ButtonB) {
-			FunctionsAndEvents.GamePadButtonBDown.FireServer();
-		}
-	}
-});
+// Phase 6: nothing is fired to the server any more. Phase 5 stopped
+// X/R1/L1/R2 (garage navigation went client-local in garage.client.ts); the
+// last Y consumer — the spectate-screen respawn — is client-local now too
+// (gameHud.client.ts fires Intent_ReturnToMenu on Y while spectating), and B
+// has had no server consumer for a long time, so both fires are gone. The
+// GamePadButtonYDown/BDown remotes themselves are Phase 8 demolition
+// candidates.
 
 // ---------------------------------------------------------------------------
 // Keybinding menu UI (unchanged — SetKeyBinding now also retargets the live

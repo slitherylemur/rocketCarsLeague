@@ -22,16 +22,14 @@
 // returns — the translated game code dot-accesses them immediately, exactly as
 // it did after :Clone().
 //
-// After mounting, template state that the original applied by MUTATING the
-// StarterGui templates (roundHandler: gamemode name, team score) is applied to
-// the fresh instances — equivalent to cloning the mutated template.
+// (The old applyTemplateState/StarterGuiState step retired with the Game gui in
+// Phase 6: the only template mutations were Game chrome, which the client now
+// derives from the CB_Gamemode replicated attribute in gameHud.client.ts.)
 
 import React from "@rbxts/react";
 import ReactRoblox from "@rbxts/react-roblox";
-import { GameGui } from "shared/ui/components/GameGui";
 import { RoundSummaryGui } from "shared/ui/components/RoundSummaryGui";
 import { LadderMapGui } from "shared/ui/components/LadderMapGui";
-import { StarterGuiState } from "./StarterGuiState";
 
 interface PlayerRootInfo {
 	root: ReactRoblox.Root;
@@ -40,17 +38,7 @@ interface PlayerRootInfo {
 
 const roots = new Map<Player, PlayerRootInfo>();
 
-function resolvePath(base: Instance, path: string): Instance | undefined {
-	let current: Instance | undefined = base;
-	for (const [part] of string.gmatch(path, "[^/]+")) {
-		if (current === undefined) return undefined;
-		current = current.FindFirstChild(part as string);
-	}
-	return current;
-}
-
 function buildTree(): React.Element {
-	// Order matches the original StarterGui child order (Game, Steer).
 	// (Multipliers retired with the timed cash-multiplier products.
 	// CLIENT-mounted now — src/client/ui/bootstrap.client.ts owns: TimerGui
 	// [Phase 2]; MatchHud, FaceOff, Victory, MobileInterface,
@@ -58,11 +46,11 @@ function buildTree(): React.Element {
 	// InvitePopup, RenamePopup [Phase 4 — rendered by
 	// src/client/ui/menu.client.ts from CB_FlowState & friends]; Garage,
 	// CrateMenu [Phase 5 — rendered by src/client/ui/garage.client.ts +
-	// crateAnimation.client.ts from the Ui_GetProfile snapshot & friends].)
+	// crateAnimation.client.ts from the Ui_GetProfile snapshot & friends];
+	// Game [Phase 6 — src/client/ui/gameHud.client.ts + gameUi.client.ts].)
 	return React.createElement(
 		React.Fragment,
 		undefined,
-		React.createElement(GameGui, { key: "Game" }),
 		React.createElement(RoundSummaryGui, { key: "RoundSummary" }),
 		// Ladder map after the victory scene + summary (Top Table Phase 4b);
 		// doubles as the session-end champions screen (Phase 5).
@@ -73,31 +61,8 @@ function buildTree(): React.Element {
 	);
 }
 
-function applyTemplateState(playerGui: Instance) {
-	// roundHandler mutated the StarterGui TEMPLATES; fresh clones inherited the
-	// values. Apply the tracked template state to the freshly mounted instances.
-	const gameGui = playerGui.FindFirstChild("Game");
-	if (gameGui) {
-		const information = gameGui.FindFirstChild("Information") as Frame | undefined;
-		if (information) information.Visible = StarterGuiState.Game.Information.Visible;
-		const gamemode = resolvePath(gameGui, "Information/Gamemode") as TextLabel | undefined;
-		if (gamemode) gamemode.Text = StarterGuiState.Game.Information.GamemodeText;
-		const teamScore = gameGui.FindFirstChild("TeamScore") as Frame | undefined;
-		if (teamScore) {
-			teamScore.Visible = StarterGuiState.Game.TeamScore.Visible;
-			const red = teamScore.FindFirstChild("Red") as TextLabel | undefined;
-			if (red) red.Text = StarterGuiState.Game.TeamScore.RedText;
-			const blue = teamScore.FindFirstChild("Blue") as TextLabel | undefined;
-			if (blue) blue.Text = StarterGuiState.Game.TeamScore.BlueText;
-		}
-		const leaderboard = gameGui.FindFirstChild("Leaderboard") as Frame | undefined;
-		if (leaderboard) leaderboard.Visible = StarterGuiState.Game.Leaderboard.Visible;
-	}
-}
-
-// (applyNextSelectionWirings removed in Phase 5: every NEXT_SELECTION_WIRINGS
-// entry lives inside the now client-owned Garage — garage.client.ts applies
-// them after its own mount.)
+// (applyNextSelectionWirings removed in Phase 5, applyTemplateState in Phase 6
+// — every remaining template mutation targeted the now client-owned Game gui.)
 
 export const PlayerGuiManager = {
 	/** Equivalent of the original "clone every StarterGui child into PlayerGui". */
@@ -114,8 +79,6 @@ export const PlayerGuiManager = {
 		roots.set(player, { root: root, holder: holder });
 
 		root.render(ReactRoblox.createPortal(buildTree(), playerGui));
-
-		applyTemplateState(playerGui);
 	},
 
 	/** Unmount the React-owned UI without touching other PlayerGui children. */
