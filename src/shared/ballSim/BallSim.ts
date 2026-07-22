@@ -38,6 +38,7 @@ import { COLLISION_GROUPS } from "shared/collisionGroups";
 import { registerSimHook, SIM_ORDER_BALL } from "shared/simScheduler";
 import { getPreset } from "shared/vehicleV2/PhysicsPresets";
 import { sweepPointAabb } from "shared/ballSim/BallMath";
+import { BALL_CONTACT_DEBUG } from "shared/vehicleV2/FeatureFlags";
 
 // V2 reciprocal-recoil lookup (leaf import only — no sim<->sim cycle).
 function ballRecoilFor(carModel: Model): number {
@@ -84,6 +85,8 @@ const balls = new Set<BasePart>();
 // (a permanently-swallowed error is silent divergence), without flooding.
 const ERROR_WARN_INTERVAL = 5;
 let lastErrorWarnAt: number | undefined;
+// BALL_CONTACT_DEBUG print throttle (per peer).
+let lastContactDebugAt: number | undefined;
 // Server-only: tuning HUD edits, written into the BT_* attributes from
 // inside the next sim step (attribute writes on predicted instances are only
 // legal there) — the VehicleSim pending-op pattern.
@@ -283,6 +286,14 @@ function adoptVehicle(model: Instance) {
 			const main = hitboxes !== undefined ? hitboxes.FindFirstChild(HITBOX_MAIN_NAME) : undefined;
 			if (main !== undefined && main.IsA("BasePart")) {
 				hitboxRegistry.set(model, { main });
+				if (BALL_CONTACT_DEBUG) {
+					const primary = model.PrimaryPart;
+					print(
+						`[BallSim:${IS_SERVER ? "S" : "C"}] adopted ${model.Name}` +
+							` primary=${primary !== undefined ? primary.Name : "NONE"}` +
+							` hitboxSize=(${"%.1f".format(main.Size.X)},${"%.1f".format(main.Size.Y)},${"%.1f".format(main.Size.Z)})`,
+					);
+				}
 				return;
 			}
 			task.wait(0.25);
@@ -378,10 +389,19 @@ interface TimedCarContact {
 	time: number;
 }
 
-/** Continuous relative translation sweep against an oriented car box. The
- * sphere radius expands the box in local space, then a slab test gives the
- * first time of impact. Current overlaps retain the exact closest-point
- * contact so depenetration remains precise. */
+/** Car contact for this tick. The exact closest-point overlap test is the
+ * PRIMARY detector — identical to the pre-V2 tuned feel: the tall ball
+ * (radius ~11) contacts the low hitbox across its TOP EDGE, so the contact
+ * normal tilts upward and hits loft the ball over the car instead of
+ * shoving it flat along the ground.
+ *
+ * The analytic AABB sweep runs ONLY when the relative motion this tick
+ * exceeds the ball radius (~660+ studs/s relative at 60 Hz) — genuine
+ * tunneling insurance — and its hit is re-derived through the exact
+ * closest-point contact. The raw radius-expanded AABB must never supply the
+ * contact itself: its flat face normals (n.Y = 0 on every approach) and
+ * oversized corner envelope were the "ball dribbles flat in front of the
+ * car" regression. */
 function sweptBoxContact(
 	ball: BasePart,
 	part: BasePart,
@@ -400,6 +420,11 @@ function sweptBoxContact(
 	}
 	const carVelocity = carVelocityAt(part, carModel, part.Position);
 	const relativeTravel = ballTravel.sub(carVelocity.mul(dt));
+	if (relativeTravel.Magnitude <= radius) {
+		// Cannot tunnel past the box in one tick: the next tick's exact
+		// overlap test resolves the contact with the true edge-tilted normal.
+		return undefined;
+	}
 	const localStart = part.CFrame.PointToObjectSpace(position);
 	const localDelta = part.CFrame.VectorToObjectSpace(relativeTravel);
 	const expandedHalf = part.Size.div(2).add(new Vector3(radius, radius, radius));
@@ -407,21 +432,15 @@ function sweptBoxContact(
 	if (!hit) {
 		return undefined;
 	}
-	const normal = part.CFrame.VectorToWorldSpace(hit.normal).Unit;
+	// Re-derive the real contact at the time of impact. Near expanded-AABB
+	// corners the slab test fires while the true surfaces are still apart —
+	// boxContact returning undefined there correctly rejects the phantom.
 	const ballCenterAtHit = position.add(ballTravel.mul(hit.time));
-	const carCenterAtHit = part.Position.add(carVelocity.mul(dt * hit.time));
-	const hitPoint = ballCenterAtHit.sub(normal.mul(radius));
-	return {
-		time: hit.time,
-		contact: {
-			normal,
-			hitPoint,
-			penetration: 0,
-			carVelocity: carVelocityAt(part, carModel, hitPoint),
-			carModel,
-			carCenter: carCenterAtHit,
-		},
-	};
+	const exact = boxContact(ball, part, ballCenterAtHit, radius + SKIN);
+	if (!exact) {
+		return undefined;
+	}
+	return { time: hit.time, contact: exact };
 }
 
 // A ball with no usable world filter is not simulated — but the ENGINE still
@@ -557,9 +576,9 @@ function stepBall(ball: BasePart, dt: number) {
 	// 5. car hits via the HitboxMain boxes (the overlap's include list holds
 	// exactly those parts; the name guard is belt-and-braces).
 	//
-	// CONTINUOUS relative detection: a fast ball or incoming car can cross the
-	// thin dimension within one 60 Hz tick. An analytic relative segment sweep
-	// against the radius-expanded oriented box finds the first time of impact.
+	// Exact closest-point overlap is the primary detector (the tuned feel);
+	// the relative segment sweep inside sweptBoxContact only arms at extreme
+	// relative speed as anti-tunnel insurance — see that function's comment.
 	//
 	// Contacts are chosen DETERMINISTICALLY: GetPartBoundsInRadius
 	// returns results in no guaranteed order, so "first box wins" could pick
@@ -607,6 +626,25 @@ function stepBall(ball: BasePart, dt: number) {
 		const n = contact.normal;
 		const relV = v.sub(contact.carVelocity);
 		const closing = -relV.Dot(n); // how fast ball and car approach along the normal
+
+		if (BALL_CONTACT_DEBUG) {
+			const clock = os.clock();
+			if (lastContactDebugAt === undefined || clock - lastContactDebugAt > 0.25) {
+				lastContactDebugAt = clock;
+				const root = contact.carModel.PrimaryPart;
+				const rootDesc =
+					root !== undefined
+						? `${root.Name} rootV=${"%.1f".format(root.AssemblyLinearVelocity.Magnitude)}`
+						: "NO-PRIMARYPART(GetVelocityAtPosition)";
+				print(
+					`[BallSim:${IS_SERVER ? "S" : "C"}] ${contact.carModel.Name}` +
+						` closing=${"%.1f".format(closing)} carV=${"%.1f".format(contact.carVelocity.Magnitude)}` +
+						` ballV=${"%.1f".format(v.Magnitude)} pen=${"%.2f".format(contact.penetration)}` +
+						` t=${"%.2f".format(timed.time)} n=(${"%.2f".format(n.X)},${"%.2f".format(n.Y)},${"%.2f".format(n.Z)})` +
+						` via ${rootDesc}`,
+				);
+			}
+		}
 
 		if (closing > 0) {
 			// Relative-velocity reflection: ball speed INTO the car and car

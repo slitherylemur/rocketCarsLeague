@@ -150,6 +150,9 @@ export interface PhysicsPreset {
 	readonly flipHoldTime: number;
 	readonly flipDebounce: number;
 	readonly flipLiftAccel: number;
+	/** Seconds a car must rest tipped (side/end/roof, settled, near ground)
+	 * before the recovery flip fires automatically. */
+	readonly sideFlipDelay: number;
 
 	// ---- coyote / external events ----
 	/** Grounded grace after losing contact (jump eligibility, mode blend). */
@@ -193,11 +196,11 @@ const BASE = {
 	turnRadius: 48,
 	gripYawAccel: 112,
 	boostYawAccel: 100,
-	steerRiseRate: 8, // 0 → full lock in ~0.125 s
-	steerReturnRate: 18, // full lock → center in ~0.055 s
+	steerRiseRate: 5, // 0 → full lock in ~0.2 s
+	steerReturnRate: 12, // full lock → center in ~0.083 s
 	maxYawRate: 1.9, // radius starts widening above ~turnRadius×1.9 studs/s
-	rearPivotFrac: 1,
-	turnScrubFrac: 0.05,
+	rearPivotFrac: 1.5, // >1: exaggerated nose-led pivot behind the rear axle
+	turnScrubFrac: 0.1,
 	driftYawRate: 8,
 	driftYawAccel: 270,
 	driftEngineMult: 0.25,
@@ -224,6 +227,7 @@ const BASE = {
 	flipHoldTime: 1,
 	flipDebounce: 3,
 	flipLiftAccel: 80,
+	sideFlipDelay: 1,
 	coyoteTime: 0.1,
 	blastControlHoldoff: 1.2,
 	ballRecoil: 0, // Rocket League rules: the car feels nothing (BALL_PHYSICS.md)

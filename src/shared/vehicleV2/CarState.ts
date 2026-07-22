@@ -47,6 +47,7 @@ export const CarAttr = {
 	// recovery flip
 	FlipUntil: "FlipUntil",
 	FlipReadyAt: "FlipReadyAt",
+	SideStuckSince: "SideSince", // sim time a settled tipped rest began (0 = not tipped)
 	// showcase pin
 	ShowcaseLockActive: "ShowLock",
 	ShowcaseLockPos: "ShowLockPos", // Vector3
@@ -115,6 +116,7 @@ const NUMBER_ATTRS: readonly string[] = [
 	CarAttr.LastGrounded,
 	CarAttr.FlipUntil,
 	CarAttr.FlipReadyAt,
+	CarAttr.SideStuckSince,
 	CarAttr.LastThrottle,
 ];
 const BOOL_ATTRS: readonly string[] = [

@@ -212,6 +212,7 @@ export function registerServer(model: Model, root: BasePart, owner?: Player) {
 	root.SetAttribute(CarAttr.LastGrounded, 0);
 	root.SetAttribute(CarAttr.FlipUntil, 0);
 	root.SetAttribute(CarAttr.FlipReadyAt, 0);
+	root.SetAttribute(CarAttr.SideStuckSince, 0);
 	root.SetAttribute(ATTR_RELEASED_THROTTLE, false);
 	root.SetAttribute(ATTR_LAST_THROTTLE, 0);
 
@@ -1005,6 +1006,27 @@ function stepCar(entry: CarEntry, dt: number) {
 	}
 
 	// ---- recovery flip ----
+	// Auto-flip a car resting tipped over. The close-ground upright servo can
+	// roll an upside-down car over its roof, but a car flat on its left/right
+	// side (or nose/tail) is statically stable and the servo stalls against
+	// ground contact — only the flip's lift can break that rest. Deterministic
+	// from physics state, so both peers derive it identically in resim.
+	const tippedRest =
+		!wheelsGrounded &&
+		closeGround !== undefined &&
+		rootCF.UpVector.Dot(WORLD_UP) < 0.35 &&
+		v.Magnitude < 6 &&
+		w.Magnitude < 1.5;
+	if (tippedRest) {
+		const since = attrNumber(root, CarAttr.SideStuckSince, 0);
+		if (since === 0) {
+			root.SetAttribute(CarAttr.SideStuckSince, now);
+		} else if (now - since >= preset.sideFlipDelay) {
+			wantFlip = true;
+		}
+	} else if (attrNumber(root, CarAttr.SideStuckSince, 0) !== 0) {
+		root.SetAttribute(CarAttr.SideStuckSince, 0);
+	}
 	if (wantFlip && now >= attrNumber(root, CarAttr.FlipReadyAt, 0) && math.abs(entry.velocity) < 5) {
 		const orientation = rootCF.UpVector.Dot(WORLD_UP);
 		if (orientation < 0.5 && closeGround !== undefined) {

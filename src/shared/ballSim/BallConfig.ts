@@ -78,12 +78,16 @@ export const ballTunables: BallTunables = {
 	drag: 0.1,
 	rollFriction: 0.6,
 	restSpeed: 4,
-	maxSpeed: 300,
+	// Must comfortably exceed the fastest car (Sport topSpeed 140 × boost
+	// multiple 2.0 = 280): at the old 300 a full-boost hit clamped to barely
+	// over car speed, so the car trailed inches behind its own shot. 450
+	// restores the escape margin the 240-boost era had.
+	maxSpeed: 450,
 	worldBounce: 0.6,
 	worldFriction: 0.2,
 	carBounce: 0.5,
-	hitPower: 1.2,
-	hitVerticalScale: 0.1,
+	hitPower: 1.4,
+	hitVerticalScale: 0.6,
 	hitCooldown: 0.15,
 	smoothEngageDistance: 2,
 	smoothReleaseDistance: 0.5,

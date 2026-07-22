@@ -285,6 +285,23 @@ function buildRig(model: Model) {
 		for (const child of model.GetDescendants()) {
 			adopt(child);
 		}
+		// Overhead billboard (HealthBar name tag): the server parents it to the
+		// predicted VehicleRoot, so left alone it tracks the raw sim pose and
+		// splits from the rendered car during corrections / remote
+		// interpolation. Re-point it (locally) at the camera target, which is
+		// CFramed to the smoothed visible pose every frame. Client Adornee
+		// writes don't replicate.
+		const adoptBillboard = (child: Instance) => {
+			if (child.Name === "HealthBar" && child.IsA("BillboardGui") && rigs.get(model) === rig) {
+				pcall(() => {
+					child.Adornee = rig.cameraTarget;
+				});
+			}
+		};
+		for (const child of root.GetChildren()) {
+			adoptBillboard(child);
+		}
+		rig.connections.push(root.ChildAdded.Connect(adoptBillboard));
 		const bodyBottom = chassisBottomY(model);
 		if (bodyBottom !== undefined) {
 			const hitboxBottom = -root.Size.Y * 0.5;
@@ -314,6 +331,14 @@ function destroyRig(model: Model) {
 	if (camera && camera.CameraSubject === rig.cameraTarget) {
 		releaseCameraSubject();
 	}
+	// Hand the billboard back to its parent part before its adornee dies —
+	// the model (and billboard) may outlive this rig (streaming rebuild).
+	pcall(() => {
+		const healthBar = rig.root.FindFirstChild("HealthBar");
+		if (healthBar && healthBar.IsA("BillboardGui") && healthBar.Adornee === rig.cameraTarget) {
+			healthBar.Adornee = undefined;
+		}
+	});
 	rig.cameraTarget.Destroy();
 	rig.predictedHitbox?.Destroy();
 	rig.smoothedHitbox?.Destroy();

@@ -24,3 +24,8 @@ export const SIM_TIMELINE_ENABLED = false;
 /** Dev-only render-correction debug overlay (sim proxy vs visible chassis,
  * error offset magnitude, severity band). */
 export const RENDER_DEBUG_OVERLAY = true;
+
+/** Dev-only ball car-contact diagnostics: prints (throttled) every resolved
+ * car contact with closing speed, car velocity magnitude, normal and which
+ * root part supplied the velocity — the "weak hit / dribble" ground truth. */
+export const BALL_CONTACT_DEBUG = true;
