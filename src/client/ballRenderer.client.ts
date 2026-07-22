@@ -52,13 +52,13 @@ function impactSoundTemplate(name: string, volume: number): Sound {
 	sound.SoundId = IMPACT_SOUND_ID;
 	sound.Volume = volume;
 	sound.RollOffMode = Enum.RollOffMode.InverseTapered;
-	sound.RollOffMinDistance = 25;
-	sound.RollOffMaxDistance = 400;
+	sound.RollOffMinDistance = 100;
+	sound.RollOffMaxDistance = 800;
 	sound.Parent = SoundService;
 	return sound;
 }
-const carHitSoundTemplate = impactSoundTemplate("BallCarHitSound", 3);
-const bounceSoundTemplate = impactSoundTemplate("BallBounceSound", 2);
+const carHitSoundTemplate = impactSoundTemplate("BallCarHitSound", 4);
+const bounceSoundTemplate = impactSoundTemplate("BallBounceSound", 3);
 pcall(() => ContentProvider.PreloadAsync([carHitSoundTemplate, bounceSoundTemplate]));
 
 interface BallVisual {

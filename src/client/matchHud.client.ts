@@ -58,12 +58,29 @@ function soundTemplate(name: string, soundId: string, volume: number): Sound {
 const gameEndSound = soundTemplate("GameEndSound", "rbxassetid://129649904589836", 0.55);
 const crowdAmbienceTemplate = soundTemplate("CrowdAmbience", "rbxassetid://124820656606411", 0.04);
 crowdAmbienceTemplate.Looped = true;
-const victoryCrowdSound = soundTemplate("VictoryCrowdSound", "rbxassetid://124820656606411", 0.22);
 const kickoffSound = soundTemplate("KickoffSound", "rbxassetid://6238869231", 0.55);
+// Crowd cheer is two layered clips played together; goals add the air horn
+// 0.1s after the cheer starts.
+const cheerSoundA = soundTemplate("CheerSoundA", "rbxassetid://119778631567454", 0.5);
+const cheerSoundB = soundTemplate("CheerSoundB", "rbxassetid://78361773621951", 0.5);
+const airHornSound = soundTemplate("AirHornSound", "rbxassetid://132844961288199", 0.55);
+const booSound = soundTemplate("BooSound", "rbxassetid://140141868547789", 0.5);
+const confettiPopSound = soundTemplate("ConfettiPopSound", "rbxassetid://135913294904080", 0.55);
+const drumRollSound = soundTemplate("DrumRollSound", "rbxassetid://96716438915825", 0.55);
 
 task.spawn(() =>
 	pcall(() =>
-		ContentProvider.PreloadAsync([gameEndSound, crowdAmbienceTemplate, victoryCrowdSound, kickoffSound]),
+		ContentProvider.PreloadAsync([
+			gameEndSound,
+			crowdAmbienceTemplate,
+			kickoffSound,
+			cheerSoundA,
+			cheerSoundB,
+			airHornSound,
+			booSound,
+			confettiPopSound,
+			drumRollSound,
+		]),
 	),
 );
 
@@ -72,6 +89,14 @@ function playSound(template: Sound) {
 	sound.Parent = SoundService;
 	sound.Play();
 	Debris.AddItem(sound, 15);
+}
+
+function playCheer(withAirHorn: boolean) {
+	playSound(cheerSoundA);
+	playSound(cheerSoundB);
+	if (withAirHorn) {
+		task.delay(0.1, () => playSound(airHornSound));
+	}
 }
 
 let crowdAmbience: Sound | undefined;
@@ -531,6 +556,25 @@ function currentVictory(): VictoryShape | undefined {
 let victoryFxGui: VictoryShape | undefined;
 let victoryTweens: Tween[] = [];
 let victoryConfettiStop: (() => void) | undefined;
+// Scene sounds fire once per victory/flip reveal; a respawn remount mid-scene
+// re-runs showVictory/showFlipConfetti against the fresh gui and must not
+// replay them. Cleared when the scene actually ends (hideVictory).
+let victorySceneSoundPlayed = false;
+
+function playVictorySceneSound(won: boolean) {
+	if (victorySceneSoundPlayed) {
+		return;
+	}
+	victorySceneSoundPlayed = true;
+	// The confetti pop rides along with the UI particle burst, which fires for
+	// every reveal (winners see their color, losers see the winner's).
+	playSound(confettiPopSound);
+	if (won) {
+		playCheer(false);
+	} else {
+		playSound(booSound);
+	}
+}
 
 function stopVictoryFx() {
 	for (const tween of victoryTweens) {
@@ -589,6 +633,7 @@ function showVictory(gui: VictoryShape, pitch: Instance, winnerSide: string) {
 	if (victoryFxGui !== gui) {
 		startVictoryFx(gui, sideColor);
 	}
+	playVictorySceneSound(!lost);
 }
 
 // Coin-flip reveal on a drawn pitch: the promoted side's confetti burst only.
@@ -603,10 +648,15 @@ function showFlipConfetti(gui: VictoryShape, flipSide: string) {
 	if (victoryFxGui !== gui) {
 		startVictoryFx(gui, flipSide === "Blue" ? FACEOFF_BLUE : FACEOFF_RED);
 	}
+	// Drawn pitch: cheer if the flip promoted OUR side, boo if it didn't.
+	const mySide = LocalPlayer.GetAttribute("CB_Side");
+	const flipLost = typeIs(mySide, "string") && mySide !== "" && mySide !== flipSide;
+	playVictorySceneSound(!flipLost);
 }
 
 function hideVictory(gui: VictoryShape) {
 	stopVictoryFx();
+	victorySceneSoundPlayed = false;
 	gui.Enabled = false;
 	gui.Title.Rotation = 0;
 	gui.Title.Pulse.Scale = 1;
@@ -756,6 +806,9 @@ function bindPitch() {
 		pitchWatchConnection.Disconnect();
 		pitchWatchConnection = undefined;
 	}
+	// New pitch = new scene context; without this a mid-scene pitch swap could
+	// leave the played flag set and mute the next reveal's sounds.
+	victorySceneSoundPlayed = false;
 	const pitch = currentPitch();
 	if (!pitch) {
 		const pitchId = LocalPlayer.GetAttribute("CB_PitchId");
@@ -769,13 +822,49 @@ function bindPitch() {
 		}
 	}
 	if (pitch) {
-		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_BLUE).Connect(refreshScore));
-		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_RED).Connect(refreshScore));
+		// Goal sounds key off score INCREASES only (kickoff resets the scores
+		// back to 0 and must stay silent): cheer + air horn when our side
+		// scores (or we have no side — spectating), boo when we concede.
+		let lastBlueScore = attrNumberOn(pitch, ATTR_BLUE);
+		let lastRedScore = attrNumberOn(pitch, ATTR_RED);
+		const onGoalScored = (scoringSide: string) => {
+			const mySide = LocalPlayer.GetAttribute("CB_Side");
+			const conceded = typeIs(mySide, "string") && mySide !== "" && mySide !== scoringSide;
+			if (conceded) {
+				playSound(booSound);
+			} else {
+				playCheer(true);
+			}
+		};
+		pitchConnections.push(
+			pitch.GetAttributeChangedSignal(ATTR_BLUE).Connect(() => {
+				refreshScore();
+				const score = attrNumberOn(pitch, ATTR_BLUE);
+				if (score > lastBlueScore) {
+					onGoalScored("Blue");
+				}
+				lastBlueScore = score;
+			}),
+		);
+		pitchConnections.push(
+			pitch.GetAttributeChangedSignal(ATTR_RED).Connect(() => {
+				refreshScore();
+				const score = attrNumberOn(pitch, ATTR_RED);
+				if (score > lastRedScore) {
+					onGoalScored("Red");
+				}
+				lastRedScore = score;
+			}),
+		);
 		pitchConnections.push(
 			pitch.GetAttributeChangedSignal(ATTR_ANNOUNCE).Connect(() => {
 				refreshAnnounce();
-				if (attrStringOn(pitch, ATTR_ANNOUNCE) === "3") {
+				const announce = attrStringOn(pitch, ATTR_ANNOUNCE);
+				if (announce === "3") {
 					playSound(kickoffSound);
+				} else if (announce === "COIN FLIP...") {
+					// Suspense beat before FB_FlipSide reveals the result.
+					playSound(drumRollSound);
 				}
 			}),
 		);
@@ -787,14 +876,7 @@ function bindPitch() {
 		// The face-off camera arrives just before Phase="FaceOff" — react to both.
 		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_FOCAM_CFRAME).Connect(handleFaceOffCamera));
 		// The victory camera arrives AFTER Phase="Ended" — react when it does.
-		pitchConnections.push(
-			pitch.GetAttributeChangedSignal(ATTR_VCAM_CFRAME).Connect(() => {
-				handleVictoryCamera();
-				if (attrStringOn(pitch, ATTR_PHASE) === "Ended" && typeIs(pitch.GetAttribute(ATTR_VCAM_CFRAME), "CFrame")) {
-					playSound(victoryCrowdSound);
-				}
-			}),
-		);
+		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_VCAM_CFRAME).Connect(handleVictoryCamera));
 	}
 	updateCrowdAmbience();
 	refreshAll();

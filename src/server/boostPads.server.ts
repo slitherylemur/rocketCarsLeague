@@ -115,7 +115,7 @@ function buildPad(model: Model, mega: boolean): Pad | undefined {
 	}
 	// Positional templates live beneath a physical part inside every pad model.
 	const pickupSound = makePadSound(soundParent, "BoostPickupSound", PICKUP_SOUND_ID, 0.6);
-	const denySound = makePadSound(soundParent, "BoostDenySound", DENY_SOUND_ID, 0.1, 3);
+	const denySound = makePadSound(soundParent, "BoostDenySound", DENY_SOUND_ID, 0.6, 3);
 	const center = minBound.add(maxBound).div(2);
 	const radius = math.max(maxBound.X - minBound.X, maxBound.Z - minBound.Z) / 2 + PICKUP_RADIUS_SLACK;
 	const pad: Pad = {
