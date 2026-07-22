@@ -72,15 +72,17 @@ export function buildProxy(model: Model, templateName: string, owner?: Player): 
 
 	// Visual wheel metadata BEFORE any restructuring (poses are template-space).
 	const geometry = deriveTemplateGeometry(model);
+	if (geometry.hitboxSize === undefined || geometry.hitboxLocalCFrame === undefined) {
+		warn(`[VehicleV2] ${templateName}: authored Hitboxes/HitboxMain is required — cannot build proxy`);
+		return undefined;
+	}
 	if (geometry.problems.size() > 0) {
-		warn(`[VehicleV2] ${templateName}: ${geometry.problems.join("; ")} — spawning anyway with derived data`);
+		warn(`[VehicleV2] ${templateName}: ${geometry.problems.join("; ")} — spawning with usable authored geometry`);
 	}
 
 	const baseCF = oldBase.CFrame;
-	const physicsBoxSize = geometry.hitboxSize ?? preset.boxSize;
-	const physicsBoxCF = geometry.hitboxLocalCFrame !== undefined
-		? baseCF.mul(geometry.hitboxLocalCFrame)
-		: baseCF.mul(new CFrame(0, (preset.boxSize.Y - oldBase.Size.Y) / 2, 0));
+	const physicsBoxSize = geometry.hitboxSize;
+	const physicsBoxCF = baseCF.mul(geometry.hitboxLocalCFrame);
 
 	// ---- the rigid body ----
 	const root = new Instance("Part");
