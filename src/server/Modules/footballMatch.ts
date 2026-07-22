@@ -1878,9 +1878,19 @@ const footballMatch = {
 			if (!stillMatch || stillMatch.phase === "Ended") {
 				return;
 			}
-			const [ok, err] = pcall(() => Globals.SpawnInPlayer(player));
-			if (!ok) {
-				warn(`[Football] respawn of ${player.Name} failed: ${err}`);
+			const [ok, result] = pcall(() => Globals.SpawnInPlayer(player));
+			if (!ok || result !== true) {
+				warn(`[Football] respawn of ${player.Name} failed (${tostring(result)}) — sending to menu`);
+				// Never leave the player in limbo (dead, characterless, no menu)
+				// — and the menu remount clears any character LoadCharacter left
+				// at the world origin.
+				pcall(() => {
+					(
+						game.GetService("ServerStorage") as unknown as {
+							Events: { InitialisePlayerMenuUi: BindableEvent };
+						}
+					).Events.InitialisePlayerMenuUi.Fire(player);
+				});
 			}
 		});
 		return true;

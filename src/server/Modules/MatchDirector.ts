@@ -284,9 +284,21 @@ const MatchDirector = {
 			warn(`[Director] shop over — auto-spawning ${toSpawn.size()} player(s)`);
 			for (const player of toSpawn) {
 				task.spawn(() => {
-					const [ok, err] = pcall(() => Globals.SpawnInPlayer(player));
-					if (!ok) {
-						warn(`[Director] auto-spawn of ${player.Name} failed: ${err}`);
+					const [ok, result] = pcall(() => Globals.SpawnInPlayer(player));
+					if (!ok || result !== true) {
+						warn(
+							`[Director] auto-spawn of ${player.Name} failed (ok=${ok} result=${tostring(result)}) — returning to menu`,
+						);
+						// The menu remount also destroys any character that
+						// SpawnInPlayer's LoadCharacter left standing at the
+						// world origin (ResetAndInitialisePlayerMenuUI).
+						pcall(() => {
+							(
+								game.GetService("ServerStorage") as unknown as {
+									Events: { InitialisePlayerMenuUi: BindableEvent };
+								}
+							).Events.InitialisePlayerMenuUi.Fire(player);
+						});
 					}
 				});
 			}
