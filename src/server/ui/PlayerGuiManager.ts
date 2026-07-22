@@ -29,11 +29,8 @@
 import React from "@rbxts/react";
 import ReactRoblox from "@rbxts/react-roblox";
 import { GameGui } from "shared/ui/components/GameGui";
-import { GarageGui } from "shared/ui/components/GarageGui";
-import { CrateMenuGui } from "shared/ui/components/CrateMenuGui";
 import { RoundSummaryGui } from "shared/ui/components/RoundSummaryGui";
 import { LadderMapGui } from "shared/ui/components/LadderMapGui";
-import { NEXT_SELECTION_WIRINGS } from "shared/ui/components/guiMetadata";
 import { StarterGuiState } from "./StarterGuiState";
 
 interface PlayerRootInfo {
@@ -53,19 +50,19 @@ function resolvePath(base: Instance, path: string): Instance | undefined {
 }
 
 function buildTree(): React.Element {
-	// Order matches the original StarterGui child order (Game, Garage,
-	// CrateMenu, Steer). (Multipliers retired with the timed cash-multiplier
-	// products. CLIENT-mounted now — src/client/ui/bootstrap.client.ts owns:
-	// TimerGui [Phase 2]; MatchHud, FaceOff, Victory, MobileInterface,
+	// Order matches the original StarterGui child order (Game, Steer).
+	// (Multipliers retired with the timed cash-multiplier products.
+	// CLIENT-mounted now — src/client/ui/bootstrap.client.ts owns: TimerGui
+	// [Phase 2]; MatchHud, FaceOff, Victory, MobileInterface,
 	// PlayerMoneyGainedPopups, DataLoss [Phase 3]; Landing, CreateTeam,
 	// InvitePopup, RenamePopup [Phase 4 — rendered by
-	// src/client/ui/menu.client.ts from CB_FlowState & friends].)
+	// src/client/ui/menu.client.ts from CB_FlowState & friends]; Garage,
+	// CrateMenu [Phase 5 — rendered by src/client/ui/garage.client.ts +
+	// crateAnimation.client.ts from the Ui_GetProfile snapshot & friends].)
 	return React.createElement(
 		React.Fragment,
 		undefined,
 		React.createElement(GameGui, { key: "Game" }),
-		React.createElement(GarageGui, { key: "Garage" }),
-		React.createElement(CrateMenuGui, { key: "CrateMenu" }),
 		React.createElement(RoundSummaryGui, { key: "RoundSummary" }),
 		// Ladder map after the victory scene + summary (Top Table Phase 4b);
 		// doubles as the session-end champions screen (Phase 5).
@@ -98,15 +95,9 @@ function applyTemplateState(playerGui: Instance) {
 	}
 }
 
-function applyNextSelectionWirings(playerGui: Instance) {
-	for (const [sourcePath, propName, targetPath] of NEXT_SELECTION_WIRINGS) {
-		const source = resolvePath(playerGui, sourcePath);
-		const target = resolvePath(playerGui, targetPath);
-		if (source && target) {
-			(source as unknown as Record<string, unknown>)[propName] = target;
-		}
-	}
-}
+// (applyNextSelectionWirings removed in Phase 5: every NEXT_SELECTION_WIRINGS
+// entry lives inside the now client-owned Garage — garage.client.ts applies
+// them after its own mount.)
 
 export const PlayerGuiManager = {
 	/** Equivalent of the original "clone every StarterGui child into PlayerGui". */
@@ -125,7 +116,6 @@ export const PlayerGuiManager = {
 		root.render(ReactRoblox.createPortal(buildTree(), playerGui));
 
 		applyTemplateState(playerGui);
-		applyNextSelectionWirings(playerGui);
 	},
 
 	/** Unmount the React-owned UI without touching other PlayerGui children. */

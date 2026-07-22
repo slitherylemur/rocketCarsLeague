@@ -461,11 +461,10 @@ function disablePlayerUi() {
 				}
 			}
 
-			for (const v of playerGui.WaitForChild("Garage").GetChildren()) {
-				if (v.IsA("Frame") || v.IsA("TextButton")) {
-					v.Visible = false;
-				}
-			}
+			// (The old Garage half is gone — Phase 5: the Garage ScreenGui is
+			// CLIENT-owned and invisible to the server; a WaitForChild here
+			// would hang forever. This whole function only runs on the retired
+			// FFA/TDM EndScreen path anyway — Football never calls it.)
 		});
 	}
 }

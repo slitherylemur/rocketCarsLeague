@@ -2,7 +2,9 @@
 
 // NextSelection* gamepad-navigation references that existed inside the
 // original StarterGui tree. React cannot express instance references
-// declaratively; PlayerGuiManager wires these after each mount.
+// declaratively. Every entry lives inside the Garage, which is CLIENT-owned
+// since Phase 5 — src/client/ui/garage.client.ts applies these after its
+// mount (PlayerGuiManager no longer does).
 // Paths are relative to PlayerGui, '/'-separated.
 export const NEXT_SELECTION_WIRINGS: Array<[string, string, string]> = [
 	// (Multipliers panel removed; Nuke + Low Gravity products removed. Layout
@@ -19,8 +21,8 @@ export const NEXT_SELECTION_WIRINGS: Array<[string, string, string]> = [
 export const SCREEN_GUI_RESET_ON_SPAWN = new Map<string, boolean>([
 	["Game", true],
 	["MobileInterface", true],
-	["Garage", true],
-	["CrateMenu", true],
+	// Garage/CrateMenu: client-mounted with ResetOnSpawn=false since Phase 5
+	// (see src/client/ui/bootstrap.client.ts) — no longer in the server tree.
 	// TimerGui: client-mounted with ResetOnSpawn=false (see
 	// src/client/ui/bootstrap.client.ts) — no longer in the server tree.
 	["PlayerMoneyGainedPopups", true],

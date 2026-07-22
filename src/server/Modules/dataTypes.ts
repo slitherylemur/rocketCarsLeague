@@ -38,15 +38,7 @@ export interface LootSlot {
 	[key: string]: unknown;
 }
 
-// Item shapes used by crate Content and UI populate functions.
-export interface CrateItem {
-	name: string;
-	type: string;
-	rarity: number;
-}
-
-export interface CrateContent {
-	price: number;
-	robuxPurchaceId?: number;
-	content: CrateItem[];
-}
+// Item shapes used by the crate catalog and UI populate functions — the
+// catalog moved to shared (Phase 5), so the canonical definitions live there;
+// re-exported here for the server modules that import them from dataTypes.
+export type { CrateItem, CrateContent } from "shared/CrateCatalog";

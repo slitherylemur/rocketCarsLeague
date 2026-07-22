@@ -1,9 +1,15 @@
 // Original: StarterPlayer/StarterPlayerScripts/crateAnimation (LocalScript)
+//
+// Phase 5 (client-side UI migration): the reveal is driven by the
+// Ui_CrateResult RemoteEvent (same chosenItem/paddingItems payload the old
+// ShowCrateAnimationEvent.InvokeClient carried) instead of a server-blocking
+// callback. This script also owns hiding/restoring the client-owned Garage
+// around the animation — the server used to toggle Garage.Enabled around its
+// InvokeClient.
 
-import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import populateCrateFrameModule from "shared/PopulateCrateFrame";
+import { getUiIntentEvent } from "shared/UiIntents";
 
-const ShowCrateAnimationEvent = FunctionsAndEvents.ShowCrateAnimationEvent;
 const player = game.GetService("Players").LocalPlayer;
 const TweenService = game.GetService("TweenService");
 const runService = game.GetService("RunService");
@@ -128,5 +134,44 @@ function startCrateAnimation(item: CrateItemLike, paddingItems: CrateItemLike[])
 	crateGui.Enabled = false;
 }
 
-ShowCrateAnimationEvent.OnClientInvoke = ((item: CrateItemLike, paddingItems: CrateItemLike[]) =>
-	startCrateAnimation(item, paddingItems)) as never;
+/** Won a horn: play its preview locally after the reveal (the old server flow
+ * played it via itemSelectedFunctions.CarHorn once InvokeClient returned). */
+function playHornPreview(item: CrateItemLike) {
+	if (item.type !== "CarHorns") {
+		return;
+	}
+	pcall(() => {
+		const horns = game.GetService("ReplicatedStorage").WaitForChild("CarHorns", 10);
+		const template = horns?.FindFirstChild(item.name);
+		if (template && template.IsA("Sound")) {
+			const sound = template.Clone();
+			sound.Parent = player.WaitForChild("PlayerGui");
+			sound.Play();
+			sound.Stopped.Connect(() => sound.Destroy());
+			sound.Ended.Connect(() => sound.Destroy());
+		}
+	});
+}
+
+// Ui_CrateResult replaces the old ShowCrateAnimationEvent.OnClientInvoke
+// callback (the RemoteFunction instance stays in the place file until Phase 8).
+getUiIntentEvent("Ui_CrateResult").OnClientEvent.Connect((...args: unknown[]) => {
+	const item = args[0] as CrateItemLike;
+	const paddingItems = args[1] as CrateItemLike[];
+	if (!typeIs(item, "table") || !typeIs(paddingItems, "table")) {
+		return;
+	}
+	// Hide the client-owned Garage for the reveal (the server used to disable
+	// it around InvokeClient); restore it only if the player is still in the
+	// garage flow when the animation ends.
+	const playerGui = player.WaitForChild("PlayerGui");
+	const garage = playerGui.FindFirstChild("Garage");
+	if (garage && garage.IsA("ScreenGui")) {
+		garage.Enabled = false;
+	}
+	startCrateAnimation(item, paddingItems);
+	playHornPreview(item);
+	if (garage && garage.IsA("ScreenGui")) {
+		garage.Enabled = player.GetAttribute("CB_FlowState") === "garage";
+	}
+});

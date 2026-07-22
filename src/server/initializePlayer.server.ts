@@ -2,41 +2,27 @@
 
 import spawnVehicle from "./Modules/spawnVehicle";
 
-import setTab from "./Modules/UiModules/setTab";
 import DataUtilities from "./Modules/DataUtilities";
 import GeneralUtils from "./GeneralUtils";
 import DataStoreDefaults from "./Modules/DataStoreDefaults";
 import roundHandler from "./Modules/roundHandler";
 //local playerGarage = workspace.garageModel
 import crateModule from "./Modules/CrateModule";
-import selectedFunctions from "./Modules/UiModules/itemSelectedFunctions";
-import populateCrateFrameModule from "shared/PopulateCrateFrame";
-import ContentModule from "./Modules/Content";
-import paidRandomItemsPolicy from "./Modules/paidRandomItemsPolicy";
+import garageIntents from "./ui/garageIntents";
+import profileSnapshot from "./ui/profileSnapshot";
+import { CrateCatalog } from "shared/CrateCatalog";
 import { Globals } from "./Globals";
 import footballMatch from "./Modules/footballMatch";
 import TeamRegistry, { CarBallRemotes, RENAME_PRODUCT_ID } from "./Modules/TeamRegistry";
 import UiState from "./ui/UiState";
 import { getUiIntentEvent, type UiIntentEventName } from "shared/UiIntents";
-import { ProductIds } from "shared/Monetization";
 import type { LadderTeam } from "./Modules/TeamRegistry";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import { PlayerGuiManager } from "./ui/PlayerGuiManager";
 import VehicleInputActions from "./Modules/vehicleInputActions";
-import { CASH_PURCHACE_MENU_OPEN_SIZE } from "shared/ui/uiConstants";
-import type { CrateItem } from "./Modules/dataTypes";
 
-const TweenService = game.GetService("TweenService");
 const HttpService = game.GetService("HttpService");
-// Original: game.StarterGui.Garage.cashPurchace.Size (an unused local; the
-// template value now lives in uiConstants)
-const cashPurchaceMenuOpenSize = CASH_PURCHACE_MENU_OPEN_SIZE;
 const MarketplaceService = game.GetService("MarketplaceService");
-const DSDefaultValues = DataStoreDefaults;
-
-//Constants
-const SELECTED_TAB_COLOR = Color3.fromRGB(255, 153, 29);
-const DEFAULT_TAB_COLOR = new Color3(1, 1, 1);
 
 //DataStores--
 import DataStore2 from "./Modules/DataStore2";
@@ -56,33 +42,8 @@ const MemoryStoreService = game.GetService("MemoryStoreService");
 const testStoreMap = MemoryStoreService.GetSortedMap("testStoreMap");
 
 // ---- PlayerGui instance shapes (server-rendered React tree) ----
-
-interface GarageGuiShape extends ScreenGui {
-	Inventory: Frame & {
-		SpawnButton: Frame & { Button: TextButton };
-		BuyButton: Frame & { Button: TextButton; BuyButtonConsole: BindableEvent };
-		Buttons: Frame & { Buttons: Frame & { Inventory: Frame } };
-		ShopButton: GuiButton;
-	};
-	Shop: Frame & {
-		InventoryButton: GuiButton;
-		Purchases: Frame & { VIP: GuiButton };
-		Crates: Frame;
-	};
-	CrateMenu: Frame & {
-		Content: Frame;
-		BackButton: GuiButton;
-		OpenButton: GuiButton & { TextLabel: TextLabel };
-		CrateName: TextLabel;
-	};
-	cashPurchace: Frame;
-	payOrSpectate: Frame & { Pay: GuiButton; Spectate: GuiButton };
-	cantRespawn: TextLabel;
-	Money: Frame & {
-		Currency: Frame & { TextLabel: TextLabel; Add: GuiButton };
-		Trophies: Frame & { TextLabel: TextLabel };
-	};
-}
+// (GarageGuiShape retired in Phase 5: the Garage/CrateMenu ScreenGuis are
+// CLIENT-owned — the server never touches their instances any more.)
 
 interface GameGuiShape extends ScreenGui {
 	Money: Frame & { Currency: Frame & { TextLabel: TextLabel } };
@@ -94,7 +55,6 @@ interface GameGuiShape extends ScreenGui {
 }
 
 type PlayerGuiShape = Instance & {
-	Garage: GarageGuiShape;
 	Game: GameGuiShape;
 };
 
@@ -148,9 +108,10 @@ Players.PlayerAdded.Connect((player) => {
 	}
 });
 
-const uiConnections = new Map<Player, Map<string, RBXScriptConnection>>();
+// (uiConnections / selectedCrate / the server-wired tab + shop + crate menus
+// are gone — Phase 5 moved the whole Garage/CrateMenu UI client-side; the
+// remaining crate entry point is the Intent_OpenCrate handler below.)
 const crateDebounces = new Map<Player, boolean>();
-const selectedCrate = new Map<Player, number>();
 
 // ---- UI flow ownership (menu vs spawn) -------------------------------------
 // SpawnInPlayer and the menu (re)initialisers both span yields (LoadCharacter,
@@ -216,133 +177,12 @@ FunctionsAndEvents.SetKeyBinding.OnServerInvoke = (player, action, key) => {
 // client fires it — movement floats travel via the per-vehicle
 // inputChangedEvent into the shared sim.)
 
-function GetModelByPlayerAndParent(player: Player, parent: Instance): Instance | undefined {
-	for (const model of parent.GetChildren()) {
-		if ((model as Instance & { Player: ObjectValue }).Player.Value === player) {
-			return model;
-		}
-	}
-	return undefined;
-}
-
-function ColorButton(button: ImageButton, highlightedButton: GuiObject, selectedColor: Color3, defaultColor: Color3) {
-	if (button === highlightedButton) {
-		button.ImageColor3 = selectedColor;
-	} else {
-		button.ImageColor3 = defaultColor;
-	}
-}
-
-Globals.CrateNames = new Map<number, string>([
-	[1, "Lightning Crate"],
-	[2, "Interceptor Crate"],
-	[3, "Apex Crate"],
-]);
-Globals.CrateNames.set(-1, "OverDRIVE Crate");
-
-const selectedTab = new Map<Player, string>();
-
-function HighlightButtonInBar(
-	highlightedButton: GuiObject,
-	buttonsBar: Instance,
-	selectedColor: Color3,
-	defaultColor: Color3,
-	player: Player,
-) {
-	selectedTab.set(player, highlightedButton.Name);
-	GeneralUtils.IterateOverChildrenOfType(
-		buttonsBar,
-		"GuiObject",
-		ColorButton as unknown as (object: Instance, ...args: unknown[]) => void,
-		highlightedButton,
-		selectedColor,
-		defaultColor,
-	);
-}
-
-function OpenTabButton(button: GuiObject, player: Player, buttonsBar: Instance, location: string) {
-	HighlightButtonInBar(button, buttonsBar, SELECTED_TAB_COLOR, DEFAULT_TAB_COLOR, player);
-	(setTab as unknown as Record<string, (player: Player, tab: string) => void>)[location](player, button.Name);
-}
-
-FunctionsAndEvents.GamePadButtonR1Down.OnServerEvent.Connect((player) => {
-	const gui = playerGuiOf(player);
-	if (gui.Garage.Enabled && gui.Garage.Inventory.Visible) {
-		const buttonsBar = gui.Garage.Inventory.Buttons.Buttons.Inventory;
-		const buttons = GeneralUtils.GetChildrenOfType(buttonsBar, "ImageButton");
-		if (selectedTab.get(player) === undefined) {
-			selectedTab.set(player, "Body");
-		}
-		const selectedButton = selectedTab.get(player)!;
-
-		let index = 0;
-
-		for (const [i, button] of ipairs(buttons)) {
-			if (button.Name === selectedButton) {
-				index = i;
-			}
-		}
-
-		let nextButtonIndex = index + 1;
-		if (nextButtonIndex > buttons.size()) {
-			nextButtonIndex = 1;
-		}
-		const nextButton = buttons[nextButtonIndex - 1];
-		OpenTabButton(nextButton as GuiObject, player, buttonsBar, "Inventory");
-	}
-});
-
-FunctionsAndEvents.GamePadButtonL1Down.OnServerEvent.Connect((player) => {
-	const gui = playerGuiOf(player);
-	if (gui.Garage.Enabled && gui.Garage.Inventory.Visible) {
-		const buttonsBar = gui.Garage.Inventory.Buttons.Buttons.Inventory;
-		const buttons = GeneralUtils.GetChildrenOfType(buttonsBar, "ImageButton");
-		if (selectedTab.get(player) === undefined) {
-			selectedTab.set(player, "Body");
-		}
-		const selectedButton = selectedTab.get(player)!;
-
-		let index = 0;
-
-		for (const [i, button] of ipairs(buttons)) {
-			if (button.Name === selectedButton) {
-				index = i;
-			}
-		}
-
-		let nextButtonIndex = index - 1;
-		if (nextButtonIndex < 1) {
-			nextButtonIndex = buttons.size();
-		}
-		const nextButton = buttons[nextButtonIndex - 1];
-		OpenTabButton(nextButton as GuiObject, player, buttonsBar, "Inventory");
-	}
-});
-
-function ConnectTabButton(button: GuiObject, player: Player, buttonsBar: Instance, location: string) {
-	uiConnections.get(player)!.set(
-		button.Name + "tabButton",
-		(button as GuiButton).MouseButton1Click.Connect(() => {
-			OpenTabButton(button, player, buttonsBar, location);
-		}),
-	);
-}
-
-function SetupTabButtons(player: Player, buttonsBar: Instance, location: string) {
-	GeneralUtils.IterateOverChildrenOfType(
-		buttonsBar,
-		"GuiObject",
-		ConnectTabButton as unknown as (object: Instance, ...args: unknown[]) => void,
-		player,
-		buttonsBar,
-		location,
-	);
-}
-
-function resetVehicle(player: Player) {
-	const carClass = Globals.vehiclesTable[player.UserId]!;
-	carClass.resetVehicle();
-}
+// (GetModelByPlayerAndParent, the tab-bar helpers, the gamepad R1/L1 garage
+// tab-cycling handlers and resetVehicle are gone — Phase 5: tab navigation,
+// tile population and gamepad garage nav are client-local in
+// src/client/ui/garage.client.ts; the display-car reset lives in
+// src/server/ui/garageIntents.ts. Crate display names moved to the shared
+// catalog (shared/CrateCatalog.CRATE_NAMES) — Globals.CrateNames retired.)
 
 //Garages
 Globals.findEmptyGarage = () => {
@@ -419,195 +259,24 @@ function resendMenuCameraState(player: Player) {
 menuCameraReady.OnServerEvent.Connect((player) => resendMenuCameraState(player));
 
 //Ui
-function openCrate(player: Player) {
+/** Intent_OpenCrate body: the old openCrate debounce around the crate module
+ * (policy/affordability/Robux logic re-validated inside crateModule.openCrate;
+ * the crate id now arrives with the intent instead of the selectedCrate map). */
+function openCrate(player: Player, crateId: number) {
 	if (!crateDebounces.get(player)) {
 		crateDebounces.set(player, true);
-		crateModule.openCrate(player, selectedCrate.get(player)!);
+		const [ok, err] = pcall(() => crateModule.openCrate(player, crateId));
 		crateDebounces.set(player, false);
-	}
-}
-
-Globals.openCrateMenu = (player: Player, crateName: number) => {
-	// Lootbox compliance: don't even show the crate menu in restricted countries.
-	if (paidRandomItemsPolicy.isRestricted(player)) {
-		paidRandomItemsPolicy.showRestrictedPopup(player);
-		return;
-	}
-
-	if (!uiConnections.get(player)) {
-		uiConnections.set(player, new Map());
-	}
-
-	for (const [, connection] of pairs(uiConnections.get(player)!)) {
-		connection.Disconnect();
-	}
-
-	selectedCrate.set(player, crateName);
-
-	const gui = playerGuiOf(player);
-	const shop = gui.Garage.Shop;
-	const crateMenu = gui.Garage.CrateMenu;
-	const gameUi = gui.Game;
-	gameUi.Enabled = false;
-	for (const child of crateMenu.Content.GetChildren()) {
-		if (child.IsA("Frame")) {
-			child.Destroy();
+		if (!ok) {
+			warn(`[Crate] openCrate(${crateId}) failed for ${player.Name}: ${err}`);
 		}
 	}
-
-	const inventory = gui.Garage.Inventory;
-
-	crateMenu.Visible = true;
-	inventory.Visible = false;
-	shop.Visible = false;
-
-	uiConnections.get(player)!.set(
-		"crate1",
-		crateMenu.BackButton.MouseButton1Click.Connect(() => {
-			OpenShop(player);
-		}),
-	);
-
-	const playerGarage = Globals.findPlayerGarage(player)!;
-	FunctionsAndEvents.SetMenuCameraCFrame.FireClient(player, playerGarage.Cameras.CrateMenu.CFrame);
-
-	crateMenu.CrateName.Text = Globals.CrateNames.get(crateName)!;
-
-	// Original: require(game.ServerStorage.Modules.Content)[crateName]
-	// (Content is statically imported at the top in TS — require caching makes
-	// the original's repeated require equivalent to this.)
-	const crateContent = ContentModule.get(crateName)!;
-
-	uiConnections.get(player)!.set(
-		"crate2",
-		crateMenu.OpenButton.MouseButton1Click.Connect(() => {
-			openCrate(player);
-		}),
-	);
-
-	if (crateName > 0) {
-		crateMenu.OpenButton.TextLabel.Text = "OPEN - $" + crateContent.price;
-	} else {
-		crateMenu.OpenButton.TextLabel.Text = "OPEN - R$ …";
-	}
-
-	for (const [i, itemToShow] of ipairs(crateContent.content)) {
-		const itemGui = (
-			game.GetService("ReplicatedStorage") as unknown as { Ui: { CrateFrame: Frame } }
-		).Ui.CrateFrame.Clone();
-
-		const button = new Instance("TextButton");
-		button.Parent = itemGui;
-		button.Transparency = 1;
-		button.Size = new UDim2(1, 0, 1, 0);
-		button.ZIndex = 3;
-
-		populateCrateFrameModule.PopulateFrame(itemGui as never, itemToShow, crateMenu.Content);
-		uiConnections.get(player)!.set(
-			"itemToShow" + i,
-			button.MouseButton1Click.Connect(() => {
-				resetVehicle(player);
-				//spawnVehicle.SpawnVehicle(player, false, DataUtilities.getPlayerEquippedVehicle(player), workspace.garageModel.spawnPlate.CFrame, true)
-
-				if (itemToShow.type === "Colors") {
-					selectedFunctions.Colors(player, itemToShow.name, true, undefined!);
-				} else if (itemToShow.type === "CarHorns") {
-					selectedFunctions.CarHorn(player, itemToShow.name, true, gui.Garage as never, undefined!);
-				} else if (itemToShow.type === "BoostTrails") {
-					selectedFunctions.BoostTrail(player, itemToShow.name, true, undefined!, undefined!);
-				}
-			}),
-		);
-	}
-};
-
-
-function OpenShop(player: Player) {
-	if (!uiConnections.get(player)) {
-		uiConnections.set(player, new Map());
-	}
-
-	for (const [, connection] of pairs(uiConnections.get(player)!)) {
-		connection.Disconnect();
-	}
-	const gui = playerGuiOf(player);
-	const gameUi = gui.Game;
-	gameUi.Enabled = false;
-	const inventory = gui.Garage.Inventory;
-	const shop = gui.Garage.Shop;
-	const crateMenu = gui.Garage.CrateMenu;
-
-	crateMenu.Visible = false;
-	inventory.Visible = false;
-	shop.Visible = true;
-	uiConnections.get(player)!.set(
-		"shop1",
-		shop.InventoryButton.MouseButton1Click.Connect(() => {
-			shop.Visible = false;
-			OpenInventory(player);
-		}),
-	);
-
-	uiConnections.get(player)!.set(
-		"shop2",
-		shop.Purchases.VIP.MouseButton1Click.Connect(() => {
-			MarketplaceService.PromptGamePassPurchase(player, Globals.VIP_PASS_ID);
-		}),
-	);
-
-	for (const CrateSection of shop.Crates.GetChildren()) {
-		if (CrateSection.IsA("Frame")) {
-			for (const Crate of CrateSection.GetChildren()) {
-				if (Crate.IsA("TextButton")) {
-					(Crate as TextButton & { CrateName: TextLabel }).CrateName.Text = Globals.CrateNames.get(
-						tonumber(Crate.Name)!,
-					)!;
-
-					uiConnections.get(player)!.set(
-						"shopCrate" + Crate.Name,
-						Crate.MouseButton1Click.Connect(() => {
-							Globals.openCrateMenu(player, tonumber(Crate.Name)!);
-							//crateModule.OpenCrate(player, tonumber(Crate.Name))
-						}),
-					);
-				}
-			}
-		}
-	}
-
 }
 
-function OpenInventory(player: Player) {
-	if (!uiConnections.get(player)) {
-		uiConnections.set(player, new Map());
-	}
-
-	for (const [, connection] of pairs(uiConnections.get(player)!)) {
-		connection.Disconnect();
-	}
-	const gui = playerGuiOf(player);
-	const gameUi = gui.Game;
-	gameUi.Enabled = false;
-	const inventory = gui.Garage.Inventory;
-	const shop = gui.Garage.Shop;
-	const crateMenu = gui.Garage.CrateMenu;
-
-	crateMenu.Visible = false;
-	shop.Visible = false;
-
-	SetupTabButtons(player, inventory.Buttons.Buttons.Inventory, "Inventory");
-
-	setTab.Inventory(player, "Body");
-
-	uiConnections.get(player)!.set(
-		"inv",
-		inventory.ShopButton.MouseButton1Click.Connect(() => {
-			OpenShop(player);
-		}),
-	);
-
-	inventory.Visible = true;
-}
+/* Phase 5: Globals.openCrateMenu / OpenShop / OpenInventory are DELETED — the
+ * Garage's shop, inventory tabs and in-garage crate page render client-side
+ * (src/client/ui/garage.client.ts) from the profile snapshot + shared crate
+ * catalog; the camera shot for the crate page arrives via Intent_ViewCrate. */
 
 /** Landing page (Top Table §5): title + Join Team / Create Team / Cars, car
  * in view via the menu camera. The Landing ScreenGui itself is CLIENT-owned
@@ -617,16 +286,9 @@ function OpenInventory(player: Player) {
  * aim, garage display car. */
 function enterLandingState(player: Player) {
 	// Landing = menu state: invalidate any in-flight spawn for this player.
+	// (The client-owned Garage derives its Enabled from CB_FlowState, so the
+	// old server-side Garage.Enabled=false is this same write now.)
 	UiState.setFlowState(player, "menu");
-	if (!uiConnections.get(player)) {
-		uiConnections.set(player, new Map());
-	}
-	for (const [, connection] of pairs(uiConnections.get(player)!)) {
-		connection.Disconnect();
-	}
-
-	const gui = playerGuiOf(player);
-	gui.Garage.Enabled = false;
 
 	// Landing is outside the play loop — the client-rendered shop countdown
 	// (src/client/ui/timer.client.ts) hides itself while CB_FlowState is a
@@ -670,14 +332,47 @@ function enterLandingState(player: Player) {
 	// intent section at the bottom of this file.)
 }
 
+/** Cars page = "garage" state (Intent_OpenGarage, and the shop-window menu
+ * re-init). The Garage ScreenGui is CLIENT-owned since Phase 5 — the server's
+ * whole contribution is the flow state, the Body camera shot (the old
+ * setTab.Inventory side effect; tab SWITCHES aim locally on the client) and
+ * the equipped display car on the plate. */
+function enterGarageState(player: Player) {
+	UiState.setFlowState(player, "garage");
+
+	const playerGarage = Globals.findPlayerGarage(player);
+	const bodyCamera = playerGarage && playerGarage.Cameras.FindFirstChild("Body");
+	if (bodyCamera && bodyCamera.IsA("BasePart")) {
+		FunctionsAndEvents.SetMenuCameraCFrame.FireClient(player, bodyCamera.CFrame);
+	} else {
+		warn(`[Garage] no Body camera in garage for ${player.Name} — menu camera not aimed`);
+	}
+
+	// Display car (the old OpenInventory → setTab.Inventory("Body") spawn).
+	if (playerGarage) {
+		task.spawn(() => {
+			const [okSpawn, errSpawn] = pcall(() => {
+				spawnVehicle.SpawnVehicle(
+					player,
+					false,
+					DataUtilities.getPlayerEquippedVehicle(player),
+					playerGarage.spawnPlate.CFrame,
+					true,
+				);
+			});
+			if (!okSpawn) {
+				warn(`[Garage] display SpawnVehicle failed: ${errSpawn}`);
+			}
+		});
+	}
+}
+
 /** Friends Team mini lobby = "lobby" state: the CreateTeam ScreenGui is
  * client-rendered from replicated team state; the server only records the
  * transition and drops its own menu screen (the lobby can be entered from the
  * garage or mid-match via an accepted invite). */
 function enterLobbyState(player: Player) {
-	pcall(() => {
-		playerGuiOf(player).Garage.Enabled = false;
-	});
+	// (Client-owned Garage hides itself when CB_FlowState leaves "garage".)
 	UiState.setFlowState(player, "lobby");
 }
 
@@ -724,8 +419,6 @@ function spawnIntoMatch(player: Player) {
 // (The CreateTeam / InvitePopup / RenamePopup ScreenGuis are CLIENT-owned
 // since migration Phase 4 — the server publishes team/vote/invite/rename
 // state as attributes and the client renders it.)
-
-const MENU_FONT = new Font("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Heavy, Enum.FontStyle.Normal);
 
 // ---- vote start (the team page is a mini lobby) ---------------------------
 // Play is a ready vote: every member must press it, then the whole team
@@ -1029,18 +722,18 @@ function resolveInvite(target: Player, accept: boolean) {
 
 // ---- rename ----------------------------------------------------------------
 // The RenamePopup ScreenGui is client-owned: the client opens it locally when
-// the lobby Rename button is pressed with credits in hand (CB_RenameCredits),
-// or when CB_RenamePrompt is bumped (the server-wired Garage TeamNameStrip
-// click), or when a purchased credit arrives (the client watches
-// CB_RenameCredits — the old server-side watcher moved there). Submission
-// still travels over CarBallRemotes.SubmitTeamName; feedback is published as
-// CB_RenameStatus.
+// a rename button (lobby header, or the client-owned Garage's TeamNameStrip)
+// is pressed with credits in hand (CB_RenameCredits), or when a purchased
+// credit arrives (the client watches CB_RenameCredits). Intent_RequestRename
+// is therefore only the PURCHASE path now — Phase 5 retired the
+// CB_RenamePrompt open-ping. Submission still travels over
+// CarBallRemotes.SubmitTeamName; feedback is published as CB_RenameStatus.
 
 function handleRenameRequest(player: Player) {
 	if (TeamRegistry.getRenameCredits(player) > 0) {
-		// Ping the client-owned popup open.
-		const count = player.GetAttribute("CB_RenamePrompt");
-		UiState.setPlayerAttr(player, "CB_RenamePrompt", (typeIs(count, "number") ? count : 0) + 1);
+		// Credits in hand: the client opens its popup locally without asking
+		// us — reaching here means a stale/raced request; nothing to do (the
+		// client's CB_RenameCredits watcher has already opened the popup).
 		return;
 	}
 	if (RENAME_PRODUCT_ID === 0) {
@@ -1064,15 +757,8 @@ CarBallRemotes.SubmitTeamName.OnServerEvent.Connect((player, raw) => {
 	UiState.setPlayerAttr(player, "CB_RenameStatus", "pending");
 	const result = TeamRegistry.tryRename(player, raw);
 	if (result === "ok" || result === "nocredit") {
-		if (result === "ok") {
-			// Garage is still server-owned — keep its team-name strip fresh.
-			pcall(() => {
-				const teamName = playerGuiOf(player).Garage.FindFirstChild("CurrentTeamName", true);
-				if (teamName?.IsA("TextLabel")) {
-					teamName.Text = TeamRegistry.getTeamOf(player)?.name ?? "NO TEAM";
-				}
-			});
-		}
+		// (The client-owned Garage's CurrentTeamName strip re-renders itself
+		// from the team's CB_TeamName attribute — no server label write.)
 		UiState.setPlayerAttr(player, "CB_RenameStatus", "");
 	} else if (result === "moderated") {
 		UiState.setPlayerAttr(player, "CB_RenameStatus", "moderated");
@@ -1081,132 +767,10 @@ CarBallRemotes.SubmitTeamName.OnServerEvent.Connect((player, raw) => {
 	}
 });
 
-/** Cars-page navigation and team-name controls, created per UI mount. */
-/** Bottom-left garage button label: teamed = playing between rounds → the
- * only way out is EXIT TEAM (leave team + landing, excluded from the auto
- * start); teamless = browsing cars from the landing page → plain BACK. */
-function backButtonLabel(player: Player): string {
-	return TeamRegistry.getTeamOf(player) ? "EXIT TEAM" : "BACK";
-}
-
-function ensureGarageMenuButtons(player: Player) {
-	const garage = playerGuiOf(player).Garage;
-	const existingBack = garage.FindFirstChild("BackToMenu", true);
-	if (existingBack) {
-		// Same mount can be reached teamed (shop phase) then teamless
-		// (EXIT TEAM → landing → SELECT CAR) — keep the label honest.
-		if (existingBack.IsA("TextButton")) {
-			existingBack.Text = backButtonLabel(player);
-		}
-		return;
-	}
-	const inventory = garage.Inventory;
-	const shopButton = inventory.ShopButton;
-	shopButton.AnchorPoint = new Vector2(1, 0.5);
-	shopButton.Position = new UDim2(1, 0, shopButton.Position.Y.Scale, shopButton.Position.Y.Offset);
-	const shopOutline = new Instance("UIStroke");
-	shopOutline.Name = "MenuOutline";
-	shopOutline.ApplyStrokeMode = Enum.ApplyStrokeMode.Border;
-	shopOutline.Color = Color3.fromRGB(120, 70, 0);
-	shopOutline.Thickness = 2;
-	shopOutline.Parent = shopButton;
-	const shopShadow = new Instance("UIShadow");
-	shopShadow.Name = "MenuShadow";
-	shopShadow.BlurRadius = new UDim(0, 8);
-	shopShadow.Color = new Color3(0, 0, 0);
-	shopShadow.Offset = UDim2.fromOffset(0, 5);
-	shopShadow.Transparency = 0.5;
-	shopShadow.Parent = shopButton;
-
-	const backButton = new Instance("TextButton");
-	backButton.Name = "BackToMenu";
-	backButton.AnchorPoint = new Vector2(0, 0.5);
-	backButton.AutoButtonColor = true;
-	backButton.BackgroundColor3 = Color3.fromRGB(205, 55, 55);
-	backButton.BorderSizePixel = 0;
-	backButton.FontFace = MENU_FONT;
-	backButton.Position = new UDim2(0, 0, 0.932, 0);
-	backButton.Size = new UDim2(0.11, 0, 0.134, 0);
-	backButton.Text = backButtonLabel(player);
-	backButton.TextColor3 = new Color3(1, 1, 1);
-	backButton.TextScaled = true;
-	backButton.ZIndex = shopButton.ZIndex;
-	const backCorner = new Instance("UICorner");
-	backCorner.CornerRadius = new UDim(0.1, 0);
-	backCorner.Parent = backButton;
-	const backOutline = new Instance("UIStroke");
-	backOutline.ApplyStrokeMode = Enum.ApplyStrokeMode.Border;
-	backOutline.Color = Color3.fromRGB(95, 15, 15);
-	backOutline.Thickness = 2;
-	backOutline.Parent = backButton;
-	const backShadow = new Instance("UIShadow");
-	backShadow.BlurRadius = new UDim(0, 8);
-	backShadow.Color = new Color3(0, 0, 0);
-	backShadow.Offset = UDim2.fromOffset(0, 5);
-	backShadow.Transparency = 0.5;
-	backShadow.Parent = backButton;
-	backButton.MouseButton1Click.Connect(() => {
-		const [ok, err] = pcall(() => {
-			// Shared with Intent_ExitToLanding — leave-team guards + the
-			// landing transition (the Landing page itself renders client-side).
-			exitToLanding(player);
-			backButton.Text = backButtonLabel(player);
-		});
-		if (!ok) {
-			warn(`[Garage] back to menu failed: ${err}`);
-		}
-	});
-	backButton.Parent = inventory;
-
-	const teamStrip = new Instance("Frame");
-	teamStrip.Name = "TeamNameStrip";
-	teamStrip.AnchorPoint = new Vector2(0.5, 1);
-	teamStrip.BackgroundColor3 = Color3.fromRGB(20, 20, 24);
-	teamStrip.BackgroundTransparency = 0.15;
-	teamStrip.BorderSizePixel = 0;
-	teamStrip.Position = new UDim2(0.5, 0, 1, 0);
-	teamStrip.Size = new UDim2(0.38, 0, 0.07, 0);
-	teamStrip.Visible = !inventory.BuyButton.Visible;
-	teamStrip.ZIndex = shopButton.ZIndex;
-	const stripCorner = new Instance("UICorner");
-	stripCorner.CornerRadius = new UDim(0, 7);
-	stripCorner.Parent = teamStrip;
-
-	const teamName = new Instance("TextLabel");
-	teamName.Name = "CurrentTeamName";
-	teamName.BackgroundTransparency = 1;
-	teamName.FontFace = MENU_FONT;
-	teamName.Position = new UDim2(0.04, 0, 0.15, 0);
-	teamName.Size = new UDim2(0.62, 0, 0.7, 0);
-	teamName.Text = TeamRegistry.getTeamOf(player)?.name ?? "NO TEAM";
-	teamName.TextColor3 = new Color3(1, 1, 1);
-	teamName.TextScaled = true;
-	teamName.TextTruncate = Enum.TextTruncate.AtEnd;
-	teamName.TextXAlignment = Enum.TextXAlignment.Center;
-	teamName.ZIndex = teamStrip.ZIndex + 1;
-	teamName.Parent = teamStrip;
-
-	const changeName = new Instance("TextButton");
-	changeName.Name = "ChangeTeamName";
-	changeName.AnchorPoint = new Vector2(1, 0.5);
-	changeName.BackgroundColor3 = Color3.fromRGB(150, 70, 200);
-	changeName.BorderSizePixel = 0;
-	changeName.FontFace = MENU_FONT;
-	changeName.Position = new UDim2(0.98, 0, 0.5, 0);
-	changeName.Size = new UDim2(0.3, 0, 0.72, 0);
-	changeName.Text = "Change Name";
-	changeName.TextColor3 = new Color3(1, 1, 1);
-	changeName.TextScaled = true;
-	changeName.ZIndex = teamStrip.ZIndex + 1;
-	const changeCorner = new Instance("UICorner");
-	changeCorner.CornerRadius = new UDim(0, 6);
-	changeCorner.Parent = changeName;
-	changeName.MouseButton1Click.Connect(() => {
-		handleRenameRequest(player);
-	});
-	changeName.Parent = teamStrip;
-	teamStrip.Parent = inventory;
-}
+// (backButtonLabel / ensureGarageMenuButtons are DELETED — Phase 5: the
+// Garage BackToMenu button and TeamNameStrip are built client-side in
+// src/client/ui/garage.client.ts; BackToMenu fires Intent_ExitToLanding and
+// the strip renders live from the team's CB_TeamName attribute.)
 
 const resetting = new Map<Player, boolean>();
 
@@ -1329,8 +893,8 @@ function spawnInPlayerInner(player: Player): boolean {
 	// (The original's "Spawning in N" TimerGui countdown was already retired;
 	// the TimerGui is client-owned now — see src/client/ui/timer.client.ts.)
 
-	const garageUi = player.WaitForChild("PlayerGui").WaitForChild("Garage") as GarageGuiShape;
-	garageUi.Enabled = false;
+	// (The client-owned Garage hides itself: CB_FlowState left "garage" at the
+	// top of this spawn.)
 	//workspace:WaitForChild(player.Name)
 	(player.FindFirstChild("spawned") as NumberValue).Value += 1;
 	playerGuiOf(player).Game.Enabled = true;
@@ -1511,33 +1075,15 @@ function initialisePlayerUi(player: Player) {
 
 	FunctionsAndEvents.ToggleMenuCamera.FireClient(player, true, playerGarage);
 
-	const gui = playerGuiOf(player);
-	const garageUi = gui.Garage;
-	garageUi.Enabled = true;
-
-	gui.Garage.Money.Currency.Add.MouseButton1Click.Connect(() => {
-		selectedFunctions.openCashPurchaceMenu(player);
-	});
-
-	// Top Table: play starts automatically (landing buttons / shop countdown)
-	// — the garage Spawn button is retired.
-	pcall(() => {
-		garageUi.Inventory.SpawnButton.Visible = false;
-		garageUi.Inventory.SpawnButton.Button.Visible = false;
-	});
-
 	// Landing page first (Top Table §5) — except during the between-rounds
 	// shop window, when everyone lands straight on the CARS page with the
-	// restart countdown already ticking.
-	garageUi.Enabled = false;
+	// restart countdown already ticking. (Both pages are CLIENT-rendered from
+	// CB_FlowState now — the server contributes state, camera and display car.)
 	const [landOk, landErr] = pcall(() => {
 		if (Globals.shopPhaseActive === true) {
-			garageUi.Enabled = true;
-			OpenInventory(player);
-			ensureGarageMenuButtons(player);
 			// CARS page = "garage": counted by the shop countdown/auto-spawn
 			// (unlike "menu"/"lobby"), skipped by the round-end sendToMenu.
-			UiState.setFlowState(player, "garage");
+			enterGarageState(player);
 		} else {
 			enterLandingState(player);
 		}
@@ -1559,15 +1105,20 @@ function initialisePlayerUi(player: Player) {
 //removes players garage and sets door playerValue to nil
 
 function setPlayerCash(player: Player, money: number) {
+	// The Game gui is still SERVER-owned (until Phase 6) — keep its label
+	// write. The Garage half moved client-side: the client-owned Garage money
+	// label renders from the CB_Money attribute published here.
 	const moneyString = "$" + GeneralUtils.CommaNumber(money);
-	const gui = playerGuiOf(player);
-	gui.Garage.Money.Currency.TextLabel.Text = moneyString;
-	gui.Game.Money.Currency.TextLabel.Text = moneyString;
+	pcall(() => {
+		playerGuiOf(player).Game.Money.Currency.TextLabel.Text = moneyString;
+	});
+	UiState.setPlayerAttr(player, "CB_Money", money);
 }
 
 function setPlayerTrophies(player: Player, trophies: number) {
-	const gui = playerGuiOf(player);
-	gui.Garage.Money.Trophies.TextLabel.Text = "🏆 " + GeneralUtils.CommaNumber(trophies);
+	// Garage-only label originally — now purely the CB_Trophies publication
+	// (the client Garage renders "🏆 N" from it).
+	UiState.setPlayerAttr(player, "CB_Trophies", trophies);
 }
 
 function showKilledByScreen(player: Player, killer: Player) {
@@ -1589,14 +1140,12 @@ function hideKilledByScreen(player: Player) {
 	killedByScreen.Visible = false;
 }
 
-function enablePayOrSpectate(player: Player) {
-	const payOrSpectate = (player.WaitForChild("PlayerGui").WaitForChild("Garage") as GarageGuiShape).payOrSpectate;
-	payOrSpectate.Visible = true;
-	payOrSpectate.Spectate.MouseButton1Click.Connect(() => {
-		payOrSpectate.Visible = false;
-		enableSpectateScreen(player, undefined);
-	});
-}
+// (enablePayOrSpectate DELETED in Phase 5: it was the deathmatch-era writer of
+// the payOrSpectate frame INSIDE the Garage gui, and nothing has called it
+// since the Football rework — dead code, and the Garage is client-owned now.
+// The payOrSpectate/cantRespawn frames remain, dormant, in the client-mounted
+// GarageGui component; if a deathmatch mode returns, publish a CB_* attribute
+// and let the client render them.)
 
 function enableSpectateScreen(player: Player, playerToWatch: Player | undefined) {
 	const spectateScreen = (player.WaitForChild("PlayerGui").WaitForChild("Game") as GameGuiShape).Spectate;
@@ -1723,6 +1272,11 @@ function initializePlayer(player: Player) {
 	// Original: clone every StarterGui child into PlayerGui.
 	PlayerGuiManager.mountAll(player);
 
+	// Phase 5: CB_ProfileVersion counter + OnUpdate hooks on every
+	// owned/equipped dataset (the client garage refetches Ui_GetProfile on
+	// version bumps).
+	profileSnapshot.registerPlayer(player);
+
 	createValues(player);
 	initialisePlayerUi(player);
 
@@ -1759,12 +1313,9 @@ function initializePlayer(player: Player) {
 		setPlayerTrophies(player, newValue as number);
 	});
 
-	const playerVehicles = DataStore2("vehicles", player);
-	playerVehicles.OnUpdate((newValue) => {
-		pcall(() => {
-			setTab.Inventory(player, "Body");
-		});
-	});
+	// (The old vehicles OnUpdate → setTab.Inventory server re-render is gone:
+	// profileSnapshot.registerPlayer's hook bumps CB_ProfileVersion instead and
+	// the client garage re-renders its own Cars grid.)
 
 	//change to do garage ui stuff
 	// player.CharacterAdded:Connect(function(character)
@@ -1786,75 +1337,24 @@ for (const player of Players.GetPlayers()) {
 	task.spawn(() => initializePlayer(player));
 }
 
-FunctionsAndEvents.GamePadButtonXDown.OnServerEvent.Connect((player) => {
-	const gui = playerGuiOf(player);
-	if (gui.Garage.Enabled) {
-		const garage = gui.Garage;
-
-		if (garage.cashPurchace.Visible) {
-			ReturnUiSelectedValues(player);
-			garage.cashPurchace.Visible = false;
-		} else if (garage.Inventory.Visible) {
-			OpenShop(player);
-		} else if (garage.CrateMenu.Visible) {
-			OpenShop(player);
-		} else if (garage.Shop.Visible) {
-			OpenInventory(player);
-		}
-	}
-});
+// ---- gamepad menu buttons ---------------------------------------------------
+// Phase 5: the garage-navigation halves of the gamepad handlers (X page
+// cycling, Y unlock/crate-open, R2 cash menu, R1/L1 tab cycling, plus
+// MakeAllUisNotSelectable/ReturnUiSelectedValues) are CLIENT-LOCAL now — see
+// src/client/ui/garage.client.ts. VehicleKeyHandler.client.ts stopped firing
+// GamePadButtonXDown/R1Down/L1Down/R2Down (no server consumer remains). Y is
+// still fired: its remaining server half below drives the SERVER-owned Game
+// gui's spectate screen (Phase 6 moves it client-side too).
 
 FunctionsAndEvents.GamePadButtonYDown.OnServerEvent.Connect((player) => {
-	if ((player.WaitForChild("PlayerGui").WaitForChild("Garage") as GarageGuiShape).Enabled) {
-		const garage = playerGuiOf(player).Garage;
-		if (garage.Inventory.Visible) {
-			if (garage.Inventory.SpawnButton.Visible) {
-				Globals.SpawnInPlayer(player);
-			} else if (garage.Inventory.BuyButton.Visible) {
-				garage.Inventory.BuyButton.BuyButtonConsole.Fire();
-			}
-		} else if (garage.CrateMenu.Visible) {
-			if (uiConnections.get(player)!.get("crate2") !== undefined) {
-				openCrate(player);
-			}
-		}
-	} else if (playerGuiOf(player).Game.Enabled) {
-		const gameUi = playerGuiOf(player).Game;
-		if (gameUi.Spectate.Visible) {
-			ResetAndInitialisePlayerMenuUI(player);
-		}
-	}
-});
-
-const playerGuisSelection = new Map<Player, Map<GuiObject, boolean>>();
-
-function MakeAllUisNotSelectable(player: Player, exeption: Instance) {
-	if (!playerGuisSelection.get(player)) {
-		playerGuisSelection.set(player, new Map());
-	}
-	for (const ui of playerGuiOf(player).GetDescendants()) {
-		if (!ui.IsDescendantOf(exeption) && ui.IsA("GuiObject")) {
-			playerGuisSelection.get(player)!.set(ui, ui.Selectable);
-			ui.Selectable = false;
-		}
-	}
-}
-
-function ReturnUiSelectedValues(player: Player) {
-	if (!playerGuisSelection.get(player)) {
+	// The Garage is client-owned and invisible to the server; while the player
+	// is in a menu-family flow the garage gamepad semantics run client-side.
+	if (isMenuFamily(getFlowState(player))) {
 		return;
 	}
-	for (const ui of playerGuiOf(player).GetDescendants()) {
-		if (playerGuisSelection.get(player)!.get(ui as GuiObject)) {
-			(ui as GuiObject).Selectable = playerGuisSelection.get(player)!.get(ui as GuiObject)!;
-		}
-	}
-}
-
-FunctionsAndEvents.GamePadButtonR2Down.OnServerEvent.Connect((player) => {
-	if ((player.WaitForChild("PlayerGui").WaitForChild("Garage") as GarageGuiShape).Enabled) {
-		MakeAllUisNotSelectable(player, playerGuiOf(player).Garage.cashPurchace);
-		selectedFunctions.openCashPurchaceMenu(player);
+	const gameUi = playerGuiOf(player).Game;
+	if (gameUi.Enabled && gameUi.Spectate.Visible) {
+		ResetAndInitialisePlayerMenuUI(player);
 	}
 });
 
@@ -1978,29 +1478,21 @@ task.spawn(() => {
 		enterLobbyState(player);
 	});
 
-	// Landing.Cars (SELECT CAR): the Garage is still fully server-owned this
-	// phase — enabling it and wiring its pages here is required.
+	// Landing.Cars (SELECT CAR): the Garage renders CLIENT-side (Phase 5) —
+	// the server's whole job is validation, the flow-state transition and the
+	// display-car/camera side effects (enterGarageState).
 	connectIntent("Intent_OpenGarage", (player) => {
 		const state = getFlowState(player);
 		if (state !== "menu" && state !== "lobby") {
 			return;
 		}
-		// State first so the client menus drop before the (potentially
-		// yieldy) inventory build.
-		UiState.setFlowState(player, "garage");
-		const [ok, err] = pcall(() => {
-			playerGuiOf(player).Garage.Enabled = true;
-			OpenInventory(player);
-			ensureGarageMenuButtons(player);
-		});
+		const [ok, err] = pcall(() => enterGarageState(player));
 		if (!ok) {
 			warn(`[Menu] OpenGarage error: ${err}`);
 		}
 	});
 
-	// Garage BackToMenu equivalent (the server-wired button calls the same
-	// exitToLanding body — this intent exists for a future client-owned
-	// garage).
+	// Garage BackToMenu (the client-built button fires this).
 	connectIntent("Intent_ExitToLanding", (player) => {
 		if (getFlowState(player) !== "garage") {
 			return;
@@ -2071,14 +1563,102 @@ task.spawn(() => {
 		resolveInvite(player, accept);
 	});
 
-	// CreateTeam.Rename (the Garage TeamNameStrip click stays server-wired and
-	// calls handleRenameRequest directly).
+	// Rename purchase path (lobby header Rename / Garage TeamNameStrip — both
+	// client-owned; with credits in hand the client opens its popup locally
+	// and never fires this).
 	connectIntent("Intent_RequestRename", (player) => {
 		const state = getFlowState(player);
 		if (state !== "lobby" && state !== "garage") {
 			return;
 		}
 		handleRenameRequest(player);
+	});
+
+	// ---- Phase 5: client-garage intents -------------------------------------
+	// The Garage/CrateMenu ScreenGuis are client-owned; tiles/buttons fire
+	// these. Every handler: garage flow-state gate + typeIs validation, then
+	// the extracted server bodies (src/server/ui/garageIntents.ts /
+	// crateModule). Ownership and trophy thresholds are re-validated inside
+	// those bodies — the client's own checks are cosmetic only.
+
+	const inGarage = (player: Player) => getFlowState(player) === "garage";
+
+	// Cars tab: equip an owned car (unowned names degrade to a preview spawn).
+	connectIntent("Intent_EquipVehicle", (player, vehicleName) => {
+		if (!typeIs(vehicleName, "string") || !inGarage(player)) {
+			return;
+		}
+		garageIntents.equipVehicle(player, vehicleName);
+	});
+
+	// Cars tab: display a (typically locked) car on the plate; withTrail
+	// re-applies the equipped boost trail (BoostTrail tab re-opens).
+	connectIntent("Intent_PreviewVehicle", (player, vehicleName, withTrail) => {
+		if (!typeIs(vehicleName, "string") || !inGarage(player)) {
+			return;
+		}
+		if (withTrail !== undefined && !typeIs(withTrail, "boolean")) {
+			return;
+		}
+		garageIntents.previewVehicle(player, vehicleName, withTrail === true);
+	});
+
+	// Cars tab: trophy-gated free unlock (threshold re-checked server-side).
+	connectIntent("Intent_UnlockVehicle", (player, vehicleName) => {
+		if (!typeIs(vehicleName, "string") || !inGarage(player)) {
+			return;
+		}
+		garageIntents.unlockVehicle(player, vehicleName);
+		// (Grant + equip Set()s bump CB_ProfileVersion via the registered
+		// OnUpdate hooks — the client re-renders from the refetched profile.)
+	});
+
+	// Colors / Horns / Trails: equip-if-owned with display-car side effects;
+	// previewOnly=true (crate-page content tiles) never writes data.
+	const equipIntent = (
+		name: UiIntentEventName,
+		body: (player: Player, itemName: string, previewOnly?: boolean) => void,
+	) => {
+		connectIntent(name, (player, itemName, previewOnly) => {
+			if (!typeIs(itemName, "string") || !inGarage(player)) {
+				return;
+			}
+			if (previewOnly !== undefined && !typeIs(previewOnly, "boolean")) {
+				return;
+			}
+			body(player, itemName, previewOnly === true);
+		});
+	};
+	equipIntent("Intent_EquipColor", garageIntents.equipColor);
+	equipIntent("Intent_EquipHorn", garageIntents.equipHorn);
+	equipIntent("Intent_EquipTrail", garageIntents.equipTrail);
+
+	// Shop crate tile: server-authoritative camera for the crate page (the
+	// page navigation itself is client-local).
+	connectIntent("Intent_ViewCrate", (player, crateId) => {
+		if (!typeIs(crateId, "number") || !inGarage(player)) {
+			return;
+		}
+		if (!CrateCatalog.has(crateId)) {
+			return;
+		}
+		const playerGarage = Globals.findPlayerGarage(player);
+		const crateCamera = playerGarage && playerGarage.Cameras.FindFirstChild("CrateMenu");
+		if (crateCamera && crateCamera.IsA("BasePart")) {
+			FunctionsAndEvents.SetMenuCameraCFrame.FireClient(player, crateCamera.CFrame);
+		}
+	});
+
+	// Crate page OPEN button: policy/affordability/Robux logic re-validated in
+	// crateModule.openCrate; grant + Ui_CrateResult + version bump inside.
+	connectIntent("Intent_OpenCrate", (player, crateId) => {
+		if (!typeIs(crateId, "number") || !inGarage(player)) {
+			return;
+		}
+		if (!CrateCatalog.has(crateId)) {
+			return;
+		}
+		openCrate(player, crateId);
 	});
 });
 

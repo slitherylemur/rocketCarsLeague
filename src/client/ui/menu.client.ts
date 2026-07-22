@@ -15,12 +15,13 @@
 //   * InvitePopup renders from the CB_Invite player attribute (JSON payload)
 //     and the transient CB_InviteError failure text; Accept/Decline answer
 //     with Intent_ResolveInvite.
-//   * RenamePopup opens locally (rename button with CB_RenameCredits in hand),
-//     on a CB_RenamePrompt bump (server-wired Garage strip click), or when a
-//     purchased credit arrives (CB_RenameCredits watcher — moved here from the
-//     server). Status text renders from CB_RenameStatus. The Confirm button is
-//     wired by carBallMenu.client.ts (SubmitTeamName) — NOT here, to avoid
-//     double-wiring.
+//   * RenamePopup opens locally (rename button with CB_RenameCredits in hand
+//     — the client-owned Garage's TeamNameStrip does the same from
+//     garage.client.ts since Phase 5; the CB_RenamePrompt server ping is
+//     retired), or when a purchased credit arrives (CB_RenameCredits watcher —
+//     moved here from the server). Status text renders from CB_RenameStatus.
+//     The Confirm button is wired by carBallMenu.client.ts (SubmitTeamName) —
+//     NOT here, to avoid double-wiring.
 //
 // Button presses travel to the server on the UiIntents remotes; hover effects
 // stay in uiClientBehaviors.client.ts (it binds via PlayerGui.ChildAdded and
@@ -436,11 +437,8 @@ teamPage.Panel.Header.Rename.MouseButton1Click.Connect(() => {
 	}
 });
 
-// Server-side rename requests with credits in hand (the Garage TeamNameStrip
-// click) ping the popup open via CB_RenamePrompt.
-LocalPlayer.GetAttributeChangedSignal("CB_RenamePrompt").Connect(() => {
-	openRenamePopup();
-});
+// (CB_RenamePrompt retired in Phase 5: the Garage TeamNameStrip is
+// client-built now and opens the popup directly — see garage.client.ts.)
 
 // Rename purchase completions open the naming popup (credits arrive
 // asynchronously via purchaseHandler's receipt processor — this replaces the

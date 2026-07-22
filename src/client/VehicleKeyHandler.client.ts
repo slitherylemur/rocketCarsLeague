@@ -737,23 +737,21 @@ if (UserInputService.TouchEnabled) {
 }
 
 // ---------------------------------------------------------------------------
-// Gamepad menu buttons (unchanged)
+// Gamepad menu buttons
 // ---------------------------------------------------------------------------
+// Phase 5: X/R1/L1/R2 are no longer fired — their only server consumers were
+// the garage-navigation handlers, which are client-local in
+// src/client/ui/garage.client.ts now. Y still fires: the SERVER-owned Game
+// gui's spectate screen consumes it until Phase 6 (the garage half of Y also
+// runs client-locally in garage.client.ts). B keeps its historical fire (it
+// has had no server consumer for a while — slated for Phase 8 cleanup).
 
 UserInputService.InputBegan.Connect((input, gameProcessed) => {
 	if (input.UserInputType === Enum.UserInputType.Gamepad1) {
-		if (input.KeyCode === Enum.KeyCode.ButtonX) {
-			FunctionsAndEvents.GamePadButtonXDown.FireServer();
-		} else if (input.KeyCode === Enum.KeyCode.ButtonY) {
+		if (input.KeyCode === Enum.KeyCode.ButtonY) {
 			FunctionsAndEvents.GamePadButtonYDown.FireServer();
-		} else if (input.KeyCode === Enum.KeyCode.ButtonR2) {
-			FunctionsAndEvents.GamePadButtonR2Down.FireServer();
 		} else if (input.KeyCode === Enum.KeyCode.ButtonB) {
 			FunctionsAndEvents.GamePadButtonBDown.FireServer();
-		} else if (input.KeyCode === Enum.KeyCode.ButtonR1) {
-			FunctionsAndEvents.GamePadButtonR1Down.FireServer();
-		} else if (input.KeyCode === Enum.KeyCode.ButtonL1) {
-			FunctionsAndEvents.GamePadButtonL1Down.FireServer();
 		}
 	}
 });
@@ -811,8 +809,14 @@ function OpenKeyBindMenu(keyBindingsMenu: Frame & { Controls: Frame; CloseButton
 	});
 }
 
-(Player as unknown as { PlayerGui: Instance }).PlayerGui.DescendantAdded.Connect((descendant) => {
+const wiredMenuGuis = new Set<Instance>();
+
+function wireMenuGui(descendant: Instance) {
+	if (wiredMenuGuis.has(descendant)) {
+		return;
+	}
 	if (descendant.Name === "Garage") {
+		wiredMenuGuis.add(descendant);
 		const openKeyBindingsButton = descendant
 			.WaitForChild("Inventory")
 			.WaitForChild("Buttons")
@@ -825,6 +829,7 @@ function OpenKeyBindMenu(keyBindingsMenu: Frame & { Controls: Frame; CloseButton
 			OpenKeyBindMenu(keyBindingsMenu);
 		});
 	} else if (descendant.Name === "Game") {
+		wiredMenuGuis.add(descendant);
 		const ControlsMenu = descendant.WaitForChild("Controls");
 		for (const button of ControlsMenu.GetChildren()) {
 			if (button.IsA("TextButton")) {
@@ -841,7 +846,17 @@ function OpenKeyBindMenu(keyBindingsMenu: Frame & { Controls: Frame; CloseButton
 			}
 		}
 	}
-});
+}
+
+{
+	const playerGui = (Player as unknown as { PlayerGui: Instance }).PlayerGui;
+	playerGui.DescendantAdded.Connect((descendant) => task.spawn(() => wireMenuGui(descendant)));
+	// Phase 5: the Garage is CLIENT-mounted once at boot (bootstrap.client.ts)
+	// and may already exist before this connection lands — scan what's there.
+	for (const child of playerGui.GetChildren()) {
+		task.spawn(() => wireMenuGui(child));
+	}
+}
 
 // Phase 3: the server's only caller (VehicleClass money popups) now fires
 // Ui_MoneyGained with a WORLD point instead of invoking this — the handler is

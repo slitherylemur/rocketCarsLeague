@@ -46,13 +46,13 @@ interface GlobalsTable {
 	getPlayerIcon: (player: Player) => string;
 
 	// initializePlayer.lua
-	CrateNames: Map<number, string>;
+	// (CrateNames moved to shared/CrateCatalog.CRATE_NAMES and openCrateMenu
+	// was deleted in migration Phase 5 — the crate page is client-rendered.)
 	PlayerJoinedTimes: Record<number, number | undefined>;
 	findEmptyGarage: () => PlayerGarage | undefined;
 	findPlayerGarage: (player: Player) => PlayerGarage | undefined;
 	addPlayerToGarage: (player: Player) => PlayerGarage;
 	clearPlayerGarage: (player: Player) => void;
-	openCrateMenu: (player: Player, crateName: number) => void;
 	SpawnInPlayer: (player: Player) => boolean;
 
 	// MatchDirector (Top Table): true during the between-rounds shop window —

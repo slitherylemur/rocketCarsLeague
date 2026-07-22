@@ -26,6 +26,8 @@ import { PlayerMoneyGainedPopupsGui } from "shared/ui/components/PlayerMoneyGain
 import { DataLossGui } from "shared/ui/components/DataLossGui";
 import { LandingGui } from "shared/ui/components/LandingGui";
 import { CreateTeamGui, InvitePopupGui, RenamePopupGui } from "shared/ui/components/CarBallMenusGui";
+import { GarageGui } from "shared/ui/components/GarageGui";
+import { CrateMenuGui } from "shared/ui/components/CrateMenuGui";
 
 const Players = game.GetService("Players");
 const LocalPlayer = Players.LocalPlayer;
@@ -59,6 +61,13 @@ const MOUNTS: Array<[string, () => React.Element]> = [
 	["CreateTeam", CreateTeamGui],
 	["InvitePopup", InvitePopupGui],
 	["RenamePopup", RenamePopupGui],
+	// Phase 5: the garage — pages/tiles rendered by src/client/ui/garage.client.ts
+	// from the Ui_GetProfile snapshot + shared crate catalog; Enabled derives
+	// from CB_FlowState == "garage".
+	["Garage", GarageGui],
+	// Phase 5: crate reveal animation gui — driven by crateAnimation.client.ts
+	// from the Ui_CrateResult remote.
+	["CrateMenu", CrateMenuGui],
 ];
 
 // The holder is only the React root container bookkeeping object; the actual
