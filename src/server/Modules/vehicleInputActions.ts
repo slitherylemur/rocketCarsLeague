@@ -73,12 +73,25 @@ function savedKeyFor(player: Player, actionName: string): Enum.KeyCode {
 	return fallback;
 }
 
+// Players whose context build is in flight: the build yields on DataStore
+// reads, during which a second ensureContext call would pass the
+// FindFirstChild guard and produce a duplicate context.
+const buildingContext = new Set<Player>();
+
 const VehicleInputActions = {
 	ensureContext(player: Player) {
-		if (player.FindFirstChild(VehicleInput.ContextName)) {
+		if (player.FindFirstChild(VehicleInput.ContextName) || buildingContext.has(player)) {
 			return;
 		}
+		buildingContext.add(player);
+		const [ok, err] = pcall(() => VehicleInputActions.buildContext(player));
+		buildingContext.delete(player);
+		if (!ok) {
+			warn(`[vehicleInputActions] building ${player.Name}'s VehicleControls failed: ${err}`);
+		}
+	},
 
+	buildContext(player: Player) {
 		const context = new Instance("InputContext");
 		context.Name = VehicleInput.ContextName;
 		context.Enabled = false; // the sim enables it while driving
@@ -129,6 +142,11 @@ const VehicleInputActions = {
 			}
 		}
 
+		// The keybind reads above yield — the player may have left meanwhile.
+		if (player.Parent === undefined) {
+			context.Destroy();
+			return;
+		}
 		context.Parent = player;
 	},
 
