@@ -41,6 +41,9 @@ const PICKUP_RADIUS_SLACK = 3; // studs beyond the pad's horizontal extent
 const PICKUP_HEIGHT_ABOVE = 10; // studs above the pad's top
 const PICKUP_DEPTH_BELOW = 2; // studs below the pad's bottom
 
+const PICKUP_SOUND_ID = "rbxassetid://139259867194012";
+const DENY_SOUND_ID = "rbxassetid://127653366379014";
+
 interface Pad {
 	mega: boolean;
 	colorParts: BasePart[];
@@ -50,6 +53,9 @@ interface Pad {
 	maxY: number;
 	active: boolean;
 	reactivateAt: number; // os.clock() time; only meaningful while inactive
+	pickupSound: Sound;
+	denySound: Sound;
+	occupants: Set<Model>;
 }
 
 const mapFolder = game.Workspace.WaitForChild("Map") as Folder;
@@ -64,14 +70,30 @@ function setPadVisuals(pad: Pad, active: boolean) {
 	}
 }
 
+function makePadSound(parent: BasePart, name: string, soundId: string, volume: number, playbackSpeed = 1): Sound {
+	const existing = parent.FindFirstChild(name);
+	const sound = existing && existing.IsA("Sound") ? existing : new Instance("Sound");
+	sound.Name = name;
+	sound.SoundId = soundId;
+	sound.Volume = volume;
+	sound.PlaybackSpeed = playbackSpeed;
+	sound.RollOffMode = Enum.RollOffMode.InverseTapered;
+	sound.RollOffMinDistance = 8;
+	sound.RollOffMaxDistance = 100;
+	sound.Parent = parent;
+	return sound;
+}
+
 function buildPad(model: Model, mega: boolean): Pad | undefined {
 	const colorParts: BasePart[] = [];
+	let soundParent: BasePart | undefined;
 	let minBound: Vector3 | undefined;
 	let maxBound: Vector3 | undefined;
 	for (const descendant of model.GetDescendants()) {
 		if (!descendant.IsA("BasePart")) {
 			continue;
 		}
+		soundParent ??= descendant;
 		if (descendant.Name === "colorPart") {
 			colorParts.push(descendant);
 		}
@@ -87,10 +109,13 @@ function buildPad(model: Model, mega: boolean): Pad | undefined {
 				? hi
 				: new Vector3(math.max(maxBound.X, hi.X), math.max(maxBound.Y, hi.Y), math.max(maxBound.Z, hi.Z));
 	}
-	if (minBound === undefined || maxBound === undefined) {
+	if (minBound === undefined || maxBound === undefined || soundParent === undefined) {
 		warn(`[boostPads] ${model.GetFullName()} has no BaseParts — skipped`);
 		return undefined;
 	}
+	// Positional templates live beneath a physical part inside every pad model.
+	const pickupSound = makePadSound(soundParent, "BoostPickupSound", PICKUP_SOUND_ID, 0.6);
+	const denySound = makePadSound(soundParent, "BoostDenySound", DENY_SOUND_ID, 0.1, 3);
 	const center = minBound.add(maxBound).div(2);
 	const radius = math.max(maxBound.X - minBound.X, maxBound.Z - minBound.Z) / 2 + PICKUP_RADIUS_SLACK;
 	const pad: Pad = {
@@ -102,6 +127,9 @@ function buildPad(model: Model, mega: boolean): Pad | undefined {
 		maxY: maxBound.Y + PICKUP_HEIGHT_ABOVE,
 		active: true,
 		reactivateAt: 0,
+		pickupSound,
+		denySound,
+		occupants: new Set<Model>(),
 	};
 	setPadVisuals(pad, true);
 	return pad;
@@ -157,8 +185,8 @@ RunService.Heartbeat.Connect(() => {
 					pad.active = true;
 					setPadVisuals(pad, true);
 				}
-				continue;
 			}
+			const occupants = new Set<Model>();
 			for (const vehicle of vehicles) {
 				const position = vehicle.position;
 				if (position.Y < pad.minY || position.Y > pad.maxY) {
@@ -169,12 +197,18 @@ RunService.Heartbeat.Connect(() => {
 				if (dx * dx + dz * dz > pad.radiusSq) {
 					continue;
 				}
-				VehicleSim.grantBoost(vehicle.model, pad.mega ? MEGA_GRANT : MINI_GRANT);
-				pad.active = false;
-				pad.reactivateAt = now + (pad.mega ? MEGA_RESPAWN : MINI_RESPAWN);
-				setPadVisuals(pad, false);
-				break; // first car wins; the pad is now on cooldown
+				occupants.add(vehicle.model);
+				if (pad.active) {
+					VehicleSim.grantBoost(vehicle.model, pad.mega ? MEGA_GRANT : MINI_GRANT);
+					pad.pickupSound.Play();
+					pad.active = false;
+					pad.reactivateAt = now + (pad.mega ? MEGA_RESPAWN : MINI_RESPAWN);
+					setPadVisuals(pad, false);
+				} else if (!pad.occupants.has(vehicle.model)) {
+					pad.denySound.Play();
+				}
 			}
+			pad.occupants = occupants;
 		}
 	}
 });

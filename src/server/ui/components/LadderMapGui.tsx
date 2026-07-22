@@ -95,7 +95,7 @@ export function LadderMapGui(): React.Element {
 						FontFace: TITLE_FONT,
 						Position: new UDim2(0.5, 0, 0.03, 0),
 						Size: new UDim2(0.7, 0, 0.08, 0),
-						Text: "THE LADDER",
+						Text: "LEAGUE",
 						TextColor3: Color3.fromRGB(255, 200, 60),
 						TextScaled: true,
 						TextStrokeColor3: new Color3(0, 0, 0),

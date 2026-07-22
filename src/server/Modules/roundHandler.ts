@@ -353,11 +353,14 @@ function loadMap(): import("./PitchManager").Pitch[] {
 	const teamCount = TeamRegistry.getTeams().size();
 	const realPitches = math.max(1, math.floor(teamCount / 2));
 	const withMuckabout = teamCount > 1 && teamCount % 2 === 1;
-	const built = PitchManager.buildPitches(realPitches, withMuckabout);
+	// 0–1 teams: the single pitch can only host free play — use FreePlayPitch,
+	// not gold. (If a second team pairs onto it mid-round the match still runs
+	// there; the next round rebuild brings gold back.)
+	const built = PitchManager.buildPitches(realPitches, withMuckabout, teamCount <= 1);
 	if (built.size() === 0) {
 		warn(
 			"[loadMap] no pitch could be built — ServerStorage.Maps needs the pitch variant folders " +
-				"(GoldPitch/GreenPitch/MudPitch: map parts + SpawnPoints/Red|Blue + Blue/Red goal parts). No map loaded.",
+				"(GoldPitch/GreenPitch/MudPitch/FreePlayPitch: map parts + SpawnPoints/Red|Blue + Blue/Red goal parts). No map loaded.",
 		);
 		return [];
 	}

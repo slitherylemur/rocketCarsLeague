@@ -43,9 +43,8 @@ pcall(() => ContentProvider.PreloadAsync([goalSoundTemplate]));
 // attributes; the per-ball watcher in setupBall plays these positional sounds
 // from the renderer part the frame a stamp advances, so the local player's
 // own touches sound the instant they resolve, with no server round-trip.
-// One engine-built-in thud (guaranteed to load) covers both events at
-// different pitches; swap IMPACT_SOUND_ID for an uploaded asset to retheme.
-const IMPACT_SOUND_ID = "rbxasset://sounds/action_jump_land.mp3";
+// One uploaded impact asset covers both events at different pitches.
+const IMPACT_SOUND_ID = "rbxassetid://106780504707238";
 
 function impactSoundTemplate(name: string, volume: number): Sound {
 	const sound = new Instance("Sound");
@@ -58,8 +57,8 @@ function impactSoundTemplate(name: string, volume: number): Sound {
 	sound.Parent = SoundService;
 	return sound;
 }
-const carHitSoundTemplate = impactSoundTemplate("BallCarHitSound", 0.8);
-const bounceSoundTemplate = impactSoundTemplate("BallBounceSound", 0.45);
+const carHitSoundTemplate = impactSoundTemplate("BallCarHitSound", 3);
+const bounceSoundTemplate = impactSoundTemplate("BallBounceSound", 2);
 pcall(() => ContentProvider.PreloadAsync([carHitSoundTemplate, bounceSoundTemplate]));
 
 interface BallVisual {
@@ -179,22 +178,25 @@ function setupBall(ball: BasePart) {
 		}
 		soundGateUntil = os.clock() + 0.08;
 		const sound = template.Clone();
-		sound.Volume = template.Volume * math.clamp(speed / fullVolumeSpeed, 0.2, 1);
+		sound.Volume = template.Volume * math.clamp(speed / fullVolumeSpeed, 0.5, 1);
 		sound.PlaybackSpeed = pitchMin + math.random() * (pitchMax - pitchMin);
 		sound.Parent = renderer;
+		sound.TimePosition = 0.1;
 		sound.Play();
 		Debris.AddItem(sound, 3);
 	};
 	const pollImpactSounds = () => {
 		const hitStamp = readStamp(BallAttr.LastHitTime);
 		if (hitStamp > heardHitStamp + 1e-3) {
-			playImpact(carHitSoundTemplate, readStamp(BallAttr.LastHitSpeed), 5, 100, 0.75, 0.95);
+			playImpact(carHitSoundTemplate, readStamp(BallAttr.LastHitSpeed), 3, 50, 0.75, 0.95);
 		}
 		heardHitStamp = math.max(heardHitStamp, hitStamp);
 
 		const bounceStamp = readStamp(BallAttr.LastBounceTime);
 		if (bounceStamp > heardBounceStamp + 1e-3) {
-			playImpact(bounceSoundTemplate, readStamp(BallAttr.LastBounceSpeed), 8, 100, 1.05, 1.3);
+			// Min audible speed must stay above per-tick gravity accumulation
+			// (~3.3 studs/s at 60Hz) or resting/rolling floor contact rattles.
+			playImpact(bounceSoundTemplate, readStamp(BallAttr.LastBounceSpeed), 8, 50, 1.05, 1.3);
 		}
 		heardBounceStamp = math.max(heardBounceStamp, bounceStamp);
 	};

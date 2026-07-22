@@ -9,8 +9,9 @@
 // first, mud last, muckabout beyond), and the ladder mirrors it with the TOP
 // table on the RIGHT: a horizontal strip of big LANDSCAPE pitch cards inside
 // the fixed-16:9 Stage — 🏆 gold rightmost, descending leftward to the 💩
-// bottom table, muckabout further left still. (The 3D rise shot uses a +Z up
-// vector so the world's pitch line reads in the same direction.) Each card
+// bottom table, muckabout further left still. (The 3D rise shot uses an X up
+// vector so the pitch below reads landscape, like the card it fades into.)
+// Each card
 // holds two sharp-cornered team plates (name + member headshots) on its
 // halves and a centre badge (🏆 top table, numbers between, 💩 bottom). All
 // geometry lives in Stage-scale "world" coordinates on the single World frame,
@@ -78,7 +79,7 @@ const PLATE_H = 0.145;
 const PLATE_DX = 0.15; // half-centre offset from the card centre
 const MAX_PLATE_ICONS = 4;
 
-const GOLD_TINT = Color3.fromRGB(201, 162, 39); // #C9A227
+const GOLD_TINT = Color3.fromRGB(236, 195, 58); // brighter gold — reads as gold, not brown
 const MUD_TINT = Color3.fromRGB(139, 94, 60); // #8B5E3C
 const GREEN_TINT = Color3.fromRGB(61, 139, 87); // #3D8B57
 const MUCK_TINT = Color3.fromRGB(52, 63, 74); // neutral slate — not a real table
@@ -339,7 +340,9 @@ function buildCard(world: Frame, layout: LadderLayout, slotIndex: number, muckab
 	body.AnchorPoint = new Vector2(0.5, 0.5);
 	body.Position = new UDim2(0.5, 0, 0.5, 0);
 	body.Size = new UDim2(1, 0, 1, 0);
-	body.BackgroundColor3 = tint.Lerp(BLACK, 0.35);
+	// Solid, undarkened tint — the cards must read bright against the dark
+	// backdrop (a black-lerped tint looked murky/translucent in playtest).
+	body.BackgroundColor3 = tint;
 	body.BorderSizePixel = 0;
 	body.ZIndex = 2;
 
@@ -524,7 +527,7 @@ const LadderMapScreen = {
 				const canvas = gui.Canvas;
 				const world = canvas.Stage.World;
 				const viewerTeamId = player.GetAttribute("CB_TeamId");
-				canvas.Title.Text = "THE LADDER";
+				canvas.Title.Text = "LEAGUE";
 				canvas.Title.TextColor3 = TITLE_GOLD;
 				canvas.PositionLabel.Visible = false;
 				canvas.PositionLabel.Text = "";

@@ -37,6 +37,8 @@ const ATTR_RED_NAME = "FB_RedName";
 // while the lineup camera runs, and clears them before the ladder map.
 const ATTR_WINNER_SIDE = "FB_WinnerSide";
 const ATTR_WINNER_NAME = "FB_WinnerName";
+// Coin-flip reveal on a drawn pitch — confetti burst only, no headline.
+const ATTR_FLIP_SIDE = "FB_FlipSide";
 // Session round counter (Phase 5) — footballMatch.beginRound sets both.
 const ATTR_ROUND = "CB_Round";
 const ATTR_ROUND_MAX = "CB_SessionRounds";
@@ -53,7 +55,7 @@ function soundTemplate(name: string, soundId: string, volume: number): Sound {
 	return sound;
 }
 
-const gameEndSound = soundTemplate("GameEndSound", "rbxassetid://9119561696", 0.55);
+const gameEndSound = soundTemplate("GameEndSound", "rbxassetid://129649904589836", 0.55);
 const crowdAmbienceTemplate = soundTemplate("CrowdAmbience", "rbxassetid://124820656606411", 0.04);
 crowdAmbienceTemplate.Looped = true;
 const victoryCrowdSound = soundTemplate("VictoryCrowdSound", "rbxassetid://124820656606411", 0.22);
@@ -589,6 +591,20 @@ function showVictory(gui: VictoryShape, pitch: Instance, winnerSide: string) {
 	}
 }
 
+// Coin-flip reveal on a drawn pitch: the promoted side's confetti burst only.
+// The center announce ("<SIDE> MOVES UP!") owns the text, so every label
+// stays empty and the (invisible) title just carries the idle tween loop.
+function showFlipConfetti(gui: VictoryShape, flipSide: string) {
+	gui.Title.Text = "";
+	gui.SubTitle.Text = "";
+	gui.TeamName.Text = "";
+	fillFaceOffIcons(gui.Icons, [], new Color3(1, 1, 1));
+	gui.Enabled = true;
+	if (victoryFxGui !== gui) {
+		startVictoryFx(gui, flipSide === "Blue" ? FACEOFF_BLUE : FACEOFF_RED);
+	}
+}
+
 function hideVictory(gui: VictoryShape) {
 	stopVictoryFx();
 	gui.Enabled = false;
@@ -603,13 +619,16 @@ function refreshVictory() {
 		return;
 	}
 	const pitch = currentPitch();
+	if (pitch === undefined || attrStringOn(pitch, ATTR_PHASE) !== "Ended") {
+		hideVictory(gui);
+		return;
+	}
 	const winnerSide = attrStringOn(pitch, ATTR_WINNER_SIDE);
-	if (
-		pitch !== undefined &&
-		attrStringOn(pitch, ATTR_PHASE) === "Ended" &&
-		(winnerSide === "Blue" || winnerSide === "Red")
-	) {
+	const flipSide = attrStringOn(pitch, ATTR_FLIP_SIDE);
+	if (winnerSide === "Blue" || winnerSide === "Red") {
 		showVictory(gui, pitch, winnerSide);
+	} else if (flipSide === "Blue" || flipSide === "Red") {
+		showFlipConfetti(gui, flipSide);
 	} else {
 		hideVictory(gui);
 	}
@@ -722,12 +741,33 @@ ReplicatedStorage.GetAttributeChangedSignal(ATTR_GAME_END_CUE).Connect(() => pla
 
 // Per-pitch state signals: rebind whenever our pitch assignment changes.
 let pitchConnections: RBXScriptConnection[] = [];
+// Mid-round pitches (footballMatch.createMidRoundPitch) can replicate AFTER
+// our CB_PitchId attribute: currentPitch() is nil at bind time, nothing below
+// connects, and without this watch the HUD would freeze on its last paint
+// (the "stuck on Waiting for players..." bug) — no announces, no face-off
+// camera. Rebind the moment the named folder lands under Workspace.Map.
+let pitchWatchConnection: RBXScriptConnection | undefined;
 function bindPitch() {
 	for (const connection of pitchConnections) {
 		connection.Disconnect();
 	}
 	pitchConnections = [];
+	if (pitchWatchConnection) {
+		pitchWatchConnection.Disconnect();
+		pitchWatchConnection = undefined;
+	}
 	const pitch = currentPitch();
+	if (!pitch) {
+		const pitchId = LocalPlayer.GetAttribute("CB_PitchId");
+		const mapFolder = game.Workspace.FindFirstChild("Map");
+		if (typeIs(pitchId, "string") && mapFolder) {
+			pitchWatchConnection = mapFolder.ChildAdded.Connect((child) => {
+				if (child.Name === pitchId) {
+					task.defer(bindPitch);
+				}
+			});
+		}
+	}
 	if (pitch) {
 		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_BLUE).Connect(refreshScore));
 		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_RED).Connect(refreshScore));
@@ -743,6 +783,7 @@ function bindPitch() {
 		// Winner side lands ~0.2s after Phase="Ended" (camera first) and is
 		// cleared when the scene ends — both edges drive the overlay.
 		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_WINNER_SIDE).Connect(refreshVictory));
+		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_FLIP_SIDE).Connect(refreshVictory));
 		// The face-off camera arrives just before Phase="FaceOff" — react to both.
 		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_FOCAM_CFRAME).Connect(handleFaceOffCamera));
 		// The victory camera arrives AFTER Phase="Ended" — react when it does.

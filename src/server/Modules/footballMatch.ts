@@ -19,7 +19,7 @@ import { findGoalPart, mapHasGoalParts } from "./goalParts";
 // `type { RoundResult }` from this module, which is erased at compile time.
 import MatchDirector, { SESSION_ROUNDS } from "./MatchDirector";
 // SAFE value import: PitchManager requires goalParts, not this module.
-import PitchManager from "./PitchManager";
+import PitchManager, { VARIANT_FREEPLAY, VARIANT_GOLD } from "./PitchManager";
 import spawnVehicle from "./spawnVehicle";
 import TeamRegistry from "./TeamRegistry";
 import type { LadderTeam } from "./TeamRegistry";
@@ -73,6 +73,10 @@ export const FootballAttr = {
 	// (WINNERS / YOU LOSE + confetti) while WinnerSide is non-empty.
 	WinnerSide: "FB_WinnerSide",
 	WinnerName: "FB_WinnerName",
+	// Coin-flip reveal on a drawn pitch: set when the "<SIDE> MOVES UP!"
+	// announce lands so the client fires a confetti burst in that side's
+	// colors (no WINNERS/YOU LOSE headline — the announce owns the text).
+	FlipSide: "FB_FlipSide",
 } as const;
 
 // "FreePlay" (design §muckabout): ≥1 rostered player but no opponent yet —
@@ -357,6 +361,7 @@ class PitchMatch {
 		// Stale victory overlay state from the previous round on this pitch.
 		this.setAttr(FootballAttr.WinnerSide, "");
 		this.setAttr(FootballAttr.WinnerName, "");
+		this.setAttr(FootballAttr.FlipSide, "");
 	}
 
 	setAttr(name: string, value: string | number) {
@@ -1176,12 +1181,23 @@ TeamRegistry.onTeamDisbanded((team) => {
 	task.defer(() => handleTeamGone(team.id));
 });
 
+/** A pitch that can only host free play: the muckabout pitch, or the
+ * FreePlayPitch variant built when the round started with ≤1 team. Real
+ * matches must never kick off here — teams get relocated to a real pitch. */
+function isFreePlayHost(match: PitchMatch): boolean {
+	return match.muckabout || match.pitch.variantName === VARIANT_FREEPLAY;
+}
+
 /** FAILURE 1 fix: clone a brand-new pitch mid-round onto the next slot along
  * the line, spawn its ball and stand up a PitchMatch for it. The shared goal
  * watcher and clock loops iterate `matches`, so pushing IS registration; the
  * new match ends at the same shared whistle as everyone else. */
 function createMidRoundPitch(): PitchMatch | undefined {
-	const pitch = PitchManager.addPitch();
+	// First real pitch of the round (everyone so far was free-playing on the
+	// FreePlayPitch): this hosts the top-table match, so it's gold. Later
+	// mid-round pitches stay green until the next rebuild resorts the line.
+	const hasRealPitch = matches.find((m) => !isFreePlayHost(m)) !== undefined;
+	const pitch = PitchManager.addPitch(hasRealPitch ? undefined : VARIANT_GOLD);
 	if (!pitch) {
 		return undefined;
 	}
@@ -1192,20 +1208,102 @@ function createMidRoundPitch(): PitchMatch | undefined {
 	return match;
 }
 
+// Brief client-side black cover (pitchTransition.client.ts mirrors the join
+// loading screen's look) shown while a waiting team is teleported off the
+// free-play pitch onto their real match pitch.
+const PITCH_MOVE_COVER_ATTR = "CB_PitchMoveCover";
+
+/** A team was free-playing on a muckabout/FreePlayPitch and just got a real
+ * match on `target`: cover their screens, teleport them over, then free-play
+ * there until the opponent spawns in and the face-off + 3-2-1 kicks off. */
+function moveTeamBehindCover(target: PitchMatch, moving: Player[]) {
+	task.spawn(() => {
+		for (const player of moving) {
+			player.SetAttribute(PITCH_MOVE_COVER_ATTR, true);
+		}
+		task.wait(0.4);
+		target.repositionVehicles();
+		if (target.teamsReady()) {
+			target.resetScores();
+			target.startKickoff();
+		} else if (target.roster.size() > 0) {
+			target.enterFreePlay(false);
+		}
+		task.wait(0.5);
+		for (const player of moving) {
+			player.SetAttribute(PITCH_MOVE_COVER_ATTR, undefined);
+		}
+	});
+}
+
+/** If a team sits alone on a free-play-only pitch while `target` (a real
+ * pitch) still has a free team slot, pair them: move their side assignment,
+ * roster and vehicles onto `target`. This is what turns "friend joined but I'm
+ * stuck on the free-play pitch" into a real match. */
+function pairWaitingFreePlayTeam(target: PitchMatch) {
+	if (isFreePlayHost(target) || target.sideByTeamId.size() >= 2) {
+		return;
+	}
+	const waiting = matches.find((m) => m !== target && isFreePlayHost(m) && m.sideByTeamId.size() === 1);
+	if (!waiting) {
+		return;
+	}
+	let movedTeamId: string | undefined;
+	for (const [id] of waiting.sideByTeamId) {
+		movedTeamId = id;
+		break;
+	}
+	if (movedTeamId === undefined) {
+		return;
+	}
+	waiting.sideByTeamId.delete(movedTeamId);
+	matchByTeamId.set(movedTeamId, target);
+	target.sideForLadderTeam(movedTeamId);
+	const moving: Player[] = [];
+	for (const [rosterPlayer] of waiting.roster) {
+		const team = TeamRegistry.getTeamOf(rosterPlayer);
+		if (team && team.id === movedTeamId) {
+			moving.push(rosterPlayer);
+		}
+	}
+	for (const rosterPlayer of moving) {
+		waiting.roster.delete(rosterPlayer);
+		target.assignSide(rosterPlayer);
+	}
+	if (waiting.roster.size() === 0) {
+		waiting.enterWaiting();
+	}
+	warn(`[Football] free-play team → ${target.pitch.folder.Name} for a real match`);
+	moveTeamBehindCover(target, moving);
+}
+
 /** Mid-round team placement (pending-pool design): a new team may join a REAL
  * pitch that still has a free TEAM slot (a pending team is free-playing there
- * waiting for an opponent) — never an occupied pitch and never the muckabout
- * pitch. If no slot is free, a fresh pitch is cloned and the team free-plays
- * on it until the next pending team pairs up. */
+ * waiting for an opponent) — never an occupied pitch and never a free-play
+ * host (muckabout / FreePlayPitch: matches must not kick off there). If no
+ * slot is free, a fresh pitch is cloned; a team waiting on a free-play host
+ * is then moved over to pair up (loading cover + teleport). */
 function assignTeamToPitch(team: LadderTeam): PitchMatch | undefined {
 	if (matches.size() === 0) {
 		return undefined;
 	}
 	let target: PitchMatch | undefined;
 	for (const match of matches) {
-		if (!match.muckabout && match.sideByTeamId.size() < 2) {
+		if (!isFreePlayHost(match) && match.sideByTeamId.size() < 2) {
 			target = match;
 			break;
+		}
+	}
+	if (!target) {
+		// No real slot. An EMPTY free-play pitch hosts this team's free play —
+		// the intended flow: first team knocks about on the FreePlayPitch, and
+		// only when an opponent team arrives (finding the host occupied, next
+		// branch) is the real pitch cloned and both teams moved onto it.
+		for (const match of matches) {
+			if (isFreePlayHost(match) && match.sideByTeamId.size() === 0) {
+				target = match;
+				break;
+			}
 		}
 	}
 	if (!target) {
@@ -1220,6 +1318,7 @@ function assignTeamToPitch(team: LadderTeam): PitchMatch | undefined {
 	matchByTeamId.set(team.id, target);
 	target.sideForLadderTeam(team.id);
 	warn(`[Football] team ${team.name} → ${target.pitch.folder.Name}`);
+	pairWaitingFreePlayTeam(target);
 	return target;
 }
 
@@ -1446,6 +1545,7 @@ const footballMatch = {
 						}
 						const hex = side === "Blue" ? BLUE_HEX : RED_HEX;
 						match.announce(`<font color="${hex}">${side.upper()} MOVES UP!</font>`);
+						match.setAttr(FootballAttr.FlipSide, side);
 					});
 				} else {
 					match.announce("TIE GAME!");
@@ -1460,6 +1560,7 @@ const footballMatch = {
 		for (const match of matches) {
 			match.setAttr(FootballAttr.WinnerSide, "");
 			match.setAttr(FootballAttr.WinnerName, "");
+			match.setAttr(FootballAttr.FlipSide, "");
 		}
 		for (const base of winnerBases) {
 			if (base.Parent !== undefined) {

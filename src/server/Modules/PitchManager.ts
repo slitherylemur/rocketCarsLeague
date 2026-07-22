@@ -4,7 +4,7 @@
 // horizontally with a one-pitch-wide gap (centers 2× the gold pitch's width
 // apart — resolved decision D4). Variant rule per pitch count: 1 real pitch →
 // GoldPitch only; 2 → gold + mud; 3+ → greens between. The muckabout pitch
-// (odd team out) is always a GreenPitch parked past the mud end.
+// (odd team out) is always a FreePlayPitch parked past the mud end.
 //
 // Maps are FOLDERS (no PivotTo): placement translates every BasePart by the
 // same offset, so variants must be authored with the same orientation.
@@ -13,9 +13,10 @@ import { mapHasGoalParts } from "./goalParts";
 
 const ServerStorage = game.GetService("ServerStorage");
 
-const VARIANT_GOLD = "GoldPitch";
-const VARIANT_GREEN = "GreenPitch";
-const VARIANT_MUD = "MudPitch";
+export const VARIANT_GOLD = "GoldPitch";
+export const VARIANT_GREEN = "GreenPitch";
+export const VARIANT_MUD = "MudPitch";
+export const VARIANT_FREEPLAY = "FreePlayPitch";
 
 export interface Pitch {
 	index: number;
@@ -131,8 +132,11 @@ const PitchManager = {
 	 * Build the round's pitches into Workspace.Map. Slot 0 (gold) keeps its
 	 * authored position and anchors the line; slot i sits 2×goldWidth further
 	 * along +X. Returns the built pitches top-first (muckabout last).
+	 * `freePlayOnly` (0–1 teams: no match possible, everyone free-plays)
+	 * swaps the real pitches for FreePlayPitch — gold should only appear when
+	 * an actual top-table match can happen.
 	 */
-	buildPitches(realCount: number, includeMuckabout: boolean): Pitch[] {
+	buildPitches(realCount: number, includeMuckabout: boolean, freePlayOnly?: boolean): Pitch[] {
 		const mapFolder = (game.Workspace as unknown as { Map: Folder }).Map;
 		const spawnFolder = (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints;
 		mapFolder.ClearAllChildren();
@@ -145,7 +149,8 @@ const PitchManager = {
 
 		for (let i = 0; i < total; i++) {
 			const muckabout = includeMuckabout && i === total - 1;
-			const variantName = muckabout ? VARIANT_GREEN : variantNameFor(i, realCount);
+			const variantName =
+				muckabout || freePlayOnly === true ? VARIANT_FREEPLAY : variantNameFor(i, realCount);
 			const source = findVariant(variantName);
 			if (!source) {
 				warn(`[PitchManager] ServerStorage.Maps is empty — no pitch ${i}`);
@@ -182,15 +187,16 @@ const PitchManager = {
 
 	/**
 	 * Mid-round append (pending-pool design): clone `variantName` (default
-	 * GreenPitch) onto the NEXT free slot at the end of the line — same
+	 * GreenPitch for real pitches, FreePlayPitch for the muckabout) onto the
+	 * NEXT free slot at the end of the line — same
 	 * 2×goldWidth spacing — without touching the pitches already in play. The
 	 * next startRound reseat rebuilds the whole line with gold/mud back at the
 	 * ends as usual.
 	 */
 	addPitch(variantName?: string, muckabout?: boolean): Pitch | undefined {
 		const mapFolder = (game.Workspace as unknown as { Map: Folder }).Map;
-		const variant = variantName ?? VARIANT_GREEN;
 		const isMuck = muckabout === true;
+		const variant = variantName ?? (isMuck ? VARIANT_FREEPLAY : VARIANT_GREEN);
 		if (lineAnchor === undefined || lineSlotWidth === 0) {
 			warn("[PitchManager] addPitch before buildPitches — no line to extend");
 			return undefined;

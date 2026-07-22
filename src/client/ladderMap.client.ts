@@ -39,11 +39,11 @@ const LocalPlayer = Players.LocalPlayer;
 const CAM_START_HEIGHT = 10;
 const CAM_END_HEIGHT = 650;
 // Straight-down look needs an explicit up vector (the default Y-up is
-// degenerate). +Z up puts world +X (the direction the pitch line DESCENDS —
-// PitchManager builds gold first, worse pitches further along +X) on
-// screen-LEFT, matching the ladder UI's right-is-top layout, so the 3D shot
-// and the 2D map read in the same direction.
-const CAM_UP = new Vector3(0, 0, 1);
+// degenerate). The pitch's long (goal-to-goal) axis runs along world Z, so
+// the up vector must be along X for that axis to read HORIZONTAL on screen —
+// matching the landscape pitch cards the UI fades into. -X up puts the
+// better pitches (gold is first along the line) toward the top of screen.
+const CAM_UP = new Vector3(-1, 0, 0);
 
 function canvasOf(gui: ScreenGui): CanvasGroup | undefined {
 	const canvas = gui.FindFirstChild("Canvas");
