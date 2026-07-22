@@ -39,7 +39,7 @@ const ReplicatedStorage = game.GetService("ReplicatedStorage");
 export type TeamName = "Red" | "Blue";
 const TEAM_NAMES: TeamName[] = ["Blue", "Red"];
 
-const MATCH_TIME = 4 * 60 + 30;
+const MATCH_TIME = 3 * 60 + 30;
 const KICKOFF_COUNTDOWN = 3;
 const FACE_OFF_TIME = 7; // was 10 — cut by a third per playtest
 const RESPAWN_DELAY = 1.5;
@@ -650,6 +650,9 @@ class PitchMatch {
 			} else {
 				targetY = position.Y + model.GetExtentsSize().Y / 2;
 			}
+			// Intentional relocation: bump TeleportGen so client renderers snap
+			// to the new pose instead of smoothing a map-scale "correction".
+			VehicleSim.markTeleport(model);
 			model.SetPrimaryPartCFrame(spawnCFrame.Rotation.add(new Vector3(position.X, targetY, position.Z)));
 			// Wheels are SEPARATE assemblies (springs/hinges, not welds): zero
 			// every assembly, not just the body, or a wheel keeps its
@@ -725,6 +728,8 @@ class PitchMatch {
 			part.Position.add(new Vector3(0, model.GetExtentsSize().Y / 2, 0)),
 		);
 		pcall(() => {
+			// Intentional relocation — renderers snap, not smooth (TeleportGen).
+			VehicleSim.markTeleport(model);
 			model.SetPrimaryPartCFrame(target);
 			for (const descendant of model.GetDescendants()) {
 				if (descendant.IsA("BasePart")) {
@@ -1893,6 +1898,8 @@ const footballMatch = {
 							const [posed, lockPos] = pcall(() => {
 								const size = model.GetExtentsSize();
 								const lifted = target!.add(new Vector3(0, size.Y / 2, 0));
+								// Intentional relocation — renderers snap (TeleportGen).
+								VehicleSim.markTeleport(model);
 								model.SetPrimaryPartCFrame(lifted);
 								const base = model.FindFirstChild("Base");
 								if (base && base.IsA("BasePart")) {

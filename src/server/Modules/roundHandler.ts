@@ -74,8 +74,8 @@ const handler = {} as {
 
 Globals.gamemode = "FFA";
 Globals.roundTime = 0;
-Globals.FFA_GAME_TIME = 4 * 60 + 30;
-Globals.TDM_GAME_TIME = 4 * 60 + 30;
+Globals.FFA_GAME_TIME = 3 * 60 + 30;
+Globals.TDM_GAME_TIME = 3 * 60 + 30;
 Globals.FFA_MAX_KILLS = 20;
 Globals.TDM_MAX_KILLS = 40;
 //_G.LMS_SPAWN_TIME = 60

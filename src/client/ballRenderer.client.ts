@@ -130,16 +130,41 @@ function setupBall(ball: BasePart) {
 	// DEEP: the AntiGravity VectorForce and its Attachment must be predicted
 	// with the part, or the engine refuses the half-marked assembly. A
 	// DescendantAdded watch covers children that replicate after the part.
-	const markOn = (instance: Instance) => {
-		pcall(() => {
-			RunService.SetPredictionMode(instance, Enum.PredictionMode.On);
-		});
+	//
+	// Per-pitch scope: only the LOCAL pitch's ball is predicted (On). Every
+	// other pitch's ball is explicitly Off — authoritative, rendered through
+	// the same smoother below — so N pitches no longer cost N predicted ball
+	// sims on every client (BallSim's client tick skips them the same way).
+	// Re-evaluated when the ball's pitch or the local player's pitch changes.
+	const modeConnections: RBXScriptConnection[] = [];
+	const desiredMode = (): Enum.PredictionMode => {
+		const ballPitch = ball.GetAttribute(PITCH_ATTRIBUTE);
+		if (ballPitch === undefined || ballPitch === LocalPlayer.GetAttribute(PITCH_ATTRIBUTE)) {
+			return Enum.PredictionMode.On;
+		}
+		return Enum.PredictionMode.Off;
 	};
-	markOn(ball);
-	for (const descendant of ball.GetDescendants()) {
-		markOn(descendant);
-	}
-	ball.DescendantAdded.Connect(markOn);
+	const applyMode = () => {
+		const mode = desiredMode();
+		pcall(() => {
+			RunService.SetPredictionMode(ball, mode);
+		});
+		for (const descendant of ball.GetDescendants()) {
+			pcall(() => {
+				RunService.SetPredictionMode(descendant, mode);
+			});
+		}
+	};
+	applyMode();
+	modeConnections.push(
+		ball.DescendantAdded.Connect((descendant) => {
+			pcall(() => {
+				RunService.SetPredictionMode(descendant, desiredMode());
+			});
+		}),
+	);
+	modeConnections.push(ball.GetAttributeChangedSignal(PITCH_ATTRIBUTE).Connect(applyMode));
+	modeConnections.push(LocalPlayer.GetAttributeChangedSignal(PITCH_ATTRIBUTE).Connect(applyMode));
 
 	// Visual-only stand-in, built fresh (not Clone) so nothing physical
 	// comes along.
@@ -205,7 +230,8 @@ function setupBall(ball: BasePart) {
 		const bounceStamp = readStamp(BallAttr.LastBounceTime);
 		if (bounceStamp > heardBounceStamp + 1e-3) {
 			// Min audible speed must stay above per-tick gravity accumulation
-			// (~3.3 studs/s at 60Hz) or resting/rolling floor contact rattles.
+			// (~6.5 studs/s at the 30 Hz sim rate) or resting/rolling floor
+			// contact rattles.
 			playImpact(bounceSoundTemplate, readStamp(BallAttr.LastBounceSpeed), 8, 50, 1.05, 1.3);
 		}
 		heardBounceStamp = math.max(heardBounceStamp, bounceStamp);
@@ -330,6 +356,9 @@ function setupBall(ball: BasePart) {
 		}
 		cleaned = true;
 		goalEffectGeneration += 1;
+		for (const connection of modeConnections) {
+			connection.Disconnect();
+		}
 		for (const connection of scoreConnections) {
 			connection.Disconnect();
 		}

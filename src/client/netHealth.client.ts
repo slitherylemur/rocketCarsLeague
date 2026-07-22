@@ -20,6 +20,7 @@
 
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
 import { VehicleAttr, VehicleInput, VehicleModelAttr } from "shared/vehicleSim/VehicleSim";
+import { SIM_RATE_HZ } from "shared/simScheduler";
 
 const Players = game.GetService("Players");
 const RunService = game.GetService("RunService");
@@ -120,7 +121,8 @@ function updateBadge(pingMs: number) {
 //   hardware DOWN / action UP  → key events not reaching the IAS
 //   action ≠ attribute         → readPlayerInputs isn't consuming (early-out)
 // It also measures true press→attribute latency for throttle; on a healthy
-// predicted car this is ≤ one sim tick (~17ms) regardless of ping.
+// predicted car this is ≤ one sim tick (~33ms at the 30 Hz sim rate)
+// regardless of ping.
 
 const STUCK_AFTER = 0.4;
 const PROBED_ACTIONS = [
@@ -267,6 +269,166 @@ RunService.Heartbeat.Connect(() => {
 	);
 });
 
+// ---- RunService.Misprediction aggregator ---------------------------------
+// The exact rollback signal: which INSTANCE diverged, which PROPERTY or
+// ATTRIBUTE, and by how much — replacing guesswork about why the car
+// corrected. Aggregated (never one log per event: a rollback storm at
+// 30 Hz would flood the console and cost more than the storm itself) and
+// summarized once per DIAG_INTERVAL alongside the ping/latency line.
+//
+// The event is part of the server-authority beta, so both its existence and
+// its argument shape are probed defensively: args are scanned for the
+// instance, the property/attribute name, and the predicted/authoritative
+// value pair rather than assuming fixed positions.
+
+interface MispredictStat {
+	count: number;
+	posDeltaSum: number;
+	posDeltaMax: number;
+	rotDegSum: number;
+	rotDegMax: number;
+	nearTeleport: number; // events within TELEPORT_CORRELATE_S of a TeleportGen bump
+	nearLock: number; // events within TELEPORT_CORRELATE_S of an InputLocked change
+}
+
+const TELEPORT_CORRELATE_S = 0.75;
+const mispredictStats = new Map<string, MispredictStat>();
+let mispredictEvents = 0;
+let mispredictSupported = false;
+let lastTeleportAt = -math.huge;
+let lastLockChangeAt = -math.huge;
+
+function describeDelta(predicted: unknown, authoritative: unknown): LuaTuple<[number?, number?]> {
+	if (typeIs(predicted, "CFrame") && typeIs(authoritative, "CFrame")) {
+		const posDelta = predicted.Position.sub(authoritative.Position).Magnitude;
+		const [, rotAngle] = predicted.Rotation.ToObjectSpace(authoritative.Rotation).ToAxisAngle();
+		return $tuple(posDelta, math.deg(rotAngle));
+	}
+	if (typeIs(predicted, "Vector3") && typeIs(authoritative, "Vector3")) {
+		return $tuple(predicted.sub(authoritative).Magnitude, undefined);
+	}
+	if (typeIs(predicted, "number") && typeIs(authoritative, "number")) {
+		return $tuple(math.abs(predicted - authoritative), undefined);
+	}
+	return $tuple(undefined, undefined);
+}
+
+function recordMisprediction(...args: unknown[]) {
+	mispredictEvents += 1;
+	let instance: Instance | undefined;
+	let name: string | undefined;
+	const values: defined[] = [];
+	for (const arg of args) {
+		if (instance === undefined && typeIs(arg, "Instance")) {
+			instance = arg;
+		} else if (name === undefined && typeIs(arg, "string")) {
+			name = arg;
+		} else if (arg !== undefined) {
+			values.push(arg as defined);
+		}
+	}
+	const key = `${instance !== undefined ? `${instance.ClassName}:${instance.Name}` : "?"}.${name ?? "?"}`;
+	let stat = mispredictStats.get(key);
+	if (stat === undefined) {
+		stat = { count: 0, posDeltaSum: 0, posDeltaMax: 0, rotDegSum: 0, rotDegMax: 0, nearTeleport: 0, nearLock: 0 };
+		mispredictStats.set(key, stat);
+	}
+	stat.count += 1;
+	if (values.size() >= 2) {
+		const [posDelta, rotDeg] = describeDelta(values[0], values[1]);
+		if (posDelta !== undefined) {
+			stat.posDeltaSum += posDelta;
+			stat.posDeltaMax = math.max(stat.posDeltaMax, posDelta);
+		}
+		if (rotDeg !== undefined) {
+			stat.rotDegSum += rotDeg;
+			stat.rotDegMax = math.max(stat.rotDegMax, rotDeg);
+		}
+	}
+	const now = os.clock();
+	if (now - lastTeleportAt < TELEPORT_CORRELATE_S) {
+		stat.nearTeleport += 1;
+	}
+	if (now - lastLockChangeAt < TELEPORT_CORRELATE_S) {
+		stat.nearLock += 1;
+	}
+}
+
+pcall(() => {
+	const signal = (RunService as unknown as Record<string, unknown>)["Misprediction"];
+	if (typeIs(signal, "RBXScriptSignal")) {
+		signal.Connect(recordMisprediction);
+		mispredictSupported = true;
+	}
+});
+if (!mispredictSupported) {
+	warn("[NetHealth] RunService.Misprediction unavailable on this engine — falling back to the resim-tick heuristic");
+}
+
+// Stamp intentional-teleport and lock transitions on the local car so the
+// summary can separate "correction after a kickoff/goal reset" (expected,
+// snap-rendered) from spontaneous divergence while driving (the real bug).
+{
+	let lastTeleportGen: number | undefined;
+	let lastLocked: boolean | undefined;
+	RunService.Heartbeat.Connect(() => {
+		const base = localVehicleBase();
+		if (base === undefined) {
+			return;
+		}
+		const gen = base.GetAttribute(VehicleAttr.TeleportGen);
+		const genNumber = typeIs(gen, "number") ? gen : 0;
+		if (lastTeleportGen !== undefined && genNumber !== lastTeleportGen) {
+			lastTeleportAt = os.clock();
+		}
+		lastTeleportGen = genNumber;
+		const locked = base.GetAttribute(VehicleAttr.InputLocked) === true;
+		if (lastLocked !== undefined && locked !== lastLocked) {
+			lastLockChangeAt = os.clock();
+		}
+		lastLocked = locked;
+	});
+}
+
+function mispredictSummary(intervalSeconds: number): string {
+	if (!mispredictSupported) {
+		return "Misprediction API unavailable";
+	}
+	const total = mispredictEvents;
+	mispredictEvents = 0;
+	if (total === 0) {
+		mispredictStats.clear();
+		return "0 misprediction events";
+	}
+	const entries: Array<[string, MispredictStat]> = [];
+	for (const [key, stat] of mispredictStats) {
+		entries.push([key, stat]);
+	}
+	mispredictStats.clear();
+	table.sort(entries, (a, b) => a[1].count > b[1].count);
+	const lines: string[] = [
+		`${total} misprediction events (${string.format("%.1f", total / intervalSeconds)}/s), top offenders:`,
+	];
+	for (let i = 0; i < math.min(entries.size(), 5); i++) {
+		const [key, stat] = entries[i];
+		let detail = `${key} x${stat.count}`;
+		if (stat.posDeltaMax > 0) {
+			detail += ` pos avg=${string.format("%.2f", stat.posDeltaSum / stat.count)} max=${string.format("%.2f", stat.posDeltaMax)}`;
+		}
+		if (stat.rotDegMax > 0) {
+			detail += ` rot avg=${string.format("%.1f", stat.rotDegSum / stat.count)}° max=${string.format("%.1f", stat.rotDegMax)}°`;
+		}
+		if (stat.nearTeleport > 0) {
+			detail += ` [${stat.nearTeleport} near teleport]`;
+		}
+		if (stat.nearLock > 0) {
+			detail += ` [${stat.nearLock} near lock change]`;
+		}
+		lines.push(`    ${detail}`);
+	}
+	return lines.join("\n");
+}
+
 // ---- diagnostics ---------------------------------------------------------
 
 function isSeated(): boolean {
@@ -315,13 +477,14 @@ task.spawn(() => {
 		// resimTicks > 0 is PROOF the car is predicted: only rollback
 		// resimulation replays ticks behind the max sim clock seen. Estimate
 		// discrete rollback events from the depth a rollback rewinds (≈ ping
-		// worth of 60Hz ticks) — each event is one unsmoothed visual snap,
-		// and the snap's size scales with ping.
+		// worth of SIM_RATE_HZ ticks) — each event is one visual correction,
+		// and the correction's size scales with ping. Kept as a fallback;
+		// RunService.Misprediction (summary below) is the exact signal.
 		let verdict: string;
 		if (resimTicks > 0) {
-			const depthTicks = math.max(1, (pingMs / 1000) * 60);
+			const depthTicks = math.max(1, (pingMs / 1000) * SIM_RATE_HZ);
 			const rollbacksPerSec = resimTicks / DIAG_INTERVAL / depthTicks;
-			verdict = `PREDICTING; ~${string.format("%.1f", rollbacksPerSec)} rollback snap(s)/s (unsmoothed corrections, deeper at high ping)`;
+			verdict = `PREDICTING; ~${string.format("%.1f", rollbacksPerSec)} rollback(s)/s (corrections deepen with ping)`;
 		} else if (predicted !== undefined && predicted < 10) {
 			verdict = "CAR NOT PREDICTED (authoritative): replication-cadence motion + input round-trip";
 		} else if (predicted === undefined) {
@@ -332,7 +495,7 @@ task.spawn(() => {
 		const inputLatency = maxInputLatencyMs;
 		maxInputLatencyMs = 0;
 		warn(
-			`[NetHealth] ping=${math.round(pingMs)}ms predicted=${predicted ?? "unavailable"} resimTicks/${DIAG_INTERVAL}s=${resimTicks} inputLat=${math.round(inputLatency)}ms → ${verdict}`,
+			`[NetHealth] ping=${math.round(pingMs)}ms predicted=${predicted ?? "unavailable"} resimTicks/${DIAG_INTERVAL}s=${resimTicks} inputLat=${math.round(inputLatency)}ms → ${verdict}\n[NetHealth] ${mispredictSummary(DIAG_INTERVAL)}`,
 		);
 	}
 });

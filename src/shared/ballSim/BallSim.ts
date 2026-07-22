@@ -35,10 +35,15 @@
 
 import { BALL_NAME, BALL_FIELDS, ballTunables, ballTuneAttr } from "shared/ballSim/BallConfig";
 import { COLLISION_GROUPS } from "shared/collisionGroups";
+import { registerSimHook, SIM_ORDER_BALL } from "shared/simScheduler";
 
 const RunService = game.GetService("RunService");
+const Players = game.GetService("Players");
 
 const IS_SERVER = RunService.IsServer();
+// Per-pitch prediction scope: a client predicts and steps ONLY the ball on
+// its own pitch (see tick); every other ball is authoritative on that client.
+const LOCAL_PLAYER = IS_SERVER ? undefined : Players.LocalPlayer;
 
 export const BallAttr = {
 	SimTime: "BallSimTime",
@@ -68,7 +73,10 @@ for (const field of BALL_FIELDS) {
 // Multi-pitch (Top Table): one ball per pitch, all named BALL_NAME as
 // Workspace children — every one is adopted and stepped.
 const balls = new Set<BasePart>();
-let errorLogged = false;
+// Sim-step errors warn at most once per interval — visible when recurring
+// (a permanently-swallowed error is silent divergence), without flooding.
+const ERROR_WARN_INTERVAL = 5;
+let lastErrorWarnAt: number | undefined;
 // Server-only: tuning HUD edits, written into the BT_* attributes from
 // inside the next sim step (attribute writes on predicted instances are only
 // legal there) — the VehicleSim pending-op pattern.
@@ -206,20 +214,88 @@ function refreshFilters(ball: BasePart): boolean {
 	}
 	worldParams.FilterDescendantsInstances = cached.include;
 
-	// Cars come and go every tick, so the HitboxMain list rebuilds each step.
+	// Hitbox list from the maintained registry (no GetChildren/FindFirstChild
+	// tree walks in the fixed-step path), filtered to THIS ball's pitch: a
+	// ball only ever considers cars whose owner is participating on its own
+	// pitch. A ball with no pitch id (test place / legacy) keeps the old
+	// include-everything behaviour.
+	const ballPitch = ball.GetAttribute(PITCH_ATTRIBUTE);
 	const hitboxMains: Instance[] = [];
-	const vehicles = game.Workspace.FindFirstChild("Vehicles");
-	if (vehicles !== undefined) {
-		for (const model of vehicles.GetChildren()) {
-			const hitboxes = model.FindFirstChild(HITBOX_FOLDER_NAME);
-			const main = hitboxes !== undefined ? hitboxes.FindFirstChild(HITBOX_MAIN_NAME) : undefined;
-			if (main !== undefined) {
-				hitboxMains.push(main);
-			}
+	for (const [model, entry] of hitboxRegistry) {
+		if (model.Parent === undefined || entry.main.Parent === undefined) {
+			hitboxRegistry.delete(model);
+			continue;
 		}
+		if (ballPitch !== undefined && carPitchOf(model, entry) !== ballPitch) {
+			continue;
+		}
+		hitboxMains.push(entry.main);
 	}
 	carOverlapParams.FilterDescendantsInstances = hitboxMains;
 	return true;
+}
+
+// ---- vehicle hitbox registry ---------------------------------------------
+// Maintained on spawn/despawn instead of rediscovered every simulation step.
+// Both peers build it from the replicated Vehicles folder, so the include
+// list is identical for the server sim and the predicting client.
+
+interface HitboxEntry {
+	main: BasePart;
+	owner?: Player; // resolved lazily from the OwnerUserId attribute
+	ownerUserId?: number;
+}
+
+const hitboxRegistry = new Map<Model, HitboxEntry>();
+const OWNER_USER_ID_ATTR = "OwnerUserId"; // VehicleModelAttr.OwnerUserId (no import: avoid a sim<->sim cycle)
+
+// The pitch a car participates on = its OWNER's replicated CB_PitchId player
+// attribute (set by the match layer). Cached player handle; the attribute is
+// read live so mid-round pitch moves take effect without respawns.
+function carPitchOf(model: Model, entry: HitboxEntry): unknown {
+	const userId = model.GetAttribute(OWNER_USER_ID_ATTR);
+	if (!typeIs(userId, "number") || userId === 0) {
+		return undefined; // unowned (showcase/garage) car — participates nowhere
+	}
+	if (entry.owner === undefined || entry.owner.UserId !== userId || entry.owner.Parent === undefined) {
+		entry.owner = Players.GetPlayerByUserId(userId);
+	}
+	return entry.owner !== undefined ? entry.owner.GetAttribute(PITCH_ATTRIBUTE) : undefined;
+}
+
+function adoptVehicle(model: Instance) {
+	if (!model.IsA("Model")) {
+		return;
+	}
+	task.spawn(() => {
+		// Under StreamingEnabled the hitbox folder can replicate several
+		// seconds after the model — retry briefly instead of missing the car.
+		const t0 = os.clock();
+		while (model.Parent !== undefined && os.clock() - t0 < 20) {
+			const hitboxes = model.FindFirstChild(HITBOX_FOLDER_NAME);
+			const main = hitboxes !== undefined ? hitboxes.FindFirstChild(HITBOX_MAIN_NAME) : undefined;
+			if (main !== undefined && main.IsA("BasePart")) {
+				hitboxRegistry.set(model, { main });
+				return;
+			}
+			task.wait(0.25);
+		}
+	});
+}
+
+function watchVehiclesFolder() {
+	task.spawn(() => {
+		const vehicles = game.Workspace.WaitForChild("Vehicles", math.huge)!;
+		vehicles.ChildAdded.Connect(adoptVehicle);
+		vehicles.ChildRemoved.Connect((model) => {
+			if (model.IsA("Model")) {
+				hitboxRegistry.delete(model);
+			}
+		});
+		for (const child of vehicles.GetChildren()) {
+			adoptVehicle(child);
+		}
+	});
 }
 
 interface CarContact {
@@ -358,13 +434,17 @@ function stepBall(ball: BasePart, dt: number) {
 	}
 
 	// 5. car hits via the HitboxMain boxes (the overlap's include list holds
-	// exactly those parts; the name guard is belt-and-braces)
+	// exactly those parts; the name guard is belt-and-braces).
+	//
+	// One contact per tick, chosen DETERMINISTICALLY: GetPartBoundsInRadius
+	// returns results in no guaranteed order, so "first box wins" could pick
+	// a different car on client and server from identical physics state — a
+	// guaranteed misprediction whenever two cars pinch the ball. The deepest
+	// penetration wins instead (ties broken by model name), which both peers
+	// compute identically from the same state.
 	const nearby = game.Workspace.GetPartBoundsInRadius(position, radius, carOverlapParams);
-	let hitCar: Model | undefined; // one contact per tick — first box wins
+	let best: CarContact | undefined;
 	for (const part of nearby) {
-		if (hitCar !== undefined) {
-			break;
-		}
 		if (part.Name !== HITBOX_MAIN_NAME || part.Parent === undefined) {
 			continue;
 		}
@@ -372,7 +452,16 @@ function stepBall(ball: BasePart, dt: number) {
 		if (contact === undefined) {
 			continue;
 		}
-		hitCar = contact.carModel;
+		if (
+			best === undefined ||
+			contact.penetration > best.penetration + 1e-6 ||
+			(math.abs(contact.penetration - best.penetration) <= 1e-6 && contact.carModel.Name < best.carModel.Name)
+		) {
+			best = contact;
+		}
+	}
+	if (best !== undefined) {
+		const contact = best;
 
 		const n = contact.normal;
 		const relV = v.sub(contact.carVelocity);
@@ -473,10 +562,25 @@ function tick(dt: number) {
 			worldFilterByBall.delete(ball);
 			continue;
 		}
+		// A client simulates ONLY its own pitch's ball (the one it predicts —
+		// ballRenderer scopes the prediction marking the same way). Stepping
+		// every pitch's ball here made N pitches cost N sims on every client,
+		// and writing velocities to authoritative (unpredicted) balls just
+		// fought replication. The server still steps every live ball. A ball
+		// with no pitch id keeps the old step-everywhere behaviour.
+		if (!IS_SERVER) {
+			const ballPitch = ball.GetAttribute(PITCH_ATTRIBUTE);
+			if (ballPitch !== undefined && ballPitch !== LOCAL_PLAYER!.GetAttribute(PITCH_ATTRIBUTE)) {
+				continue;
+			}
+		}
 		const [ok, err] = pcall(() => stepBall(ball, dt));
-		if (!ok && !errorLogged) {
-			errorLogged = true;
-			warn(`[BallSim] ${err}`);
+		if (!ok) {
+			const clock = os.clock();
+			if (lastErrorWarnAt === undefined || clock - lastErrorWarnAt > ERROR_WARN_INTERVAL) {
+				lastErrorWarnAt = clock;
+				warn(`[BallSim] ${err}`);
+			}
 		}
 	}
 }
@@ -484,7 +588,7 @@ function tick(dt: number) {
 function adoptBall(child: Instance) {
 	if (child.Name === BALL_NAME && child.IsA("BasePart")) {
 		balls.add(child);
-		errorLogged = false;
+		lastErrorWarnAt = undefined;
 	}
 }
 
@@ -500,16 +604,12 @@ export function initialize() {
 	for (const child of game.Workspace.GetChildren()) {
 		adoptBall(child);
 	}
+	watchVehiclesFolder();
 
-	const [ok, err] = pcall(() => {
-		RunService.BindToSimulation((deltaTime: number) => tick(deltaTime));
-	});
-	if (ok) {
-		print(`[BallSim] ${IS_SERVER ? "server" : "client"} bound via BindToSimulation`);
-	} else {
-		// Same fallback stance as VehicleSim: only for engines without the
-		// server-authority beta.
-		warn(`[BallSim] BindToSimulation unavailable (${err}); falling back to Heartbeat`);
-		RunService.Heartbeat.Connect((deltaTime) => tick(deltaTime));
-	}
+	// The shared scheduler owns the single BindToSimulation (explicit
+	// SIM_RATE_HZ frequency); the ball hook runs strictly AFTER the vehicle
+	// hook on every peer so car→ball interactions resolve in the same order
+	// on original ticks and rollback replays alike.
+	registerSimHook("BallSim", SIM_ORDER_BALL, (deltaTime) => tick(deltaTime));
+	print(`[BallSim] ${IS_SERVER ? "server" : "client"} registered on the shared simulation scheduler`);
 }
