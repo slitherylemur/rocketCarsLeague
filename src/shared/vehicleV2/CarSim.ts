@@ -250,6 +250,12 @@ export function isRegistered(model: Model): boolean {
 	return registry.has(model);
 }
 
+/** Grounded query (harness/gameplay). Reflects the last stepped tick. */
+export function isOnGround(model: Model): boolean {
+	const entry = registry.get(model);
+	return entry !== undefined && entry.renderGrounded;
+}
+
 // ---- gameplay API (server; all queued, consumed inside the next step) -----
 
 function entryOf(model: Model): CarEntry | undefined {

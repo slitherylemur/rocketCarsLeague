@@ -10,6 +10,7 @@
 
 import { Globals } from "./Globals";
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
+import * as VehicleApi from "shared/vehicleV2/VehicleApi";
 import { VehicleAttr } from "shared/vehicleSim/VehicleSim";
 import type { VehicleClass } from "./Classes/VehicleClass";
 
@@ -40,12 +41,12 @@ function yawRateOf(vehicle: VehicleClass): number {
 // Inputs go through the same sim entry points the remotes use. The client can
 // overwrite them if keys are pressed mid-suite — hence "hands off".
 function setInputs(vehicle: VehicleClass, throttle: number, steer: number) {
-	VehicleSim.setThrottleSteer(vehicle.model, throttle, steer);
+	VehicleApi.setThrottleSteer(vehicle.model, throttle, steer);
 }
 
 function resetCar(vehicle: VehicleClass, pose: CFrame) {
 	setInputs(vehicle, 0, 0);
-	VehicleSim.setDriftHeld(vehicle.model, false);
+	VehicleApi.setDriftHeld(vehicle.model, false);
 	vehicle.model.PivotTo(pose);
 	const base = vehicle.model.Base;
 	base.AssemblyLinearVelocity = new Vector3(0, 0, 0);
@@ -114,7 +115,7 @@ function runSuite(player: Player) {
 
 	// Stop the sim from reading the player's InputActions — the suite owns
 	// the input attributes for its duration.
-	VehicleSim.setScriptedInput(vehicle.model, true);
+	VehicleApi.setScriptedInput(vehicle.model, true);
 
 	// 1. acceleration + top speed
 	resetCar(vehicle, pose);
@@ -153,7 +154,7 @@ function runSuite(player: Player) {
 	resetCar(vehicle, pose);
 	setInputs(vehicle, 1, 0);
 	waitForSpeedFraction(vehicle, 0.7, 10);
-	VehicleSim.setDriftHeld(vehicle.model, true);
+	VehicleApi.setDriftHeld(vehicle.model, true);
 	setInputs(vehicle, 1, 1);
 	let driftYawSum = 0;
 	let driftN = 0;
@@ -163,7 +164,7 @@ function runSuite(player: Player) {
 		driftN += 1;
 		driftSideMax = math.max(driftSideMax, math.abs(sideSpeedOf(vehicle)));
 	});
-	VehicleSim.setDriftHeld(vehicle.model, false);
+	VehicleApi.setDriftHeld(vehicle.model, false);
 	metrics.drift_yaw_rate = round2(driftYawSum / math.max(driftN, 1));
 	metrics.drift_side_speed_max = round2(driftSideMax);
 
@@ -204,7 +205,7 @@ function runSuite(player: Player) {
 	while (os.clock() - jumpT0 < 4) {
 		RunService.Heartbeat.Wait();
 		apex = math.max(apex, vehicle.model.Base.Position.Y - startY);
-		const grounded = VehicleSim.isOnGround(vehicle.model);
+		const grounded = VehicleApi.isOnGround(vehicle.model);
 		if (!leftGround && !grounded) {
 			leftGround = true;
 		} else if (leftGround && grounded && airtime < 0) {
@@ -217,7 +218,7 @@ function runSuite(player: Player) {
 
 	// hand control back to the client
 	resetCar(vehicle, pose);
-	VehicleSim.setScriptedInput(vehicle.model, false);
+	VehicleApi.setScriptedInput(vehicle.model, false);
 	running = false;
 
 	warn(`[feel] ==== results: ${vehicleName} ====`);

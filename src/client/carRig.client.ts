@@ -200,10 +200,13 @@ function buildRig(model: Model) {
 		};
 
 		rigs.set(model, rig);
-		for (const child of renderSource.GetDescendants()) {
+		// Cosmetic parts are stamped with RS_Offset wherever they live in the
+		// model (body parts keep their authored hierarchy for the paint/skin
+		// code; rig wheels live under RenderSource) — adopt across the model.
+		for (const child of model.GetDescendants()) {
 			adopt(child);
 		}
-		rig.connections.push(renderSource.DescendantAdded.Connect(adopt));
+		rig.connections.push(model.DescendantAdded.Connect(adopt));
 		rig.connections.push(
 			model.GetAttributeChangedSignal(CarModelAttr.OwnerUserId).Connect(() => {
 				rig.isLocal = model.GetAttribute(CarModelAttr.OwnerUserId) === LocalPlayer.UserId;

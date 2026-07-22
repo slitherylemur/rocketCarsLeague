@@ -20,6 +20,8 @@ import {
 	VehicleBase,
 	VehicleModel,
 } from "shared/vehicleSim/VehicleSim";
+import { getPreset } from "shared/vehicleV2/PhysicsPresets";
+import { CarModelAttr } from "shared/vehicleV2/CarState";
 
 const RunService = game.GetService("RunService");
 const TweenService = game.GetService("TweenService");
@@ -29,6 +31,8 @@ const LocalPlayer = Players.LocalPlayer;
 interface TrackedCar {
 	model: VehicleModel;
 	base: VehicleBase;
+	/** V2: preset top speed (legacy reads the TargetVelocity attribute). */
+	topSpeed?: number;
 	boostOn: boolean;
 	driftTrailsOn: boolean;
 	driftSoundOn: boolean;
@@ -81,13 +85,29 @@ function track(model: Instance) {
 	}
 	task.spawn(() => {
 		// Under StreamingEnabled the car's parts can arrive over several frames.
-		const base = model.WaitForChild("Base", 15) as VehicleBase | undefined;
+		// V2 proxies carry the same sounds/attributes on VehicleRoot, so the
+		// whole renderer works unchanged once the right part is resolved.
+		let base: VehicleBase | undefined;
+		let topSpeed: number | undefined;
+		const t0 = os.clock();
+		while (model.Parent !== undefined && os.clock() - t0 < 15 && base === undefined) {
+			const found = model.FindFirstChild("VehicleRoot") ?? model.FindFirstChild("Base");
+			if (found && found.IsA("BasePart")) {
+				base = found as VehicleBase;
+				break;
+			}
+			task.wait(0.2);
+		}
 		if (!base || !model.Parent) {
 			return;
+		}
+		if (model.GetAttribute(CarModelAttr.V2) !== undefined) {
+			topSpeed = getPreset(model.GetAttribute(CarModelAttr.PresetId)).topSpeed;
 		}
 		tracked.set(model, {
 			model: model as VehicleModel,
 			base,
+			topSpeed,
 			boostOn: false,
 			driftTrailsOn: false,
 			driftSoundOn: false,
@@ -116,7 +136,7 @@ function attrBool(instance: Instance, name: string): boolean {
 // The gear pitch curve, exactly as the old server drive loop computed it.
 function updateEnginePitch(car: TrackedCar) {
 	const base = car.base;
-	const targetVelocity = attrNumber(base, VehicleAttr.TargetVelocity, 150);
+	const targetVelocity = car.topSpeed ?? attrNumber(base, VehicleAttr.TargetVelocity, 150);
 	const velocity = -base.CFrame.VectorToObjectSpace(base.AssemblyLinearVelocity).Z;
 	const propVelocity = math.abs(velocity) / targetVelocity;
 

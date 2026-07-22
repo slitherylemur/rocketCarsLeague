@@ -110,6 +110,7 @@ vehiclesFolder.ChildAdded.Connect(onVehicleAdded);
 vehiclesFolder.ChildRemoved.Connect((model) => {
 	if (model.IsA("Model")) {
 		VehicleSim.unregister(model);
+		CarSim.unregister(model);
 	}
 });
 for (const child of vehiclesFolder.GetChildren()) {

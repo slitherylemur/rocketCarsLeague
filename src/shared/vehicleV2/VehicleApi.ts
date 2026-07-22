@@ -116,12 +116,24 @@ export function applyBlast(model: Model, velocityDelta: Vector3) {
 	}
 }
 
+/** Cosmetic-change mass refresh. V2 mass is a preset constant (gate G-10),
+ * so this is deliberately a no-op there; legacy re-measures SimMass. */
+export function refreshMass(model: Model) {
+	if (!CarSim.isV2Model(model)) {
+		VehicleSim.refreshMass(model);
+	}
+}
+
 export function unregister(model: Model) {
 	if (CarSim.isV2Model(model)) {
 		CarSim.unregister(model);
 	} else {
 		VehicleSim.unregister(model);
 	}
+}
+
+export function isOnGround(model: Model): boolean {
+	return CarSim.isV2Model(model) ? CarSim.isOnGround(model) : VehicleSim.isOnGround(model);
 }
 
 /** The car's simulated rigid body: V2 VehicleRoot or legacy Base. */

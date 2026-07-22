@@ -675,6 +675,12 @@ function buildEntry(model: VehicleModel, tuning: VehicleTuning, movers: MoverSet
 // Server-side registration: creates the movers, writes tuning + initial
 // state attributes, applies wheel friction.
 export function register(model: VehicleModel, tuning: VehicleTuning, owner?: Player) {
+	// Interlock (V2 gate G-14): a V2 single-assembly proxy must never be
+	// driven by the legacy constraint sim as well.
+	if (model.GetAttribute("V2") !== undefined) {
+		warn(`[VehicleSim] refusing to register V2 model ${model.Name} — CarSim owns it`);
+		return;
+	}
 	const base = model.Base;
 	const movers = createMovers(base);
 	const entry = buildEntry(model, tuning, movers, owner);

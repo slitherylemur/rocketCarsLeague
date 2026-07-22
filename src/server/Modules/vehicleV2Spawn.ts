@@ -161,8 +161,13 @@ export function buildProxy(model: Model, templateName: string, owner?: Player): 
 		}
 	}
 
-	// Body/cosmetic parts: everything visible that is not a wheel, seat,
-	// hitbox or the Base slab.
+	// Body/cosmetic parts: everything that is not a wheel, seat, hitbox or the
+	// Base slab stays WHERE IT IS in the hierarchy (paint/skin/boost-trail
+	// code addresses model.Model / model.BoostEffectPart by path), but every
+	// BasePart is neutralized (anchored, massless, non-colliding — physics
+	// never sees it) and stamped with its root-local pose so the client rig
+	// can pose it. Constraints/joints on cosmetic parts are destroyed — they
+	// referenced physical parts that are about to be deleted.
 	const skipRoots = new Set<Instance>();
 	const seats = model.FindFirstChild("Seats");
 	const hitboxes = model.FindFirstChild("Hitboxes");
@@ -171,7 +176,6 @@ export function buildProxy(model: Model, templateName: string, owner?: Player): 
 	if (hitboxes) skipRoots.add(hitboxes);
 	skipRoots.add(renderSource);
 
-	const carryParts: BasePart[] = [];
 	for (const descendant of model.GetDescendants()) {
 		if (!descendant.IsA("BasePart") || descendant === oldBase || descendant === root) {
 			continue;
@@ -183,33 +187,16 @@ export function buildProxy(model: Model, templateName: string, owner?: Player): 
 				break;
 			}
 		}
-		if (!skipped && descendant.Transparency < 0.99) {
-			carryParts.push(descendant);
+		if (skipped) {
+			continue;
 		}
-	}
-	for (const part of carryParts) {
-		for (const child of part.GetChildren()) {
+		for (const child of descendant.GetChildren()) {
 			if (child.IsA("JointInstance") || child.IsA("Constraint")) {
 				child.Destroy();
 			}
 		}
-		neutralizeRenderPart(part);
-		part.SetAttribute(RS_OFFSET_ATTR, root.CFrame.ToObjectSpace(part.CFrame));
-		part.Parent = renderSource;
-	}
-
-	// BoostEffectPart carries emitters/trail/sound — keep it (invisible part,
-	// so it wasn't carried above).
-	const boostPart = model.FindFirstChild("BoostEffectPart");
-	if (boostPart && boostPart.IsA("BasePart")) {
-		for (const child of boostPart.GetChildren()) {
-			if (child.IsA("JointInstance") || child.IsA("Constraint")) {
-				child.Destroy();
-			}
-		}
-		neutralizeRenderPart(boostPart);
-		boostPart.SetAttribute(RS_OFFSET_ATTR, root.CFrame.ToObjectSpace(boostPart.CFrame));
-		boostPart.Parent = renderSource;
+		neutralizeRenderPart(descendant);
+		descendant.SetAttribute(RS_OFFSET_ATTR, root.CFrame.ToObjectSpace(descendant.CFrame));
 	}
 
 	// ---- strip the legacy physical structure ----
@@ -217,15 +204,6 @@ export function buildProxy(model: Model, templateName: string, owner?: Player): 
 	if (seats) seats.Destroy();
 	if (hitboxes) hitboxes.Destroy();
 	oldBase.Destroy();
-	// Anything physical left at the model top level (old effect anchors etc.)
-	// must not join the assembly.
-	for (const child of model.GetChildren()) {
-		if (child.IsA("BasePart") && child !== root) {
-			neutralizeRenderPart(child);
-			child.SetAttribute(RS_OFFSET_ATTR, root.CFrame.ToObjectSpace(child.CFrame));
-			child.Parent = renderSource;
-		}
-	}
 
 	// ---- query boxes ----
 	const newHitboxes = new Instance("Model");
