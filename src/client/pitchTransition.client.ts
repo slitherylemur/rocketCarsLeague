@@ -18,6 +18,7 @@ const playerGui = player.WaitForChild("PlayerGui") as PlayerGui;
 
 let current: ScreenGui | undefined;
 let generation = 0;
+let activeToken: unknown;
 
 function hideCover() {
 	const gui = current;
@@ -44,10 +45,18 @@ function hideCover() {
 	task.delay(0.65, () => gui.Destroy());
 }
 
-function showCover() {
+function showCover(token: unknown) {
 	if (current) {
+		activeToken = token;
+		generation += 1;
+		const refreshGeneration = generation;
+		const gui = current;
+		task.delay(FAILSAFE_TIME, () => {
+			if (generation === refreshGeneration && current === gui && activeToken === token) hideCover();
+		});
 		return;
 	}
+	activeToken = token;
 	generation += 1;
 	const gen = generation;
 
@@ -101,22 +110,25 @@ function showCover() {
 	});
 
 	task.delay(FAILSAFE_TIME, () => {
-		if (generation === gen && current === screenGui) {
+		if (generation === gen && current === screenGui && activeToken === token) {
 			hideCover();
 		}
 	});
 }
 
 player.GetAttributeChangedSignal(COVER_ATTR).Connect(() => {
-	if (player.GetAttribute(COVER_ATTR) === true) {
-		showCover();
+	const token = player.GetAttribute(COVER_ATTR);
+	if (token !== undefined) {
+		showCover(token);
 	} else {
+		activeToken = undefined;
 		hideCover();
 	}
 });
 
 // Covers survive across the script's own start: if the attribute was already
 // set when we connected (spawn race), honour it.
-if (player.GetAttribute(COVER_ATTR) === true) {
-	showCover();
+const initialToken = player.GetAttribute(COVER_ATTR);
+if (initialToken !== undefined) {
+	showCover(initialToken);
 }

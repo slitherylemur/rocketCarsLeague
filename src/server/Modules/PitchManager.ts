@@ -31,6 +31,7 @@ let pitches: Pitch[] = [];
 let lineAnchor: Vector3 | undefined;
 let lineSlotWidth = 0;
 let nextSlot = 0;
+let nextStablePitchId = 1;
 
 function variantNameFor(index: number, realCount: number): string {
 	if (index === 0) {
@@ -128,15 +129,45 @@ const PitchManager = {
 		return pitches;
 	},
 
+	getPitchById(pitchId: string): Pitch | undefined {
+		return pitches.find((pitch) => pitch.folder.Name === pitchId);
+	},
+
+	validatePitch(pitch: Pitch): { ok: boolean; reason?: string } {
+		if (pitch.folder.Parent === undefined) return { ok: false, reason: "pitch is not parented" };
+		const ballSpawn = pitch.folder.FindFirstChild("BallSpawn", true);
+		if (!ballSpawn || !ballSpawn.IsA("BasePart")) return { ok: false, reason: "missing BallSpawn" };
+		const spawnRoot = pitch.folder.FindFirstChild("SpawnPoints");
+		if (!spawnRoot) return { ok: false, reason: "missing SpawnPoints" };
+		let spawnCount = 0;
+		for (const descendant of spawnRoot.GetDescendants()) if (descendant.IsA("BasePart")) spawnCount += 1;
+		if (spawnCount === 0) return { ok: false, reason: "SpawnPoints has no parts" };
+		if (!pitch.muckabout && pitch.variantName !== VARIANT_FREEPLAY) {
+			if (!mapHasGoalParts(pitch.folder)) return { ok: false, reason: "missing competitive goal pair" };
+			for (const side of ["Red", "Blue"]) {
+				const folder = spawnRoot.FindFirstChild(side);
+				if (!folder || !folder.FindFirstChildWhichIsA("BasePart", true)) return { ok: false, reason: `missing ${side} spawns` };
+			}
+		}
+		return { ok: true };
+	},
+
+	destroyPitch(pitchId: string): boolean {
+		const index = pitches.findIndex((pitch) => pitch.folder.Name === pitchId);
+		if (index < 0) return false;
+		const pitch = pitches[index];
+		pitches.remove(index);
+		if (pitch.folder.Parent !== undefined) pitch.folder.Destroy();
+		warn(`[PitchManager] destroyed ${pitchId}`);
+		return true;
+	},
+
 	/**
 	 * Build the round's pitches into Workspace.Map. Slot 0 (gold) keeps its
 	 * authored position and anchors the line; slot i sits 2×goldWidth further
 	 * along +X. Returns the built pitches top-first (muckabout last).
-	 * `freePlayOnly` (0–1 teams: no match possible, everyone free-plays)
-	 * swaps the real pitches for FreePlayPitch — gold should only appear when
-	 * an actual top-table match can happen.
 	 */
-	buildPitches(realCount: number, includeMuckabout: boolean, freePlayOnly?: boolean): Pitch[] {
+	buildPitches(realCount: number, includeMuckabout: boolean): Pitch[] {
 		const mapFolder = (game.Workspace as unknown as { Map: Folder }).Map;
 		const spawnFolder = (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints;
 		mapFolder.ClearAllChildren();
@@ -149,15 +180,15 @@ const PitchManager = {
 
 		for (let i = 0; i < total; i++) {
 			const muckabout = includeMuckabout && i === total - 1;
-			const variantName =
-				muckabout || freePlayOnly === true ? VARIANT_FREEPLAY : variantNameFor(i, realCount);
+			const variantName = muckabout ? VARIANT_FREEPLAY : variantNameFor(i, realCount);
 			const source = findVariant(variantName);
 			if (!source) {
 				warn(`[PitchManager] ServerStorage.Maps is empty — no pitch ${i}`);
 				continue;
 			}
 			const clone = source.Clone();
-			clone.Name = muckabout ? `Pitch${i}_Muckabout` : `Pitch${i}_${variantName}`;
+			const stableId = nextStablePitchId++;
+			clone.Name = muckabout ? `Pitch${stableId}_Muckabout` : `Pitch${stableId}_${variantName}`;
 			neutralizeBallWalls(clone);
 
 			const bounds = computeBounds(clone);
@@ -177,7 +208,14 @@ const PitchManager = {
 				translateFolder(clone, target.sub(center));
 			}
 			clone.Parent = mapFolder;
-			pitches.push({ index: i, variantName, folder: clone, muckabout });
+			const pitch = { index: i, variantName, folder: clone, muckabout };
+			const validation = PitchManager.validatePitch(pitch);
+			if (!validation.ok) {
+				warn(`[PitchManager] rejected ${clone.Name}: ${validation.reason}`);
+				clone.Destroy();
+				continue;
+			}
+			pitches.push(pitch);
 		}
 		nextSlot = total;
 
@@ -208,7 +246,8 @@ const PitchManager = {
 		}
 		const index = nextSlot;
 		const clone = source.Clone();
-		clone.Name = isMuck ? `Pitch${index}_Muckabout` : `Pitch${index}_${variant}`;
+		const stableId = nextStablePitchId++;
+		clone.Name = isMuck ? `Pitch${stableId}_Muckabout` : `Pitch${stableId}_${variant}`;
 		neutralizeBallWalls(clone);
 		const bounds = computeBounds(clone);
 		if (bounds === undefined) {
@@ -221,6 +260,12 @@ const PitchManager = {
 		translateFolder(clone, target.sub(center));
 		clone.Parent = mapFolder;
 		const pitch: Pitch = { index, variantName: variant, folder: clone, muckabout: isMuck };
+		const validation = PitchManager.validatePitch(pitch);
+		if (!validation.ok) {
+			warn(`[PitchManager] addPitch rejected ${clone.Name}: ${validation.reason}`);
+			clone.Destroy();
+			return undefined;
+		}
 		pitches.push(pitch);
 		nextSlot = index + 1;
 		warn(`[PitchManager] added ${clone.Name} at slot ${index} (mid-round)`);

@@ -250,11 +250,7 @@ function fireBoolAction(actionName: string, held: boolean) {
 // the finger that pressed. A finger that slides well off a button releases
 // it (buttons must never stay latched), but small drift keeps the press.
 
-const TOUCH_HOLD_ACTIONS = [
-	VehicleInput.Drift,
-	VehicleInput.Boost,
-	VehicleInput.Jump,
-];
+const TOUCH_HOLD_ACTIONS = [VehicleInput.Drift, VehicleInput.Boost, VehicleInput.Jump];
 
 // Current held-state per action, as produced by the touch buttons only.
 // syncActionStates() consults this so a button held across a context
@@ -387,14 +383,7 @@ function wireTouchButtons(mobileInterface: ScreenGui) {
 	const boost = mobileInterface.FindFirstChild("Boost");
 	const drift = mobileInterface.FindFirstChild("Drift");
 	const jump = mobileInterface.FindFirstChild("Jump");
-	if (
-		!boost ||
-		!boost.IsA("GuiButton") ||
-		!drift ||
-		!drift.IsA("GuiButton") ||
-		!jump ||
-		!jump.IsA("GuiButton")
-	) {
+	if (!boost || !boost.IsA("GuiButton") || !drift || !drift.IsA("GuiButton") || !jump || !jump.IsA("GuiButton")) {
 		return; // children still replicating — caller retries
 	}
 	wiredMobileInterface = mobileInterface;
@@ -613,18 +602,6 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 					}
 				});
 			}
-			// One-shot diagnostic: the engine's predicted-instance count is the
-			// only trustworthy signal (GetPredictionStatus outside a resim pass
-			// reports Authoritative even for predicted instances). Expect
-			// roughly "car + character"-sized numbers while seated.
-			task.delay(2, () => {
-				if (managedVehicle === vehicleModel) {
-					pcall(() => {
-						const predicted = game.GetService("AuroraService").GetPredictedInstances();
-						print(`[VehicleKeyHandler] engine predicted-instance count while seated: ${predicted.size()}`);
-					});
-				}
-			});
 		}
 
 		// Horn stays on the legacy remote (cosmetic, not part of the sim), but
@@ -641,7 +618,13 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 			if (seatSession !== session) {
 				return; // sit already ended while the invoke was in flight
 			}
-			ContextActionService.BindAction("HonkHorn", handleHornAction as never, false, hornKey, Enum.KeyCode.ButtonY);
+			ContextActionService.BindAction(
+				"HonkHorn",
+				handleHornAction as never,
+				false,
+				hornKey,
+				Enum.KeyCode.ButtonY,
+			);
 		});
 
 		if (UserInputService.TouchEnabled) {
@@ -772,7 +755,13 @@ function onV2Driving(vehicleModel: Model, driving: boolean) {
 			if (seatSession !== session) {
 				return;
 			}
-			ContextActionService.BindAction("HonkHorn", handleHornAction as never, false, hornKey, Enum.KeyCode.ButtonY);
+			ContextActionService.BindAction(
+				"HonkHorn",
+				handleHornAction as never,
+				false,
+				hornKey,
+				Enum.KeyCode.ButtonY,
+			);
 		});
 		if (UserInputService.TouchEnabled) {
 			setCoreTouchControlsEnabled(false);
@@ -898,7 +887,6 @@ function WaitForKeyBind(button: KeyBindButton) {
 			button.ImageLabel.Image = "rbxassetid://" + keyCodeImages.get(inputKey);
 			SetKeyBinding.InvokeServer(button.Name, inputKey);
 		} else {
-			print("NoImageForKeyCode");
 			button.ImageLabel.Image = OldImage;
 		}
 	});
@@ -952,7 +940,8 @@ function wireMenuGui(descendant: Instance) {
 				}
 				pcall(() => {
 					(button.WaitForChild("ImageLabel", 5) as ImageLabel).Image =
-						"rbxassetid://" + keyCodeImages.get(GetKeyBinding.InvokeServer(button.Name) as unknown as EnumItem);
+						"rbxassetid://" +
+						keyCodeImages.get(GetKeyBinding.InvokeServer(button.Name) as unknown as EnumItem);
 				});
 			}
 		}

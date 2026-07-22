@@ -811,7 +811,16 @@ export function registerReplica(model: VehicleModel, owner: Player): boolean {
 		gripYawTorque: attrNumber(base, VehicleTuningAttr.GripYawTorque, GRIP_YAW_TORQUE),
 	};
 	const [ok, err] = pcall(() => {
-		const movers: MoverSet = { aerial, driftYaw, upright, flipAlign, flipLift, showcaseLock, jumpThrust, driftThrust };
+		const movers: MoverSet = {
+			aerial,
+			driftYaw,
+			upright,
+			flipAlign,
+			flipLift,
+			showcaseLock,
+			jumpThrust,
+			driftThrust,
+		};
 		registry.set(model, buildEntry(model, tuning, movers, owner));
 	});
 	if (!ok) {
@@ -909,11 +918,7 @@ function jumpLaunchDirection(entry: SimEntry): Vector3 {
 	}
 	groundRaycastParams.FilterDescendantsInstances = filter;
 	const boxCenter = entry.base.CFrame.PointToWorldSpace(entry.boundingCenterOffset);
-	const result = game.Workspace.Raycast(
-		boxCenter,
-		new Vector3(0, -entry.boundingSizeX / 2, 0),
-		groundRaycastParams,
-	);
+	const result = game.Workspace.Raycast(boxCenter, new Vector3(0, -entry.boundingSizeX / 2, 0), groundRaycastParams);
 	if (!result) {
 		return worldUp;
 	}
@@ -1208,7 +1213,9 @@ function reconcileOwnerContextEnabled(entry: SimEntry) {
 		}
 		const liveContext = owner.FindFirstChild(VehicleInput.ContextName);
 		if (liveContext && liveContext.IsA("InputContext") && !liveContext.Enabled) {
-			warn(`[VehicleSim] ${owner.Name}'s VehicleControls context was disabled — re-enabling (locks are InputLocked-attribute only)`);
+			warn(
+				`[VehicleSim] ${owner.Name}'s VehicleControls context was disabled — re-enabling (locks are InputLocked-attribute only)`,
+			);
 			liveContext.Enabled = true;
 		}
 	});
@@ -1366,8 +1373,8 @@ function closeGroundQuery(entry: SimEntry): LuaTuple<[boolean, CFrame?]> {
 // steady state write-free.
 function setWheelFriction(entry: SimEntry, sliding: boolean) {
 	const friction = sliding
-		? entry.tuning.driftWheelFriction ?? DRIFT_WHEEL_FRICTION
-		: entry.tuning.driveWheelFriction ?? DRIVE_WHEEL_FRICTION;
+		? (entry.tuning.driftWheelFriction ?? DRIFT_WHEEL_FRICTION)
+		: (entry.tuning.driveWheelFriction ?? DRIVE_WHEEL_FRICTION);
 	for (const wheel of entry.wheels) {
 		const part = wheel.FindFirstChild("Wheel") as BasePart | undefined;
 		if (!part) {
@@ -1496,7 +1503,7 @@ function turnWheels(entry: SimEntry, throttle: number, steerFloat: number, onGro
 		const boosting =
 			attrBool(entry.base, VehicleAttr.BoostHeld) && attrNumber(entry.base, VehicleAttr.BoostAmount, 0) > 0;
 		entry.driftYaw.MaxTorque =
-			entry.totalMass * (boosting ? BOOST_GRIP_YAW_TORQUE : entry.tuning.gripYawTorque ?? GRIP_YAW_TORQUE);
+			entry.totalMass * (boosting ? BOOST_GRIP_YAW_TORQUE : (entry.tuning.gripYawTorque ?? GRIP_YAW_TORQUE));
 		entry.driftYaw.AngularVelocity = new Vector3(0, -kinematicYaw, 0);
 	}
 
@@ -1649,7 +1656,10 @@ function stepVehicle(entry: SimEntry, dt: number) {
 	const ownerCharacter = entry.owner ? entry.owner.Character : undefined;
 	const ownerHumanoid = ownerCharacter ? ownerCharacter.FindFirstChildOfClass("Humanoid") : undefined;
 	const drivingNow =
-		occupant !== undefined && ownerHumanoid !== undefined && occupant === ownerHumanoid && model.Parent !== undefined;
+		occupant !== undefined &&
+		ownerHumanoid !== undefined &&
+		occupant === ownerHumanoid &&
+		model.Parent !== undefined;
 	const drivingWas = attrBool(base, VehicleAttr.Driving);
 
 	// The sit/exit EDGES run on the SERVER only. They are game-flow decisions,
@@ -1683,24 +1693,8 @@ function stepVehicle(entry: SimEntry, dt: number) {
 		// neutralized/massless) — refresh SimMass on the next step. The seat
 		// Occupant hook also fires; the flag is idempotent.
 		entry.massDirty = true;
-		// Diagnostic: live measurement vs the SimMass attribute both sims run
-		// on. A persistent gap means a structural change happened without a
-		// refreshMass call — find and flag that path.
-		if (IS_SERVER) {
-			print(
-				`[VehicleSim] ${model.Name}: drive start; measured=${string.format(
-					"%.0f",
-					getMassOfModel(model) + occupantsMass(model),
-				)} SimMass=${string.format("%.0f", attrNumber(base, VehicleAttr.SimMass, entry.baseMass))}`,
-			);
-		}
 	} else if (!drivingNow && drivingWas) {
 		// Drive ended: parking brake, exactly like the old loop exit.
-		print(
-			`[VehicleSim] ${model.Name}: drive end (occupant=${occupant !== undefined} ownerHumanoid=${
-				ownerHumanoid !== undefined
-			} parent=${model.Parent !== undefined})`,
-		);
 		base.SetAttribute(VehicleAttr.Driving, false);
 		base.LinearVelocity.MaxForce = 100000;
 		base.LinearVelocity.LineVelocity = 0;

@@ -130,7 +130,9 @@ function SeatPlayer(player: Player, newModel: Model) {
 	// the car apart mid-spawn (the 10s-wait failure mode we observed).
 	root.Anchored = true;
 	root.CFrame = seat.CFrame.add(seat.CFrame.UpVector.mul(3));
-	spawnLog(`[SeatPlayer] anchored+moved char to ${root.Position}; vehicle at ${newModel.GetPrimaryPartCFrame().Position}`);
+	spawnLog(
+		`[SeatPlayer] anchored+moved char to ${root.Position}; vehicle at ${newModel.GetPrimaryPartCFrame().Position}`,
+	);
 
 	RunService.Stepped.Wait();
 	task.wait(0.1);
@@ -579,7 +581,6 @@ const spawnVehicleModule = {
 			}
 			//playerGarage:FindFirstChild("VehicleFolder"):ClearAllChildren()
 		}
-
 	},
 };
 
@@ -622,9 +623,6 @@ Players.PlayerAdded.Connect((player) => {
 Players.PlayerRemoving.Connect((player) => {
 	spawnVehicleModule.KillVehicle(player);
 	vehicleCharacter.delete(player.UserId);
-	task.delay(5, () => {
-		print(Globals.vehiclesTable);
-	});
 });
 FunctionsAndEvents.KeyHandler.OnServerEvent.Connect(KeyHandler);
 

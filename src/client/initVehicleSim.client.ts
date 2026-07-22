@@ -13,6 +13,7 @@
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
 import { VehicleModelAttr, VehicleModel } from "shared/vehicleSim/VehicleSim";
 import * as CarSim from "shared/vehicleV2/CarSim";
+import { noteLatePhysicsMark, notePredictionMarkFailure } from "shared/vehicleV2/ClientPredictionDiagnostics";
 
 const Players = game.GetService("Players");
 const RunService = game.GetService("RunService");
@@ -34,7 +35,7 @@ function canPredict(instance: Instance): boolean {
 }
 
 function setPredictionDeep(root: Instance, mode: Enum.PredictionMode) {
-	pcall(() => {
+	const [ok] = pcall(() => {
 		if (canPredict(root)) {
 			RunService.SetPredictionMode(root, mode);
 		}
@@ -44,6 +45,85 @@ function setPredictionDeep(root: Instance, mode: Enum.PredictionMode) {
 			}
 		}
 	});
+	if (!ok) {
+		notePredictionMarkFailure();
+	}
+}
+
+interface PredictionGuard {
+	connections: RBXScriptConnection[];
+}
+
+const predictionGuards = new Map<Model, PredictionGuard>();
+
+function isUnder(instance: Instance, ancestor: Instance | undefined): boolean {
+	return ancestor !== undefined && (instance === ancestor || instance.IsDescendantOf(ancestor));
+}
+
+/** Apply the V2 policy to the currently streamed hierarchy. Physics is On;
+ * the anchored render source is Off. This is deliberately idempotent so it
+ * can be reasserted after streaming settles. */
+function applyV2PredictionPolicy(model: Model) {
+	const root = model.FindFirstChild("VehicleRoot");
+	if (root) {
+		setPredictionDeep(root, Enum.PredictionMode.On);
+	}
+	const hitboxes = model.FindFirstChild("Hitboxes");
+	if (hitboxes) {
+		setPredictionDeep(hitboxes, Enum.PredictionMode.On);
+	}
+	const renderSource = model.FindFirstChild("RenderSource");
+	if (renderSource) {
+		setPredictionDeep(renderSource, Enum.PredictionMode.Off);
+	}
+}
+
+function stopPredictionGuard(model: Model) {
+	const guard = predictionGuards.get(model);
+	if (!guard) {
+		return;
+	}
+	predictionGuards.delete(model);
+	for (const connection of guard.connections) {
+		connection.Disconnect();
+	}
+}
+
+function startPredictionGuard(model: Model) {
+	stopPredictionGuard(model);
+	const guard: PredictionGuard = { connections: [] };
+	predictionGuards.set(model, guard);
+
+	// Registration only requires VehicleRoot + state attributes. Hitboxes can
+	// arrive later under replication pressure, so maintain the policy for the
+	// lifetime of the streamed model instead of taking a one-time snapshot.
+	guard.connections.push(
+		model.DescendantAdded.Connect((descendant) => {
+			if (predictionGuards.get(model) !== guard) {
+				return;
+			}
+			const renderSource = model.FindFirstChild("RenderSource");
+			if (isUnder(descendant, renderSource)) {
+				setPredictionDeep(descendant, Enum.PredictionMode.Off);
+				return;
+			}
+			const root = model.FindFirstChild("VehicleRoot");
+			const hitboxes = model.FindFirstChild("Hitboxes");
+			if (descendant === root || isUnder(descendant, hitboxes)) {
+				noteLatePhysicsMark();
+				setPredictionDeep(descendant, Enum.PredictionMode.On);
+			}
+		}),
+	);
+
+	applyV2PredictionPolicy(model);
+	for (const delaySeconds of [0.25, 1, 3]) {
+		task.delay(delaySeconds, () => {
+			if (predictionGuards.get(model) === guard && model.Parent !== undefined) {
+				applyV2PredictionPolicy(model);
+			}
+		});
+	}
 }
 
 function ownerUserIdOf(model: Instance): number {
@@ -81,23 +161,10 @@ function onVehicleAdded(model: Instance) {
 		while (model.Parent) {
 			if (CarSim.isV2Model(model)) {
 				if (CarSim.registerReplica(model, LocalPlayer)) {
-					const root = model.FindFirstChild("VehicleRoot");
-					if (root) {
-						setPredictionDeep(root, Enum.PredictionMode.On);
-					}
-					const hitboxes = model.FindFirstChild("Hitboxes");
-					if (hitboxes) {
-						setPredictionDeep(hitboxes, Enum.PredictionMode.On);
-					}
-					const renderSource = model.FindFirstChild("RenderSource");
-					if (renderSource) {
-						setPredictionDeep(renderSource, Enum.PredictionMode.Off);
-					}
-					print(`[CarSim] client registered own V2 car ${model.Name}`);
+					startPredictionGuard(model);
 					return;
 				}
 			} else if (VehicleSim.registerReplica(model as VehicleModel, LocalPlayer)) {
-				print(`[VehicleSim] client registered own car ${model.Name}`);
 				return;
 			}
 			task.wait(0.25);
@@ -109,6 +176,7 @@ const vehiclesFolder = game.Workspace.WaitForChild("Vehicles");
 vehiclesFolder.ChildAdded.Connect(onVehicleAdded);
 vehiclesFolder.ChildRemoved.Connect((model) => {
 	if (model.IsA("Model")) {
+		stopPredictionGuard(model);
 		VehicleSim.unregister(model);
 		CarSim.unregister(model);
 	}

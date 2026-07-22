@@ -10,6 +10,7 @@
 // per resolved decision D1.
 
 import { ProductIds } from "shared/Monetization";
+import type { TeamLifecycle, TeamNameSource, TeamOrigin, TeamProtection } from "shared/league/LeagueTypes";
 
 const Players = game.GetService("Players");
 const TeamsService = game.GetService("Teams");
@@ -21,7 +22,7 @@ const HttpService = game.GetService("HttpService");
  * the purchase prompt + popup). */
 export const RENAME_PRODUCT_ID: number = ProductIds.RenameTeam;
 
-const MAX_MEMBERS = 3;
+export const MAX_TEAM_MEMBERS = 3;
 
 // Preset pool (resolved decision D3): names are drawn from here; "Team N"
 // when exhausted. The rename product lets teams pick a custom (filtered) name.
@@ -81,21 +82,23 @@ export interface LadderTeam {
 	robloxTeam: Team;
 	colorName: string;
 	members: Player[];
-	open: boolean;
+	origin: TeamOrigin;
+	protection: TeamProtection;
+	nameSource: TeamNameSource;
+	openToRandoms: boolean;
 	/** Ladder position, 0 = gold. Compacted at reseat (MatchDirector, Phase 4). */
-	position: number;
+	position?: number;
 	lastMuckRound?: number;
-	joinedMidRound: boolean;
-	/** False while the team is still forming in the mini lobby; flips true the
-	 * first time a member spawns into a match and never flips back — a playing
-	 * team stays "in play" through shop phases until it disbands. Invites can
-	 * only be accepted while false; joinRandom only fills teams where true. */
-	inPlay: boolean;
+	lifecycle: TeamLifecycle;
+	revision: number;
+	creationOrder: number;
 }
 
 const teams = new Map<string, LadderTeam>();
 const teamOfPlayer = new Map<Player, LadderTeam>();
 const renameCredits = new Map<Player, number>();
+const playerJoinOrder = new Map<Player, number>();
+let nextPlayerJoinOrder = 1;
 let nextTeamNumber = 1;
 
 // Runtime remotes folder (nothing place-file-side): SubmitTeamName carries the
@@ -144,7 +147,7 @@ function pickColor(): string {
 function teamCount(): number {
 	let count = 0;
 	for (const [, team] of teams) {
-		if (team.inPlay) {
+		if (team.position !== undefined && team.lifecycle !== "Forming" && team.lifecycle !== "Disbanded") {
 			count += 1;
 		}
 	}
@@ -154,41 +157,11 @@ function teamCount(): number {
 function nextPosition(): number {
 	let highest = -1;
 	for (const [, team] of teams) {
-		if (team.inPlay) {
+		if (team.position !== undefined && team.lifecycle !== "Forming" && team.lifecycle !== "Disbanded") {
 			highest = math.max(highest, team.position);
 		}
 	}
 	return highest + 1;
-}
-
-/**
- * When a second overflow team arrives, the waiting muckabout team and the
- * newcomer become a new competitive pairing. New real capacity is inserted
- * immediately above the physical Mud pitch, so its existing occupants must
- * remain the bottom pair rather than having their venue silently turn Green.
- *
- * Returns the new team's position, or undefined when this is an ordinary
- * append (including the one-team -> two-team Gold-only case).
- */
-function positionForNewTeam(): number | undefined {
-	const ordered = TeamRegistry.getTeams();
-	const count = ordered.size();
-	// Up to four teams there is no existing Mud venue to preserve: the second
-	// real pitch being introduced becomes Mud and an ordinary append is right.
-	if (count < 5 || count % 2 === 0) {
-		return undefined;
-	}
-
-	const insertionPosition = count - 3;
-	const waitingMuckabout = ordered[count - 1];
-
-	// Make two slots immediately above Mud. The old bottom pair moves down
-	// into those slots and therefore stays on the physical Mud venue.
-	for (let i = count - 2; i >= count - 3; i--) {
-		ordered[i].position += 2;
-	}
-	waitingMuckabout.position = insertionPosition;
-	return insertionPosition + 1;
 }
 
 // ---- published team state (client-side UI migration, Phase 4) -------------
@@ -204,8 +177,12 @@ function publishTeamAttrs(team: LadderTeam) {
 		// The UNPREFIXED name — robloxTeam.Name carries the "rank · name" ladder
 		// prefix for in-play teams (updateLeaderboardNames).
 		robloxTeam.SetAttribute("CB_TeamName", team.name);
-		robloxTeam.SetAttribute("CB_Open", team.open);
-		robloxTeam.SetAttribute("CB_InPlay", team.inPlay);
+		robloxTeam.SetAttribute("CB_Open", team.openToRandoms);
+		robloxTeam.SetAttribute("CB_InPlay", team.lifecycle !== "Forming" && team.lifecycle !== "Disbanded");
+		robloxTeam.SetAttribute("CB_TeamOrigin", team.origin);
+		robloxTeam.SetAttribute("CB_TeamProtected", team.protection === "Protected");
+		robloxTeam.SetAttribute("CB_TeamLifecycle", team.lifecycle);
+		robloxTeam.SetAttribute("CB_TeamRevision", team.revision);
 		if (robloxTeam.GetAttribute("CB_Pending") === undefined) {
 			robloxTeam.SetAttribute("CB_Pending", false);
 		}
@@ -215,6 +192,10 @@ function publishTeamAttrs(team: LadderTeam) {
 			"CB_Members",
 			HttpService.JSONEncode(team.members.map((member) => member.UserId)),
 		);
+		for (const member of team.members) {
+			member.SetAttribute("CB_TeamOrigin", team.origin);
+			member.SetAttribute("CB_TeamProtected", team.protection === "Protected");
+		}
 	});
 }
 
@@ -229,13 +210,24 @@ function setPlayerTeam(player: Player, team: LadderTeam | undefined) {
 		}
 	});
 	player.SetAttribute("CB_TeamId", team ? team.id : undefined);
+	player.SetAttribute("CB_TeamOrigin", team ? team.origin : undefined);
+	player.SetAttribute("CB_TeamProtected", team ? team.protection === "Protected" : undefined);
 }
 
 // Disband listeners (footballMatch rebalances the abandoned pitch; menu code
 // clears lobby vote state). Fired AFTER the registry forgets the team.
 const disbandCallbacks: Array<(team: LadderTeam) => void> = [];
+const changedCallbacks: Array<(team: LadderTeam, reason: string) => void> = [];
+
+function changed(team: LadderTeam, reason: string) {
+	team.revision += 1;
+	publishTeamAttrs(team);
+	for (const callback of changedCallbacks) task.defer(() => callback(team, reason));
+}
 
 function disband(team: LadderTeam) {
+	team.lifecycle = "Disbanded";
+	team.revision += 1;
 	teams.delete(team.id);
 	pcall(() => team.robloxTeam.Destroy());
 	warn(`[TeamRegistry] disbanded ${team.name}`);
@@ -290,6 +282,10 @@ const TeamRegistry = {
 		disbandCallbacks.push(callback);
 	},
 
+	onTeamChanged(callback: (team: LadderTeam, reason: string) => void) {
+		changedCallbacks.push(callback);
+	},
+
 	/** True while the team is still registered (an invite may hold a stale
 	 * reference after the team disbanded). */
 	teamExists(team: LadderTeam): boolean {
@@ -297,21 +293,40 @@ const TeamRegistry = {
 	},
 
 	/** THE LADDER: in-play teams sorted by position. Lobby teams (still
-	 * forming, `inPlay === false`) have no ladder position, no pitch, and no
-	 * rank until markInPlay seats them — resolve those via getTeamById. */
+	 * forming have no ladder position, no pitch, and no rank until markQueued
+	 * seats them — resolve those via getTeamById. */
 	getTeams(): LadderTeam[] {
 		const list: LadderTeam[] = [];
 		for (const [, team] of teams) {
-			if (team.inPlay) {
+			if (team.position !== undefined && team.lifecycle !== "Forming" && team.lifecycle !== "Disbanded") {
 				list.push(team);
 			}
 		}
-		list.sort((a, b) => a.position < b.position);
+		list.sort((a, b) =>
+			a.position === b.position ? a.creationOrder < b.creationOrder : a.position! < b.position!,
+		);
 		return list;
 	},
 
 	getTeamById(id: string): LadderTeam | undefined {
 		return teams.get(id);
+	},
+
+	validateInvariants(): string[] {
+		const failures: string[] = [];
+		const seenMembers = new Set<Player>();
+		for (const [, team] of teams) {
+			if (team.members.size() > MAX_TEAM_MEMBERS) failures.push(`${team.id}:members=${team.members.size()}`);
+			if (team.origin === "Random" && team.protection === "Protected" && team.nameSource !== "Custom") {
+				failures.push(`${team.id}:protected-without-custom-name`);
+			}
+			for (const member of team.members) {
+				if (seenMembers.has(member)) failures.push(`${member.UserId}:duplicate-membership`);
+				seenMembers.add(member);
+				if (teamOfPlayer.get(member) !== team) failures.push(`${member.UserId}:membership-index-mismatch`);
+			}
+		}
+		return failures;
 	},
 
 	/**
@@ -320,19 +335,26 @@ const TeamRegistry = {
 	 * above Mud when applicable — the same rule new teams always used) and
 	 * flips inPlay, which permanently closes the team to invites.
 	 */
-	markInPlay(team: LadderTeam) {
-		if (team.inPlay || !teams.has(team.id)) {
+	markQueued(team: LadderTeam) {
+		if (team.lifecycle !== "Forming" || !teams.has(team.id)) {
 			return;
 		}
-		const insertedPosition = positionForNewTeam();
-		team.inPlay = true;
-		team.position = insertedPosition ?? nextPosition();
-		publishTeamAttrs(team);
+		// New identities always enter at the bottom. Physical pitch layout is a
+		// projection of the final reconciled ladder and must never reshuffle it.
+		team.position = nextPosition();
+		team.lifecycle = "Queued";
+		changed(team, "Queued");
 		TeamRegistry.updateLeaderboardNames();
 		warn(`[TeamRegistry] ${team.name} entered the ladder at table ${team.position + 1}`);
 	},
 
-	createTeam(creator: Player, open: boolean): LadderTeam {
+	/** Compatibility name for older callers while all spawn entry flows are
+	 * migrated to the explicit lifecycle API. */
+	markInPlay(team: LadderTeam) {
+		TeamRegistry.markQueued(team);
+	},
+
+	createTeam(creator: Player, openToRandoms: boolean, origin?: TeamOrigin): LadderTeam {
 		TeamRegistry.leaveTeam(creator);
 
 		const id = `T${nextTeamNumber}`;
@@ -354,38 +376,77 @@ const TeamRegistry = {
 			robloxTeam,
 			colorName,
 			members: [creator],
-			open,
-			// No ladder seat until the team enters play (markInPlay).
-			position: -1,
-			joinedMidRound: false,
-			inPlay: false,
+			origin: origin ?? (openToRandoms ? "Random" : "Friends"),
+			protection: (origin ?? (openToRandoms ? "Random" : "Friends")) === "Friends" ? "Protected" : "Recombinable",
+			nameSource: "Generated",
+			openToRandoms,
+			// No ladder seat until the team enters the queue.
+			position: undefined,
+			lifecycle: "Forming",
+			revision: 1,
+			creationOrder: nextTeamNumber - 1,
 		};
 		teams.set(id, team);
 		teamOfPlayer.set(creator, team);
 		setPlayerTeam(creator, team);
 		publishTeamAttrs(team);
-		warn(`[TeamRegistry] ${creator.Name} created ${name} (${open ? "open" : "locked"})`);
+		warn(`[TeamRegistry] ${creator.Name} created ${name} (${openToRandoms ? "open" : "locked"})`);
 		return team;
 	},
 
 	/** Open/locked toggle (AllowRandoms) — mutates AND republishes CB_Open. */
 	setTeamOpen(team: LadderTeam, open: boolean) {
-		team.open = open;
-		publishTeamAttrs(team);
+		team.openToRandoms = open;
+		changed(team, "OpenChanged");
 	},
 
 	/** Add to a specific team (invite acceptance / referred joins). */
-	addToTeam(player: Player, team: LadderTeam): boolean {
-		if (!teams.has(team.id) || team.members.size() >= MAX_MEMBERS) {
+	addToTeam(player: Player, team: LadderTeam, voluntaryActiveWithdrawal = false): boolean {
+		if (!teams.has(team.id) || team.members.size() >= MAX_TEAM_MEMBERS) {
 			return false;
 		}
+		const current = teamOfPlayer.get(player);
+		if (current === team) return true;
+		if (
+			current !== undefined &&
+			(current.lifecycle === "Active" || current.lifecycle === "Reserved") &&
+			!voluntaryActiveWithdrawal
+		) return false;
 		TeamRegistry.leaveTeam(player);
 		team.members.push(player);
 		teamOfPlayer.set(player, team);
 		setPlayerTeam(player, team);
-		publishTeamAttrs(team);
-		warn(`[TeamRegistry] ${player.Name} joined ${team.name} (${team.members.size()}/${MAX_MEMBERS})`);
+		changed(team, "MemberAdded");
+		warn(`[TeamRegistry] ${player.Name} joined ${team.name} (${team.members.size()}/${MAX_TEAM_MEMBERS})`);
 		return true;
+	},
+
+	/** Coordinator-only automatic transfer. The donor must be idle,
+	 * recombinable and random; active/protected members can never be pulled. */
+	transferIdleRandomPlayer(player: Player, target: LadderTeam): LadderTeam | undefined {
+		const source = teamOfPlayer.get(player);
+		if (
+			!source ||
+			source === target ||
+			source.origin !== "Random" ||
+			source.protection !== "Recombinable" ||
+			(source.lifecycle !== "Queued" && source.lifecycle !== "Intermission" && source.lifecycle !== "Muckabout") ||
+			!target.openToRandoms ||
+			target.members.size() >= MAX_TEAM_MEMBERS ||
+			!teams.has(target.id)
+		) {
+			return undefined;
+		}
+		const sourceIndex = source.members.indexOf(player);
+		if (sourceIndex < 0) return undefined;
+		source.members.remove(sourceIndex);
+		target.members.push(player);
+		teamOfPlayer.set(player, target);
+		setPlayerTeam(player, target);
+		changed(target, "LiveVacancyFilled");
+		if (source.members.size() === 0) disband(source);
+		else changed(source, "IdleMemberTransferred");
+		return source;
 	},
 
 	/**
@@ -403,20 +464,28 @@ const TeamRegistry = {
 		for (const [, team] of teams) {
 			// Never drop a random into a still-forming lobby team: landing PLAY
 			// promises immediate play, and a lobby must only grow via invites.
-			if (team.open && team.inPlay && team.members.size() < MAX_MEMBERS) {
+			if (
+				team.openToRandoms &&
+				team.lifecycle !== "Forming" &&
+				team.lifecycle !== "Disbanded" &&
+				team.members.size() < MAX_TEAM_MEMBERS
+			) {
 				open.push(team);
 			}
 		}
 
 		if (teamCount() % 2 === 1) {
 			// Odd count: a new team evens it and retires the muckabout pitch.
-			return TeamRegistry.createTeam(player, true);
+			return TeamRegistry.createTeam(player, true, "Random");
 		}
 
 		const pickLowest = (candidates: LadderTeam[]) => {
-			candidates.sort((a, b) =>
-				a.members.size() === b.members.size() ? a.position > b.position : a.members.size() < b.members.size(),
-			);
+			candidates.sort((a, b) => {
+				if (a.members.size() !== b.members.size()) return a.members.size() < b.members.size();
+				const ap = a.position ?? math.huge;
+				const bp = b.position ?? math.huge;
+				return ap === bp ? a.creationOrder < b.creationOrder : ap > bp;
+			});
 			return candidates[0];
 		};
 
@@ -431,7 +500,7 @@ const TeamRegistry = {
 			TeamRegistry.addToTeam(player, target);
 			return target;
 		}
-		return TeamRegistry.createTeam(player, true);
+		return TeamRegistry.createTeam(player, true, "Random");
 	},
 
 	leaveTeam(player: Player) {
@@ -448,7 +517,7 @@ const TeamRegistry = {
 		if (team.members.size() === 0) {
 			disband(team);
 		} else {
-			publishTeamAttrs(team);
+			changed(team, "MemberRemoved");
 		}
 	},
 
@@ -478,8 +547,11 @@ const TeamRegistry = {
 			return "moderated";
 		}
 		team.name = filtered;
+		team.nameSource = "Custom";
+		team.protection = "Protected";
 		team.robloxTeam.Name = filtered;
-		publishTeamAttrs(team);
+		changed(team, "ProtectedByRename");
+		TeamRegistry.updateLeaderboardNames();
 		warn(`[TeamRegistry] ${requester.Name} renamed team to ${filtered}`);
 		return "ok";
 	},
@@ -514,9 +586,165 @@ const TeamRegistry = {
 	updateLeaderboardNames() {
 		for (const [, team] of teams) {
 			pcall(() => {
-				team.robloxTeam.Name = team.inPlay ? `${team.position + 1} · ${team.name}` : team.name;
+				team.robloxTeam.Name =
+					team.position !== undefined && team.lifecycle !== "Forming" && team.lifecycle !== "Disbanded"
+						? `${team.position + 1} · ${team.name}`
+						: team.name;
 			});
 		}
+	},
+
+	setLifecycle(team: LadderTeam, lifecycle: TeamLifecycle) {
+		if (!teams.has(team.id) || team.lifecycle === lifecycle) return;
+		team.lifecycle = lifecycle;
+		changed(team, "LifecycleChanged");
+	},
+
+	setPosition(team: LadderTeam, position: number | undefined) {
+		if (!teams.has(team.id) || team.position === position) return;
+		team.position = position;
+		changed(team, "PositionChanged");
+		TeamRegistry.updateLeaderboardNames();
+	},
+
+	/** Final post-shop reconciliation for idle generated teams. Protected and
+	 * active identities are never touched. The chosen output count maximizes
+	 * complete pairings, then keeps as few team identities as the 3-player cap
+	 * permits. */
+	reconcileIdleRandomTeams() {
+		const isIdle = (team: LadderTeam) =>
+			team.lifecycle === "Queued" || team.lifecycle === "Intermission" || team.lifecycle === "Muckabout";
+		const sources: LadderTeam[] = [];
+		let fixedEligibleCount = 0;
+		for (const [, team] of teams) {
+			if (!isIdle(team)) continue;
+			if (team.origin === "Random" && team.protection === "Recombinable") sources.push(team);
+			else fixedEligibleCount += 1;
+		}
+		if (sources.size() === 0) return;
+
+		const sourceOf = new Map<Player, LadderTeam>();
+		const randomPlayers: Player[] = [];
+		for (const source of sources) {
+			for (const player of source.members) {
+				sourceOf.set(player, source);
+				randomPlayers.push(player);
+			}
+		}
+		randomPlayers.sort((a, b) => {
+			const ao = playerJoinOrder.get(a) ?? math.huge;
+			const bo = playerJoinOrder.get(b) ?? math.huge;
+			return ao === bo ? a.UserId < b.UserId : ao < bo;
+		});
+		if (randomPlayers.size() === 0) return;
+
+		let outputCount = math.ceil(randomPlayers.size() / MAX_TEAM_MEMBERS);
+		if ((fixedEligibleCount + outputCount) % 2 === 1 && outputCount < randomPlayers.size()) outputCount += 1;
+
+		// If no identity-count change is required, retain whole teams exactly;
+		// this keeps full teams of three and minimizes membership churn.
+		if (outputCount === sources.size()) {
+			for (const source of sources) {
+				if (source.lifecycle !== "Queued") {
+					source.lifecycle = "Queued";
+					changed(source, "IdleReconciled");
+				}
+			}
+			return;
+		}
+
+		// Merges retain lower/worse source identities. Splits reuse every source
+		// once before creating generated shells at the bottom.
+		sources.sort((a, b) => {
+			const pa = a.position ?? math.huge;
+			const pb = b.position ?? math.huge;
+			return pa === pb ? a.creationOrder < b.creationOrder : pa > pb;
+		});
+		const outputs: LadderTeam[] = [];
+		for (let i = 0; i < math.min(outputCount, sources.size()); i++) outputs.push(sources[i]);
+		while (outputs.size() < outputCount) {
+			const id = `T${nextTeamNumber}`;
+			nextTeamNumber += 1;
+			const name = pickName();
+			const colorName = pickColor();
+			const robloxTeam = new Instance("Team");
+			robloxTeam.Name = name;
+			robloxTeam.AutoAssignable = false;
+			pcall(() => (robloxTeam.TeamColor = new BrickColor(colorName as never)));
+			robloxTeam.Parent = TeamsService;
+			const shell: LadderTeam = {
+				id,
+				name,
+				robloxTeam,
+				colorName,
+				members: [],
+				origin: "Random",
+				protection: "Recombinable",
+				nameSource: "Generated",
+				openToRandoms: true,
+				position: nextPosition(),
+				lifecycle: "Queued",
+				revision: 1,
+				creationOrder: nextTeamNumber - 1,
+			};
+			teams.set(shell.id, shell);
+			outputs.push(shell);
+		}
+
+		const smallSize = math.floor(randomPlayers.size() / outputCount);
+		const largeCount = randomPlayers.size() % outputCount;
+		const targetSizes: number[] = [];
+		for (let i = 0; i < outputCount; i++) targetSizes.push(smallSize + (i >= outputCount - largeCount ? 1 : 0));
+
+		const assigned = new Set<Player>();
+		const planned = new Map<LadderTeam, Player[]>();
+		for (let i = 0; i < outputs.size(); i++) {
+			const keep: Player[] = [];
+			for (const player of outputs[i].members) {
+				if (keep.size() >= targetSizes[i]) break;
+				keep.push(player);
+				assigned.add(player);
+			}
+			planned.set(outputs[i], keep);
+		}
+		const overflow = randomPlayers.filter((player) => !assigned.has(player));
+		let overflowIndex = 0;
+		for (let i = 0; i < outputs.size(); i++) {
+			const members = planned.get(outputs[i])!;
+			while (members.size() < targetSizes[i]) members.push(overflow[overflowIndex++]);
+		}
+
+		for (const output of outputs) {
+			const members = planned.get(output)!;
+			let inheritedPosition = output.position ?? -1;
+			for (const member of members) inheritedPosition = math.max(inheritedPosition, sourceOf.get(member)?.position ?? -1);
+			output.members = members;
+			output.position = inheritedPosition >= 0 ? inheritedPosition : nextPosition();
+			output.lifecycle = "Queued";
+			for (const member of members) {
+				teamOfPlayer.set(member, output);
+				setPlayerTeam(member, output);
+			}
+			changed(output, "RandomRepacked");
+		}
+		const outputIds = new Set(outputs.map((output) => output.id));
+		for (const source of sources) {
+			if (!outputIds.has(source.id)) {
+				source.members = [];
+				disband(source);
+			}
+		}
+
+		const ordered = TeamRegistry.getTeams();
+		for (let i = 0; i < ordered.size(); i++) ordered[i].position = i;
+		TeamRegistry.updateLeaderboardNames();
+		warn(`[TeamRegistry] reconciled ${randomPlayers.size()} idle random player(s) into ${outputs.size()} team(s)`);
+	},
+
+	onPlayerRemoved(player: Player) {
+		TeamRegistry.leaveTeam(player);
+		renameCredits.delete(player);
+		playerJoinOrder.delete(player);
 	},
 
 	/** Goal credit → leaderstats column (called by the match layer). */
@@ -527,18 +755,21 @@ const TeamRegistry = {
 			goals.Value += 1;
 		}
 	},
+
+	removeGoals(player: Player, amount: number) {
+		const stats = player.FindFirstChild("leaderstats");
+		const goals = stats && stats.FindFirstChild("Goals");
+		if (goals && goals.IsA("IntValue")) goals.Value = math.max(0, goals.Value - amount);
+	},
 };
 
 Players.PlayerAdded.Connect((player) => {
+	playerJoinOrder.set(player, nextPlayerJoinOrder++);
 	ensureLeaderstats(player);
 });
 for (const player of Players.GetPlayers()) {
+	if (!playerJoinOrder.has(player)) playerJoinOrder.set(player, nextPlayerJoinOrder++);
 	ensureLeaderstats(player);
 }
-
-Players.PlayerRemoving.Connect((player) => {
-	TeamRegistry.leaveTeam(player);
-	renameCredits.delete(player);
-});
 
 export default TeamRegistry;

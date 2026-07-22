@@ -147,6 +147,11 @@ function currentHud(): MatchHudShape | undefined {
 // (CB_PitchId attribute names it under Workspace.Map); the shared clock stays
 // global on ReplicatedStorage.
 function currentPitch(): Instance | undefined {
+	// Competitive presentation is valid only for the current canonical match.
+	// A physical muckabout pitch deliberately has no score, sides, face-off or
+	// victory camera even though CB_PitchId still identifies it for simulation.
+	if (LocalPlayer.GetAttribute("CB_ArenaKind") !== "Competitive") return undefined;
+	if (!typeIs(LocalPlayer.GetAttribute("CB_MatchId"), "string")) return undefined;
 	const pitchId = LocalPlayer.GetAttribute("CB_PitchId");
 	if (!typeIs(pitchId, "string")) {
 		return undefined;
@@ -779,7 +784,9 @@ function refreshHudEnabled() {
 	if (!hud) {
 		return;
 	}
-	hud.Enabled = typeIs(LocalPlayer.GetAttribute("CB_PitchId"), "string");
+	hud.Enabled =
+		typeIs(LocalPlayer.GetAttribute("CB_PitchId"), "string") &&
+		LocalPlayer.GetAttribute("CB_ArenaKind") === "Competitive";
 }
 
 // The scoreboard bar has no place over the face-off presentation — the
@@ -810,7 +817,9 @@ function refreshAll() {
 
 ReplicatedStorage.GetAttributeChangedSignal(ATTR_TIME).Connect(refreshClock);
 ReplicatedStorage.GetAttributeChangedSignal(ATTR_ROUND).Connect(refreshRound);
-ReplicatedStorage.GetAttributeChangedSignal(ATTR_GAME_END_CUE).Connect(() => playSound(gameEndSound));
+ReplicatedStorage.GetAttributeChangedSignal(ATTR_GAME_END_CUE).Connect(() => {
+	if (currentPitch()) playSound(gameEndSound);
+});
 
 // Per-pitch state signals: rebind whenever our pitch assignment changes.
 let pitchConnections: RBXScriptConnection[] = [];
@@ -921,6 +930,8 @@ function bindPitch() {
 	refreshAll();
 }
 LocalPlayer.GetAttributeChangedSignal("CB_PitchId").Connect(bindPitch);
+LocalPlayer.GetAttributeChangedSignal("CB_ArenaKind").Connect(bindPitch);
+LocalPlayer.GetAttributeChangedSignal("CB_MatchId").Connect(bindPitch);
 bindPitch();
 
 function watchSide(player: Player) {

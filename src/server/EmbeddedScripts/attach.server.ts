@@ -22,7 +22,6 @@ const Workspace = game.GetService("Workspace");
 // ---- 1) "Second Level of Water." ----------------------------------------
 function attachSecondLevelOfWater(part: BasePart) {
 	part.Touched.Connect((touch) => {
-		print(touch);
 		if (touch.IsA("VehicleSeat")) {
 			touch.Parent!.Parent!.Destroy();
 		}

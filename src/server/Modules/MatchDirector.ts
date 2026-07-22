@@ -127,13 +127,13 @@ const MatchDirector = {
 		const teams = TeamRegistry.getTeams(); // sorted by previous position
 		const fromPositions = new Map<string, number>();
 		for (const team of teams) {
-			fromPositions.set(team.id, team.position);
+			fromPositions.set(team.id, team.position!);
 		}
 		teams.sort((a, b) => {
 			const keyA = keys.get(a.id) ?? math.huge;
 			const keyB = keys.get(b.id) ?? math.huge;
 			if (keyA === keyB) {
-				return a.position < b.position; // stable on previous position
+				return a.position! < b.position!; // stable on previous position
 			}
 			return keyA < keyB;
 		});
@@ -154,7 +154,7 @@ const MatchDirector = {
 		}
 		TeamRegistry.updateLeaderboardNames();
 		for (const team of teams) {
-			warn(`[Director] table ${team.position + 1}: ${team.name}`);
+			warn(`[Director] table ${team.position! + 1}: ${team.name}`);
 		}
 
 		// Movement payload for the LadderMap screen (Phase 4b).
@@ -166,8 +166,8 @@ const MatchDirector = {
 				teamId: team.id,
 				name: team.name,
 				color: team.robloxTeam.TeamColor.Color,
-				fromPosition: fromPositions.get(team.id) ?? team.position,
-				toPosition: team.position,
+				fromPosition: fromPositions.get(team.id) ?? team.position!,
+				toPosition: team.position!,
 				outcome: outcomeById.get(team.id) ?? "idle",
 				nextMuckabout: i === muckaboutIndex,
 			});
@@ -217,8 +217,8 @@ const MatchDirector = {
 
 	/** 60 s (or `seconds`) in the menu/shop,
 	 * countdown on every screen, then everyone with a team auto-spawns into
-	 * the (already rebuilt) round. */
-	startShopPhase(seconds?: number) {
+	 * the round prepared from the final post-shop population. */
+	startShopPhase(seconds?: number, beforeSpawn?: () => void) {
 		const duration = seconds ?? SHOP_TIME;
 		const gen = ++shopGen;
 		Globals.shopPhaseActive = true;
@@ -244,6 +244,13 @@ const MatchDirector = {
 			}
 			Globals.shopPhaseActive = false;
 			UiState.setReplicatedAttr("CB_ShopPhase", false);
+			if (beforeSpawn !== undefined) {
+				const [prepareOk, prepareError] = pcall(beforeSpawn);
+				if (!prepareOk) {
+					warn(`[Director] post-shop round preparation failed: ${prepareError}`);
+					return;
+				}
+			}
 			const toSpawn: Player[] = [];
 			for (const player of Players.GetPlayers()) {
 				if (TeamRegistry.getTeamOf(player) && !hasMatchVehicle(player) && !isInMenuFlow(player)) {

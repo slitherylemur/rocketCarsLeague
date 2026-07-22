@@ -808,24 +808,9 @@ RunService.BindToRenderStep(RENDER_BIND_NAME, Enum.RenderPriority.Camera.Value -
 	}
 });
 
-// Debug overlay (dev builds): draws the sim proxy box + offset readout.
-if (RENDER_DEBUG_OVERLAY) {
-	task.spawn(() => {
-		while (task.wait(0.5)) {
-			for (const [model, rig] of rigs) {
-				if (rig.isLocal) {
-					const mags = offsetMagnitudes(rig.offset);
-					print(
-						`[CarRig] ${model.Name} offset ${string.format("%.2f", mags.pos)}st ${string.format(
-							"%.1f",
-							math.deg(mags.rot),
-						)}° sev ${rig.severity} corr ${telemetry.count} snaps ${telemetry.snapCount}`,
-					);
-				}
-			}
-		}
-	});
-}
+// RENDER_DEBUG_OVERLAY still creates the two inspectable proxy boxes. Its old
+// 2-lines/second console readout duplicated netHealth and overwhelmed latency
+// captures; the compact [V2Net] interval line now carries presentation error.
 
 // Repeatable client-local acceptance snapshot; never enters gameplay state.
 LocalPlayer.Chatted.Connect((message) => {

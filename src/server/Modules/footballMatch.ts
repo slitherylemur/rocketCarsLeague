@@ -23,6 +23,9 @@ import PitchManager, { VARIANT_FREEPLAY, VARIANT_GOLD } from "./PitchManager";
 import spawnVehicle from "./spawnVehicle";
 import TeamRegistry from "./TeamRegistry";
 import type { LadderTeam } from "./TeamRegistry";
+import LeagueCoordinator from "./LeagueCoordinator";
+import type { TransitionToken } from "./LeagueCoordinator";
+import MuckaboutRuntime from "./MuckaboutRuntime";
 import { Globals } from "../Globals";
 import UiState from "../ui/UiState";
 import { getUiIntentEvent } from "shared/UiIntents";
@@ -43,7 +46,7 @@ const HttpService = game.GetService("HttpService");
 export type TeamName = "Red" | "Blue";
 const TEAM_NAMES: TeamName[] = ["Blue", "Red"];
 
-const MATCH_TIME = 3 * 60 + 30;
+const MATCH_TIME = 30; // temporary short round for playtesting
 const KICKOFF_COUNTDOWN = 3;
 const FACE_OFF_TIME = 7; // was 10 — cut by a third per playtest
 const RESPAWN_DELAY = 1.5;
@@ -53,9 +56,6 @@ const GOAL_BLAST_SPEED = 1000;
 const GOAL_BLAST_LIFT = 5500 / 9;
 const END_ANNOUNCE_TIME = 2;
 const FREE_PLAY_INTRO_TIME = 1.8;
-/** If no real match has reached Play this long after beginRound, start the
- * shared clock anyway (see the watchdog in beginRound). */
-const CLOCK_WATCHDOG_TIME = 60;
 
 const BLUE_HEX = "#4FA8FF";
 const RED_HEX = "#FF5050";
@@ -92,13 +92,13 @@ export const FootballAttr = {
 	FlipSide: "FB_FlipSide",
 } as const;
 
-// "FreePlay" (design §muckabout): ≥1 rostered player but no opponent yet —
-// everyone on the pitch drives freely, goals count on the pitch scoreboard
-// for fun, and the shared clock does NOT run off it.
+// "FreePlay" is exclusive to the neutral muckabout runtime —
+// everyone on the pitch drives freely, goals only reset the ball, and the
+// shared clock does NOT run off it.
 type Phase = "Idle" | "Waiting" | "FreePlay" | "Kickoff" | "FaceOff" | "Play" | "Goal" | "Ended";
 
 interface RosterEntry {
-	team: TeamName; // pitch SIDE (D1), not the ladder team
+	team: TeamName | "Neutral"; // Neutral exists only on muckabout
 	slot: number;
 }
 
@@ -374,14 +374,22 @@ class PitchMatch {
 	readonly sideByTeamId = new Map<string, TeamName>();
 	readonly goalParts = new Map<TeamName, BasePart>();
 	flowGen = 0;
+	/** Only fixtures that reached a real two-sided kickoff may produce a
+	 * ladder result or competitive reward. */
+	becamePlayable = false;
 	private shownFreePlayIntro = false;
 	private faceOffStage?: Instance;
 	private faceOffStageWarned = false;
 	private faceOffDone = false;
+	private readonly creditedGoals = new Map<Player, number>();
+	private readonly muckaboutRuntime?: MuckaboutRuntime;
 
 	constructor(pitch: Pitch) {
 		this.pitch = pitch;
 		this.muckabout = pitch.muckabout;
+		if (this.isFreePlay()) {
+			this.muckaboutRuntime = new MuckaboutRuntime(pitch);
+		}
 		for (const team of TEAM_NAMES) {
 			const part = findGoalPart(pitch.folder, team.lower());
 			if (part) {
@@ -394,7 +402,7 @@ class PitchMatch {
 				warn(`[Football] ${pitch.folder.Name} has no ${team} goal part`);
 			}
 		}
-		this.publishScores();
+		if (!this.isFreePlay()) this.publishScores();
 		this.setPhase("Waiting");
 		this.announce(this.isFreePlay() ? "FREE PLAY — waiting for a car" : "Waiting for players...");
 		// Stale victory overlay state from the previous round on this pitch.
@@ -403,7 +411,7 @@ class PitchMatch {
 		this.setAttr(FootballAttr.FlipSide, "");
 	}
 
-	setAttr(name: string, value: string | number) {
+	setAttr(name: string, value: string | number | undefined) {
 		this.pitch.folder.SetAttribute(name, value);
 	}
 
@@ -440,7 +448,7 @@ class PitchMatch {
 		return count;
 	}
 
-	lowestFreeSlot(side: TeamName): number {
+	lowestFreeSlot(side: TeamName | "Neutral"): number {
 		const used = new Set<number>();
 		for (const [, entry] of this.roster) {
 			if (entry.team === side) {
@@ -452,6 +460,39 @@ class PitchMatch {
 			slot += 1;
 		}
 		return slot;
+	}
+
+	teamIds(): string[] {
+		const waiting = this.muckaboutRuntime?.getTeamId();
+		if (waiting !== undefined) return [waiting];
+		const out: string[] = [];
+		for (const [teamId] of this.sideByTeamId) out.push(teamId);
+		return out;
+	}
+
+	hasTeam(teamId: string): boolean {
+		return this.muckaboutRuntime?.getTeamId() === teamId || this.sideByTeamId.has(teamId);
+	}
+
+	registerTeam(teamId: string): TeamName | undefined {
+		if (this.isFreePlay()) {
+			if (!this.muckaboutRuntime?.assignTeam(teamId)) {
+				warn(`[Football] invariant rejection: ${this.pitch.folder.Name} already has a muckabout team`);
+				return undefined;
+			}
+			return undefined;
+		}
+		return this.sideForLadderTeam(teamId);
+	}
+
+	removeTeam(teamId: string) {
+		this.sideByTeamId.delete(teamId);
+		this.muckaboutRuntime?.clearTeam(teamId);
+	}
+
+	removeRosterPlayer(player: Player) {
+		this.roster.delete(player);
+		this.muckaboutRuntime?.removePlayer(player);
 	}
 
 	sideForLadderTeam(teamId: string): TeamName {
@@ -474,8 +515,7 @@ class PitchMatch {
 		} else if (!redTaken) {
 			side = "Red";
 		} else {
-			side = this.rosterCount("Blue") <= this.rosterCount("Red") ? "Blue" : "Red";
-			warn(`[Football] ${this.pitch.folder.Name}: >2 ladder teams — overflow to ${side}`);
+			error(`[Football] invariant rejection: ${this.pitch.folder.Name} already has two logical teams`);
 		}
 		this.sideByTeamId.set(teamId, side);
 		return side;
@@ -501,36 +541,33 @@ class PitchMatch {
 			return existing;
 		}
 		const ladderTeam = TeamRegistry.getTeamOf(player);
+		if (this.isFreePlay()) {
+			if (!ladderTeam || !this.muckaboutRuntime?.assignTeam(ladderTeam.id)) {
+				error(`[Football] refused a second logical team on ${this.pitch.folder.Name}`);
+			}
+			const slot = this.muckaboutRuntime.addPlayer(player);
+			const entry: RosterEntry = { team: "Neutral", slot };
+			this.roster.set(player, entry);
+			player.SetAttribute("CB_Side", undefined);
+			player.SetAttribute("CB_ArenaKind", "Muckabout");
+			player.SetAttribute("CB_MatchId", undefined);
+			player.SetAttribute("CB_PitchId", this.pitch.folder.Name);
+			return entry;
+		}
 		const side = ladderTeam ? this.sideForLadderTeam(ladderTeam.id) : this.rosterCount("Blue") <= this.rosterCount("Red") ? "Blue" : "Red";
 		const entry: RosterEntry = { team: side, slot: this.lowestFreeSlot(side) };
 		this.roster.set(player, entry);
 		player.SetAttribute("CB_Side", side);
+		player.SetAttribute("CB_ArenaKind", "Competitive");
+		player.SetAttribute("CB_MatchId", ladderTeam ? LeagueCoordinator.getAssignment(ladderTeam.id)?.matchId : undefined);
 		player.SetAttribute("CB_PitchId", this.pitch.folder.Name);
 		return entry;
 	}
 
-	/** Roster a VISITING body for free play — no sideByTeamId registration, so
-	 * results/pairing logic never sees the team here. Used when a player whose
-	 * team is booked on a real pitch spawns before any opponent is live: the
-	 * body waits on the muckabout host and is recalled to the booking later
-	 * (getSpawnCFrame / collectBookedStrays). */
-	assignSideFreePlay(player: Player): RosterEntry {
-		const existing = this.roster.get(player);
-		if (existing) {
-			return existing;
-		}
-		const side: TeamName = this.rosterCount("Blue") <= this.rosterCount("Red") ? "Blue" : "Red";
-		const entry: RosterEntry = { team: side, slot: this.lowestFreeSlot(side) };
-		this.roster.set(player, entry);
-		player.SetAttribute("CB_Side", side);
-		player.SetAttribute("CB_PitchId", this.pitch.folder.Name);
-		return entry;
-	}
-
-	spawnParts(side: TeamName): BasePart[] {
+	spawnParts(side: TeamName | "Neutral"): BasePart[] {
 		const spawnPoints = this.pitch.folder.FindFirstChild("SpawnPoints");
 		let source: Instance | undefined = spawnPoints;
-		if (spawnPoints) {
+		if (spawnPoints && side !== "Neutral") {
 			for (const child of spawnPoints.GetChildren()) {
 				if (child.Name.lower() === side.lower()) {
 					source = child;
@@ -693,6 +730,9 @@ class PitchMatch {
 		if (!entry || !model || model.Parent === undefined) {
 			return false;
 		}
+		if (entry.team === "Neutral") {
+			return false;
+		}
 		const stage = this.faceOffStageModel();
 		if (!stage) {
 			return false;
@@ -845,6 +885,8 @@ class PitchMatch {
 			}
 			this.announce("GO!");
 			this.setPhase("Play");
+			this.becamePlayable = true;
+			LeagueCoordinator.markMatchActive(this.teamIds());
 			ballSpawner.ReleaseBall(this.pitch.folder);
 			for (const [player] of this.roster) {
 				unlockPlayer(player);
@@ -903,12 +945,20 @@ class PitchMatch {
 
 	/** Free-play goals are for fun only: the real match starts 0-0. */
 	resetScores() {
+		this.becamePlayable = false;
+		// A reset creates a fresh fixture. Any goals credited to the abandoned
+		// fixture must disappear from both rewards and visible session stats.
+		for (const [player, goals] of this.creditedGoals) {
+			roundGoals.set(player, math.max(0, (roundGoals.get(player) ?? 0) - goals));
+			TeamRegistry.removeGoals(player, goals);
+		}
+		this.creditedGoals.clear();
 		this.scores.Blue = 0;
 		this.scores.Red = 0;
 		// Fresh pairing → fresh face-off (post-goal kickoffs never reset scores,
 		// so they skip it).
 		this.faceOffDone = false;
-		this.publishScores();
+		if (!this.isFreePlay()) this.publishScores();
 	}
 
 	creditScorer(ball: BasePart, scoringTeam: TeamName): { player: Player; ownGoal: boolean } | undefined {
@@ -931,6 +981,7 @@ class PitchMatch {
 				if (!this.isFreePlay() && this.phase === "Play") {
 					TeamRegistry.addGoal(player);
 					roundGoals.set(player, (roundGoals.get(player) ?? 0) + 1);
+					this.creditedGoals.set(player, (this.creditedGoals.get(player) ?? 0) + 1);
 				}
 				return { player, ownGoal: false };
 			}
@@ -939,6 +990,12 @@ class PitchMatch {
 	}
 
 	onGoal(defendingTeam: TeamName, ball: BasePart) {
+		if (this.isFreePlay()) {
+			// Muckabout is neutral: no sides, score, result, stats or rewards.
+			ballSpawner.RespawnBall(this.pitch.folder);
+			ballSpawner.ReleaseBall(this.pitch.folder);
+			return;
+		}
 		// Free-play goals show on the pitch scoreboard for fun but earn no
 		// ladder stats/money (and the scores reset when the real match starts).
 		const scoringTeam: TeamName = defendingTeam === "Blue" ? "Red" : "Blue";
@@ -982,7 +1039,8 @@ class PitchMatch {
 			} else if (this.teamsReady()) {
 				this.startKickoff();
 			} else if (this.roster.size() > 0) {
-				this.enterFreePlay(true);
+				if (this.isFreePlay()) this.enterFreePlay(true);
+				else this.enterWaiting();
 			} else {
 				this.enterWaiting();
 			}
@@ -1085,19 +1143,18 @@ function endRoundForAll() {
 // through the same multiplier pipeline as kill/damage money.
 function awardRoundMoney() {
 	for (const match of matches) {
+		// Neutral waiting and fixtures that never reached a valid kickoff are
+		// not competitive participation and never award money.
+		if (match.isFreePlay() || !match.becamePlayable || match.sideByTeamId.size() !== 2) continue;
 		const diff = match.scores.Blue - match.scores.Red;
 		for (const [player, entry] of match.roster) {
 			let amount = ROUND_MONEY_PARTICIPATION;
-			// Result/goal bonuses only for real 2-team matches — free-play
-			// hosts (muckabout / FreePlayPitch) pay participation only.
-			if (!match.isFreePlay() && match.sideByTeamId.size() >= 2) {
-				if (diff === 0) {
-					amount += ROUND_MONEY_DRAW;
-				} else if ((diff > 0) === (entry.team === "Blue")) {
-					amount += ROUND_MONEY_WIN;
-				}
-				amount += (roundGoals.get(player) ?? 0) * ROUND_MONEY_GOAL;
+			if (diff === 0) {
+				amount += ROUND_MONEY_DRAW;
+			} else if ((diff > 0) === (entry.team === "Blue")) {
+				amount += ROUND_MONEY_WIN;
 			}
+			amount += (roundGoals.get(player) ?? 0) * ROUND_MONEY_GOAL;
 			const [ok, calcOrErr] = pcall(() => {
 				const calculated = Globals.calculateMultMoney(player, amount);
 				DataStore2("money", player).Increment(calculated, 0);
@@ -1156,16 +1213,15 @@ function matchOf(player: Player): PitchMatch | undefined {
 		return undefined;
 	}
 	const existing = matchByTeamId.get(team.id);
-	if (existing) {
-		return existing;
+	const assignment = LeagueCoordinator.getAssignment(team.id);
+	if (!existing || !assignment || existing.pitch.folder.Name !== assignment.arenaId || !existing.hasTeam(team.id)) {
+		return undefined;
 	}
-	return assignTeamToPitch(team);
+	return existing;
 }
 
-/** Pure roster lookup — unlike matchOf this can NEVER assign the player's
- * (possibly brand-new) ladder team to a pitch as a side effect. Death/leave
- * paths must use this: matchOf there caused spurious pitch creation when the
- * player switched teams between death and respawn. */
+/** Pure physical roster lookup. Both lookup paths are side-effect free;
+ * assignment is an explicit coordinator event before spawn reservation. */
 function matchWithPlayer(player: Player): PitchMatch | undefined {
 	for (const match of matches) {
 		if (match.roster.has(player)) {
@@ -1202,44 +1258,21 @@ function enterCurrentPhase(match: PitchMatch, player: Player) {
 	// or the pitch (re-)enters free play with everyone unlocked.
 	if (match.teamsReady()) {
 		warn(`[Football] opponent arrived on ${match.pitch.folder.Name} — kickoff`);
-		match.resetScores();
+		// A partial roster interruption resumes the same fixture and score. Only
+		// a never-started/replacement fixture is initialized to 0-0 here.
+		if (!match.becamePlayable) match.resetScores();
 		match.startKickoff(match.phase === "FreePlay" ? "OPPONENT ARRIVED!" : undefined);
 	} else {
-		match.enterFreePlay(false);
+		if (isFreePlayHost(match)) match.enterFreePlay(false);
+		else match.enterWaiting();
 		// Re-place too: a spawn that straddled the round rebuild computed its
 		// CFrame against the OLD pitch line (getSpawnCFrame runs seconds
 		// before SpawnVehicle finishes) — without this the player free-plays
 		// on the wrong (previous round's) pitch. Normal spawns are already on
 		// this exact CFrame, so this is a no-op for them.
 		match.placeVehicleFor(player);
-		if (isFreePlayHost(match)) {
-			// This spawn may have made a free-play-hosted team live while
-			// another live team waits: promote the pair onto a real pitch.
-			promoteLiveFreePlayTeams();
-			// Rerouted body whose booked pairing went live in the same
-			// spawn burst (both getSpawnCFrames saw "no live opponent"):
-			// recall everyone onto the booking now.
-			const team = TeamRegistry.getTeamOf(player);
-			const booked = team ? matchByTeamId.get(team.id) : undefined;
-			if (booked !== undefined && booked !== match && !isFreePlayHost(booked) && booked.phase !== "Ended") {
-				let opponentLive = false;
-				for (const [teamId] of booked.sideByTeamId) {
-					if (teamId !== team!.id && teamIsLive(teamId)) {
-						opponentLive = true;
-					}
-				}
-				if (opponentLive) {
-					const strays = collectBookedStrays(booked);
-					if (strays.size() > 0) {
-						moveTeamBehindCover(booked, strays);
-					}
-				}
-			}
-		} else {
-			// Alone on a real pitch: a live team waiting on a free-play
-			// host is our opponent — pull them over.
-			pairWaitingFreePlayTeam(match);
-		}
+		if (isFreePlayHost(match))
+			task.defer(() => LeagueCoordinator.requestReconcile("LiveVacancy", reconcileLiveVacancies));
 	}
 }
 
@@ -1274,7 +1307,7 @@ function recoverStraddledSpawn(player: Player) {
 				return; // car was cleaned up (stop()) — the auto-spawn path owns them
 			}
 			const team = TeamRegistry.getTeamOf(player);
-			if (!team || !team.inPlay) {
+			if (!team || team.lifecycle === "Forming" || team.lifecycle === "Disbanded") {
 				return; // pulled into a lobby (or teamless) mid-recovery — that flow owns them
 			}
 			const match = matchOf(player);
@@ -1293,82 +1326,78 @@ function recoverStraddledSpawn(player: Player) {
 /**
  * A ladder team evaporated (last member left the server or was pulled into
  * another team's lobby). Free its pitch slot, then rescue an abandoned
- * opponent: a LIVE team waiting on a free-play host (classically the
- * muckabout team) becomes the new opponent. When no live replacement exists
- * anywhere, the leftover team is moved OFF the real pitch onto a free-play
- * host — a lone team must never sit on the gold/green pitch model; the
- * pairing happens later via promoteLiveFreePlayTeams once a new opponent
- * goes live. Runs deferred so the PlayerRemoving roster cleanups land first.
+ * opponent: the one team waiting in muckabout becomes the new opponent. When
+ * no replacement exists, the leftover team moves to the neutral pitch until
+ * a later explicit reconciliation pairs it. Runs deferred so disconnect
+ * roster cleanup commits first.
  */
 function handleTeamGone(teamId: string) {
 	const match = matchByTeamId.get(teamId);
 	matchByTeamId.delete(teamId);
+	LeagueCoordinator.unassignTeam(teamId);
 	if (!match || match.phase === "Ended") {
 		return;
 	}
-	match.sideByTeamId.delete(teamId);
+	match.removeTeam(teamId);
 	if (isFreePlayHost(match)) {
 		if (match.roster.size() === 0 && match.phase !== "Waiting") {
 			match.enterWaiting();
 		}
+		if (match.roster.size() === 0 && match.teamIds().size() === 0) {
+			const sourceId = match.pitch.folder.Name;
+			ballSpawner.DestroyBall(match.pitch.folder);
+			const index = matches.indexOf(match);
+			if (index >= 0) matches.remove(index);
+			PitchManager.destroyPitch(sourceId);
+		}
 		return;
 	}
-	if (match.sideByTeamId.size() !== 1) {
+	if (match.teamIds().size() !== 1) {
 		if (match.roster.size() === 0 && match.phase !== "Waiting") {
 			match.enterWaiting();
 		}
 		return;
 	}
+	LeagueCoordinator.markMatchAbandoned();
+	match.flowGen += 1;
+	match.resetScores();
+	match.enterWaiting();
+	let leftoverId: string | undefined = match.teamIds()[0];
+	if (leftoverId === undefined) return;
 
-	// One team left behind mid-round. Rescue a partner: prefer a LIVE team
-	// waiting on a free-play host; otherwise (rapid join/leave can strand two
-	// teams on two DIFFERENT real pitches within the same round) a team that
-	// is itself alone on another real pitch. Leaving both alone meant two
-	// "FREE PLAY — waiting for an opponent" pitches while a valid opponent
-	// existed — and, when no other match had reached Play yet, a shared clock
-	// that never started and a round that never ended.
+	// The old score is void. A replacement is a fresh match ID and fresh 0-0
+	// fixture using the shared time remaining.
 	const waiting = findLiveFreePlayTeam();
 	if (waiting) {
 		const moving = moveTeamToMatch(waiting.teamId, waiting.match, match);
-		// The abandoned team's bodies may be waiting on the muckabout host
-		// (rerouted while their old opponent was dead weight) — recall them.
-		for (const stray of collectBookedStrays(match)) {
-			moving.push(stray);
-		}
-		warn(`[Football] free-play team → ${match.pitch.folder.Name} to replace the leavers`);
+		LeagueCoordinator.unassignTeam(waiting.teamId);
+		LeagueCoordinator.assignMatch(leftoverId, waiting.teamId, match.pitch.folder.Name);
+		warn(`[Football] abandoned fixture voided; ${waiting.teamId} → ${match.pitch.folder.Name} for a fresh match`);
 		moveTeamBehindCover(match, moving);
 		return;
 	}
 	for (const other of matches) {
-		if (other === match || isFreePlayHost(other) || other.phase === "Ended" || other.sideByTeamId.size() !== 1) {
+		if (other === match || isFreePlayHost(other) || other.phase === "Ended" || other.teamIds().size() !== 1) {
 			continue;
 		}
-		let movedTeamId: string | undefined;
-		for (const [id] of other.sideByTeamId) {
-			movedTeamId = id;
-			break;
-		}
+		const movedTeamId = other.teamIds()[0];
 		if (movedTeamId === undefined) {
 			continue;
 		}
 		const moving = moveTeamToMatch(movedTeamId, other, match);
-		for (const stray of collectBookedStrays(match)) {
-			moving.push(stray);
-		}
-		warn(`[Football] ${other.pitch.folder.Name}'s team → ${match.pitch.folder.Name} to replace the leavers`);
+		LeagueCoordinator.unassignTeam(movedTeamId);
+		LeagueCoordinator.assignMatch(leftoverId, movedTeamId, match.pitch.folder.Name);
+		warn(`[Football] two abandoned survivors paired fresh on ${match.pitch.folder.Name}`);
 		moveTeamBehindCover(match, moving);
 		return;
 	}
 
-	// No replacement anywhere: relocate the leftover team to a free-play host
-	// so the pitch model always reads as free play.
-	let leftoverId: string | undefined;
-	for (const [id] of match.sideByTeamId) {
-		leftoverId = id;
-	}
+	// No replacement: the survivor becomes the one neutral muckabout team.
 	const host = pickFreePlayHost() ?? createMidRoundPitch(VARIANT_FREEPLAY);
 	if (leftoverId !== undefined && host !== undefined && host !== match) {
 		const moving = moveTeamToMatch(leftoverId, match, host);
+		LeagueCoordinator.unassignTeam(leftoverId);
+		LeagueCoordinator.assignMuckabout(leftoverId, host.pitch.folder.Name);
 		warn(`[Football] ${match.pitch.folder.Name} lost its opponent — leftover team → ${host.pitch.folder.Name} (free play)`);
 		if (moving.size() > 0) {
 			moveTeamBehindCover(host, moving);
@@ -1376,20 +1405,18 @@ function handleTeamGone(teamId: string) {
 		return;
 	}
 
-	// Couldn't build a free-play host (missing map variant) — free-play in
-	// place as the last resort.
-	if (match.roster.size() > 0) {
-		if (match.phase !== "FreePlay") {
-			warn(`[Football] ${match.pitch.folder.Name} lost its opponent — free play`);
-			match.enterFreePlay(false);
-		}
-	} else if (match.phase !== "Waiting") {
-		match.enterWaiting();
-	}
+	// Fail closed: never turn a competitive model into solo free play.
+	LeagueCoordinator.unassignTeam(leftoverId);
+	match.enterWaiting();
+	warn(`[Football] no neutral pitch available for ${leftoverId}; held safely on ${match.pitch.folder.Name}`);
 }
 
 TeamRegistry.onTeamDisbanded((team) => {
-	task.defer(() => handleTeamGone(team.id));
+	task.defer(() =>
+		LeagueCoordinator.requestReconcile("TeamDisbanded", () => {
+			handleTeamGone(team.id);
+		}),
+	);
 });
 
 /** A pitch that can only host free play: the muckabout pitch, or the
@@ -1413,114 +1440,26 @@ function createMidRoundPitch(variantName?: string): PitchMatch | undefined {
 		return undefined;
 	}
 	ballSpawner.SpawnBall(pitch.folder);
+	if (!ballSpawner.GetBall(pitch.folder)) {
+		PitchManager.destroyPitch(pitch.folder.Name);
+		warn(`[Football] rejected ${pitch.folder.Name}: ball preparation failed`);
+		return undefined;
+	}
 	const match = new PitchMatch(pitch);
 	matches.push(match);
 	warn(`[Football] mid-round pitch ${pitch.folder.Name} is live (${matches.size()} pitch(es) total)`);
 	return match;
 }
 
-/** True when `teamId` has at least one SPAWNED player rostered on ANY pitch —
- * the difference between a team actually playing and one merely booked (all
- * of its members still in the shop/menus). Pitch-model selection keys off
- * this: real (gold/green) pitches only ever host pairings of LIVE teams —
- * a lone driver must always see the free-play pitch model. Bodies rerouted
- * onto the muckabout host count: their team is in game. */
-function teamIsLive(teamId: string): boolean {
-	for (const match of matches) {
-		for (const [player] of match.roster) {
-			const team = TeamRegistry.getTeamOf(player);
-			if (team && team.id === teamId) {
-				return true;
-			}
-		}
-	}
-	return false;
-}
-
-/** Pull every body whose team is BOOKED on `target` but currently rostered
- * elsewhere (rerouted onto the muckabout host while no opponent was live)
- * back onto `target`. Roster-only move — bookings already point here. Returns
- * the moved players; the caller teleports them (moveTeamBehindCover). */
-function collectBookedStrays(target: PitchMatch): Player[] {
-	const moving: Player[] = [];
-	for (const other of matches) {
-		if (other === target) {
-			continue;
-		}
-		const strays: Player[] = [];
-		for (const [player] of other.roster) {
-			const team = TeamRegistry.getTeamOf(player);
-			if (team && matchByTeamId.get(team.id) === target) {
-				strays.push(player);
-			}
-		}
-		for (const player of strays) {
-			other.roster.delete(player);
-			target.assignSide(player);
-			moving.push(player);
-		}
-		if (strays.size() > 0 && other.roster.size() === 0 && other.phase !== "Waiting" && other.phase !== "Ended") {
-			other.enterWaiting();
-		}
-	}
-	return moving;
-}
-
-/** A real pitch that just lost its live opposition (leaver / lobby pull that
- * did NOT disband the team): when only one team's bodies remain and no other
- * booked team is live anywhere, ship the remaining bodies to the muckabout
- * host. Bookings stay, so the pairing resumes via recall if the opponent
- * spawns back in — but nobody free-plays alone on a gold/green model. */
-function rerouteLoneBodies(match: PitchMatch) {
-	if (isFreePlayHost(match) || match.phase === "Ended" || match.roster.size() === 0) {
-		return;
-	}
-	const teamsHere = new Set<string>();
-	for (const [player] of match.roster) {
-		const team = TeamRegistry.getTeamOf(player);
-		if (team) {
-			teamsHere.add(team.id);
-		}
-	}
-	if (teamsHere.size() >= 2) {
-		return;
-	}
-	for (const [teamId] of match.sideByTeamId) {
-		if (!teamsHere.has(teamId) && teamIsLive(teamId)) {
-			return;
-		}
-	}
-	const host = pickFreePlayHost();
-	if (!host || host === match) {
-		return;
-	}
-	const moving: Player[] = [];
-	for (const [player] of match.roster) {
-		moving.push(player);
-	}
-	for (const player of moving) {
-		match.roster.delete(player);
-		host.assignSideFreePlay(player);
-	}
-	if (match.phase !== "Waiting") {
-		match.enterWaiting();
-	}
-	warn(`[Football] ${match.pitch.folder.Name} has no live opposition — bodies → ${host.pitch.folder.Name} (free play)`);
-	moveTeamBehindCover(host, moving);
-}
-
-/** A team with spawned players sitting on a free-play host — the "waiting
- * for a real match" pool (the designated muckabout team included). */
+/** The one logical team waiting on neutral free play. It is eligible as an
+ * opponent even if some or all of its members are still spawning. */
 function findLiveFreePlayTeam(): { match: PitchMatch; teamId: string } | undefined {
 	for (const match of matches) {
 		if (!isFreePlayHost(match) || match.phase === "Ended") {
 			continue;
 		}
-		for (const [teamId] of match.sideByTeamId) {
-			if (teamIsLive(teamId)) {
-				return { match, teamId };
-			}
-		}
+		const teamId = match.teamIds()[0];
+		if (teamId !== undefined) return { match, teamId };
 	}
 	return undefined;
 }
@@ -1536,19 +1475,16 @@ function findEmptyRealPitch(): PitchMatch | undefined {
 	return undefined;
 }
 
-/** Free-play hosts are SHARED — any number of waiting teams can knock about
- * on one, since a real match can never kick off there. Prefer the emptiest. */
+/** Return only an empty neutral host. A muckabout pitch can never be shared
+	 * by separate logical teams. */
 function pickFreePlayHost(): PitchMatch | undefined {
-	let best: PitchMatch | undefined;
 	for (const match of matches) {
 		if (!isFreePlayHost(match) || match.phase === "Ended") {
 			continue;
 		}
-		if (best === undefined || match.sideByTeamId.size() < best.sideByTeamId.size()) {
-			best = match;
-		}
+		if (match.teamIds().size() === 0) return match;
 	}
-	return best;
+	return undefined;
 }
 
 /** Rebook `teamId` (side assignment + matchByTeamId + rostered players) from
@@ -1556,9 +1492,9 @@ function pickFreePlayHost(): PitchMatch | undefined {
  * caller teleports them (moveTeamBehindCover). Leaves the vacated pitch in
  * Waiting when nobody remains on it. */
 function moveTeamToMatch(teamId: string, from: PitchMatch, to: PitchMatch): Player[] {
-	from.sideByTeamId.delete(teamId);
+	from.removeTeam(teamId);
 	matchByTeamId.set(teamId, to);
-	to.sideForLadderTeam(teamId);
+	to.registerTeam(teamId);
 	const moving: Player[] = [];
 	for (const [rosterPlayer] of from.roster) {
 		const team = TeamRegistry.getTeamOf(rosterPlayer);
@@ -1567,11 +1503,21 @@ function moveTeamToMatch(teamId: string, from: PitchMatch, to: PitchMatch): Play
 		}
 	}
 	for (const rosterPlayer of moving) {
-		from.roster.delete(rosterPlayer);
+		from.removeRosterPlayer(rosterPlayer);
 		to.assignSide(rosterPlayer);
 	}
 	if (from.roster.size() === 0 && from.phase !== "Waiting" && from.phase !== "Ended") {
 		from.enterWaiting();
+	}
+	if (from.isFreePlay() && from.roster.size() === 0 && from.teamIds().size() === 0) {
+		const sourceId = from.pitch.folder.Name;
+		task.delay(1.5, () => {
+			if (from.roster.size() > 0 || from.teamIds().size() > 0) return;
+			const index = matches.indexOf(from);
+			if (index >= 0) matches.remove(index);
+			ballSpawner.DestroyBall(from.pitch.folder);
+			PitchManager.destroyPitch(sourceId);
+		});
 	}
 	return moving;
 }
@@ -1582,128 +1528,136 @@ function moveTeamToMatch(teamId: string, from: PitchMatch, to: PitchMatch): Play
 const PITCH_MOVE_COVER_ATTR = "CB_PitchMoveCover";
 
 /** A team was free-playing on a muckabout/FreePlayPitch and just got a real
- * match on `target`: cover their screens, teleport them over, then free-play
- * there until the opponent spawns in and the face-off + 3-2-1 kicks off. */
-function moveTeamBehindCover(target: PitchMatch, moving: Player[]) {
+ * match on `target`: cover their screens, teleport them over, then hold the
+ * competitive pitch until both sides confirm and kickoff can begin. */
+function moveTeamBehindCover(target: PitchMatch, moving: Player[], restartFixture = true) {
 	task.spawn(() => {
+		const operationByPlayer = new Map<Player, TransitionToken>();
 		for (const player of moving) {
-			player.SetAttribute(PITCH_MOVE_COVER_ATTR, true);
+			lockPlayer(player);
+			const operation = LeagueCoordinator.beginTransition(player);
+			operationByPlayer.set(player, operation);
+			player.SetAttribute(PITCH_MOVE_COVER_ATTR, operation.transitionId);
 		}
 		task.wait(0.4);
-		target.repositionVehicles();
-		if (target.teamsReady()) {
+		for (const player of moving) {
+			const operation = operationByPlayer.get(player);
+			if (operation !== undefined && LeagueCoordinator.isCurrent(player, operation)) target.placeVehicleFor(player);
+		}
+		if (!restartFixture) {
+			for (const player of moving) enterCurrentPhase(target, player);
+		} else if (target.teamsReady()) {
 			target.resetScores();
 			target.startKickoff();
 		} else if (target.roster.size() > 0) {
-			target.enterFreePlay(false);
+			if (target.isFreePlay()) target.enterFreePlay(false);
+			else target.enterWaiting();
 		}
 		task.wait(0.5);
 		for (const player of moving) {
-			player.SetAttribute(PITCH_MOVE_COVER_ATTR, undefined);
+			const operation = operationByPlayer.get(player);
+			if (operation !== undefined) LeagueCoordinator.completeTransition(player, operation);
 		}
 	});
 }
 
-/** If a LIVE team (spawned players) waits on a free-play host while `target`
- * (a real pitch) still has a free team slot, pair them: move their side
- * assignment, roster and vehicles onto `target`. This is what turns "friend
- * joined but I'm stuck on the free-play pitch" into a real match. Playerless
- * waiting teams are never moved — booking one onto a real pitch strands
- * whoever spawns opposite them alone on gold (the pairing happens later, via
- * promoteLiveFreePlayTeams, once BOTH sides actually have players). */
-function pairWaitingFreePlayTeam(target: PitchMatch) {
-	if (isFreePlayHost(target) || target.sideByTeamId.size() >= 2) {
-		return;
-	}
-	const waiting = findLiveFreePlayTeam();
-	if (!waiting) {
-		return;
-	}
-	const moving = moveTeamToMatch(waiting.teamId, waiting.match, target);
-	warn(`[Football] free-play team → ${target.pitch.folder.Name} for a real match`);
-	moveTeamBehindCover(target, moving);
-}
+/** Fill an open live roster only from the single idle random team on
+ * muckabout. Existing competitors never move; each transferred player gets
+ * one generation-guarded physical transition. */
+function reconcileLiveVacancies() {
+	const waitingTeamId = LeagueCoordinator.getMuckaboutTeamId();
+	if (waitingTeamId === undefined) return;
+	const waitingTeam = TeamRegistry.getTeamById(waitingTeamId);
+	const waitingMatch = matchByTeamId.get(waitingTeamId);
+	if (
+		!waitingTeam ||
+		!waitingMatch ||
+		waitingTeam.origin !== "Random" ||
+		waitingTeam.protection !== "Recombinable" ||
+		waitingTeam.lifecycle !== "Muckabout"
+	) return;
 
-/** Two live teams both waiting on free-play hosts = a real match waiting to
- * happen: stand up (or reuse) a real pitch and move both over behind the
- * cover. Called after a spawn lands on a free-play host — the moment a
- * pairing can go live. */
-function promoteLiveFreePlayTeams() {
-	const live: Array<{ match: PitchMatch; teamId: string }> = [];
-	for (const match of matches) {
-		if (!isFreePlayHost(match) || match.phase === "Ended") {
-			continue;
-		}
-		for (const [teamId] of match.sideByTeamId) {
-			if (teamIsLive(teamId)) {
-				live.push({ match, teamId });
+	for (const targetMatch of matches) {
+		if (targetMatch.isFreePlay() || targetMatch.phase === "Ended" || targetMatch.teamIds().size() !== 2) continue;
+		for (const targetTeamId of targetMatch.teamIds()) {
+			const targetTeam = TeamRegistry.getTeamById(targetTeamId);
+			if (!targetTeam || !targetTeam.openToRandoms || targetTeam.members.size() >= 3) continue;
+			const candidate = waitingTeam.members.find((player) => waitingMatch.roster.has(player));
+			if (!candidate) return;
+			waitingMatch.removeRosterPlayer(candidate);
+			const source = TeamRegistry.transferIdleRandomPlayer(candidate, targetTeam);
+			if (!source) {
+				waitingMatch.assignSide(candidate);
+				return;
+			}
+			targetMatch.assignSide(candidate);
+			warn(`[Football] idle ${candidate.Name} filled ${targetTeam.name}'s live vacancy`);
+			moveTeamBehindCover(targetMatch, [candidate], false);
+			if (source.members.size() === 0) {
+				LeagueCoordinator.unassignTeam(source.id, true);
+				return;
 			}
 		}
 	}
-	// Keep this as an explicit while. roblox-ts lowers a numeric `for` whose
-	// condition is `i + 1 < live.size()` to a Luau range that executes once for
-	// a one-element array, then `live[i + 1]` is nil. Only complete pairs may
-	// create a real pitch.
-	let i = 0;
-	while (i + 1 < live.size()) {
-		const target = findEmptyRealPitch() ?? createMidRoundPitch();
-		if (!target) {
-			return; // no map variants to clone — everyone keeps free-playing
-		}
-		const moving = moveTeamToMatch(live[i].teamId, live[i].match, target);
-		for (const player of moveTeamToMatch(live[i + 1].teamId, live[i + 1].match, target)) {
-			moving.push(player);
-		}
-		warn(`[Football] free-play pairing → ${target.pitch.folder.Name} for a real match`);
-		moveTeamBehindCover(target, moving);
-		i += 2;
-	}
 }
 
-/** Mid-round team placement (pending-pool design, tightened to LIVE teams):
- * pitch-model selection follows one rule — a real (gold/green) pitch only
- * ever hosts a pairing where both teams actually have spawned players.
- * 1. A real pitch whose booked opponent is LIVE and has a free team slot:
- *    join them — the match kicks off the moment this team spawns.
- * 2. A live team waits on a free-play host: stand up the real pitch for the
- *    pairing (reusing an empty one first) and move them over.
- * 3. Nobody to play against yet: wait on a shared free-play host (cloning a
- *    FreePlayPitch if none exists). Gold must NOT appear here — the round
- *    promotes the pairing later, once both sides are live. */
+TeamRegistry.onTeamChanged((_team, reason) => {
+	if (reason !== "OpenChanged" && reason !== "MemberRemoved") return;
+	task.defer(() => LeagueCoordinator.requestReconcile("LiveVacancy", reconcileLiveVacancies));
+});
+
+/** Explicit mid-round assignment: an unmatched team owns the single neutral
+ * pitch; the next team atomically creates a two-team competitive reservation.
+ * A real pitch may wait for confirmed spawns, but never becomes solo free play. */
 function assignTeamToPitch(team: LadderTeam): PitchMatch | undefined {
-	if (matches.size() === 0) {
+	if (matches.size() === 0 || (clockStarted && timeLeft <= 0)) {
 		return undefined;
 	}
-	let target: PitchMatch | undefined;
-	for (const match of matches) {
-		if (isFreePlayHost(match) || match.phase === "Ended" || match.sideByTeamId.size() !== 1) {
-			continue;
+	const canonical = LeagueCoordinator.getAssignment(team.id);
+	if (canonical) {
+		const existing = matches.find((match) => match.pitch.folder.Name === canonical.arenaId && match.hasTeam(team.id));
+		if (existing) {
+			matchByTeamId.set(team.id, existing);
+			return existing;
 		}
-		for (const [teamId] of match.sideByTeamId) {
-			if (teamIsLive(teamId)) {
-				target = match;
-			}
+		warn(`[Football] rejected stale assignment for ${team.name}: arena ${canonical.arenaId} is unavailable`);
+		LeagueCoordinator.unassignTeam(team.id);
+	}
+
+	// There can be only one unmatched logical team. The arrival of another
+	// team converts the pair into a real match immediately; it never joins the
+	// existing team on the neutral pitch.
+	const waitingId = LeagueCoordinator.getMuckaboutTeamId();
+	if (waitingId !== undefined && waitingId !== team.id) {
+		const waitingMatch = matchByTeamId.get(waitingId);
+		const target = findEmptyRealPitch() ?? createMidRoundPitch();
+		if (!waitingMatch || !target) {
+			warn(`[Football] could not prepare a real pitch for waiting team ${waitingId} and ${team.name}`);
+			return undefined;
 		}
-		if (target) {
-			break;
-		}
+		const moving = moveTeamToMatch(waitingId, waitingMatch, target);
+		target.registerTeam(team.id);
+		matchByTeamId.set(team.id, target);
+		LeagueCoordinator.unassignTeam(waitingId);
+		LeagueCoordinator.assignMatch(waitingId, team.id, target.pitch.folder.Name);
+		warn(`[Football] waiting team ${waitingId} + ${team.name} → ${target.pitch.folder.Name}`);
+		if (moving.size() > 0) moveTeamBehindCover(target, moving);
+		return target;
 	}
-	if (!target && findLiveFreePlayTeam() !== undefined) {
-		target = findEmptyRealPitch() ?? createMidRoundPitch();
+
+	const target = pickFreePlayHost() ?? createMidRoundPitch(VARIANT_FREEPLAY);
+	if (!target || !target.isFreePlay() || (target.teamIds().size() > 0 && !target.hasTeam(team.id))) {
+		warn(`[Football] could not prepare empty muckabout for ${team.name}; no overflow performed`);
+		return undefined;
 	}
-	if (!target) {
-		target = pickFreePlayHost() ?? createMidRoundPitch(VARIANT_FREEPLAY);
-	}
-	if (!target) {
-		// Could not clone a pitch (missing map variants) — last-resort overflow
-		// keeps the team playable instead of stranded.
-		target = matches[matches.size() - 1];
-		warn(`[Football] could not add a pitch for ${team.name} — overflowing onto ${target.pitch.folder.Name}`);
-	}
+	target.registerTeam(team.id);
 	matchByTeamId.set(team.id, target);
-	target.sideForLadderTeam(team.id);
-	warn(`[Football] team ${team.name} → ${target.pitch.folder.Name}`);
-	pairWaitingFreePlayTeam(target);
+	if (!LeagueCoordinator.assignMuckabout(team.id, target.pitch.folder.Name)) {
+		target.removeTeam(team.id);
+		matchByTeamId.delete(team.id);
+		return undefined;
+	}
+	warn(`[Football] team ${team.name} → neutral ${target.pitch.folder.Name}`);
 	return target;
 }
 
@@ -1727,8 +1681,8 @@ const footballMatch = {
 			// roster check: a booked pairing that never went LIVE (bodies still
 			// waiting on the muckabout host at the whistle) had no match either
 			// — "muck", not a coin-flipped 0-0 draw.
-			if (match.isFreePlay() || match.sideByTeamId.size() < 2 || match.roster.size() === 0) {
-				for (const [teamId] of match.sideByTeamId) {
+			if (match.isFreePlay() || !match.becamePlayable || match.sideByTeamId.size() < 2) {
+				for (const teamId of match.teamIds()) {
 					out.push({ teamId, pitchIndex: match.pitch.index, outcome: "muck" });
 				}
 				continue;
@@ -1809,7 +1763,7 @@ const footballMatch = {
 		for (const match of matches) {
 			// No winner presentation for free-play-only pitches (muckabout /
 			// opponent never arrived) — there was no match to win.
-			if (match.isFreePlay() || match.roster.size() === 0 || match.sideByTeamId.size() < 2) {
+			if (match.isFreePlay() || !match.becamePlayable || match.sideByTeamId.size() < 2) {
 				continue;
 			}
 			// Per-pitch pcall: a staging error on one pitch (missing lineup
@@ -1968,6 +1922,7 @@ const footballMatch = {
 	showRoundSummary() {
 		const summaryRemote = getUiIntentEvent("Ui_RoundSummary");
 		for (const match of matches) {
+			if (match.isFreePlay() || !match.becamePlayable) continue;
 			for (const [player] of match.roster) {
 				pcall(() => {
 					// Only the viewer's own ladder team makes the board: same
@@ -2020,6 +1975,8 @@ const footballMatch = {
 
 	stop() {
 		matchGen += 1;
+		for (const team of TeamRegistry.getTeams()) TeamRegistry.setLifecycle(team, "Intermission");
+		LeagueCoordinator.stopRound();
 		// Mirrors isRoundLive() for clients: no live round until beginRound.
 		UiState.setReplicatedAttr("CB_RoundLive", false);
 		if (goalWatcher) {
@@ -2037,6 +1994,8 @@ const footballMatch = {
 				player.SetAttribute(CONTROL_LOCK_ATTR, undefined);
 				player.SetAttribute("CB_Side", undefined);
 				player.SetAttribute("CB_PitchId", undefined);
+				player.SetAttribute("CB_ArenaKind", undefined);
+				player.SetAttribute("CB_MatchId", undefined);
 				// Round-end vehicle cleanup (the retired EndScreen used to do
 				// this): cars must not outlive their pitch.
 				pcall(() => {
@@ -2076,39 +2035,43 @@ const footballMatch = {
 		setGlobalAttr("CB_SessionRounds", SESSION_ROUNDS);
 
 		matches = pitches.map((pitch) => new PitchMatch(pitch));
+		LeagueCoordinator.beginRound();
 		// Mirrors isRoundLive() for clients: pitches exist, whistle not blown.
-		UiState.setReplicatedAttr("CB_RoundLive", true);
+		UiState.setReplicatedAttr("CB_RoundLive", matches.size() > 0);
 
 		const teams = TeamRegistry.getTeams();
-		const realMatches = matches.filter((m) => !m.muckabout);
-		const muckMatch = matches.find((m) => m.muckabout);
-		for (let i = 0; i < teams.size(); i++) {
-			const pairIndex = math.floor(i / 2);
+		const realMatches = matches.filter((match) => !match.isFreePlay());
+		let muckMatch = matches.find((match) => match.isFreePlay());
+		let teamIndex = 0;
+		let pairIndex = 0;
+		while (teamIndex + 1 < teams.size()) {
 			let target: PitchMatch | undefined = realMatches[pairIndex];
 			if (target === undefined) {
-				const isOddLeftover = i === teams.size() - 1 && teams.size() % 2 === 1;
-				if (isOddLeftover && muckMatch) {
-					target = muckMatch;
-				} else {
-					// loadMap under-built for the CURRENT team count (e.g. teams
-					// formed during the interlude): top the line up with a fresh
-					// pitch instead of overflowing onto an occupied one.
-					const created = createMidRoundPitch();
-					if (created) {
-						realMatches.push(created);
-						target = created;
-					}
-				}
+				target = createMidRoundPitch();
+				if (target) realMatches.push(target);
 			}
-			if (target === undefined) {
-				target = muckMatch ?? realMatches[realMatches.size() - 1];
-				if (target) {
-					warn(`[Football] no pitch available for ${teams[i].name} — overflowing onto ${target.pitch.folder.Name}`);
-				}
+			if (!target) {
+				warn(`[Football] could not prepare a competitive pitch for ${teams[teamIndex].name} vs ${teams[teamIndex + 1].name}`);
+				break;
 			}
-			if (target) {
-				matchByTeamId.set(teams[i].id, target);
-				target.sideForLadderTeam(teams[i].id);
+			const blue = teams[teamIndex];
+			const red = teams[teamIndex + 1];
+			target.registerTeam(blue.id);
+			target.registerTeam(red.id);
+			matchByTeamId.set(blue.id, target);
+			matchByTeamId.set(red.id, target);
+			LeagueCoordinator.assignMatch(blue.id, red.id, target.pitch.folder.Name);
+			teamIndex += 2;
+			pairIndex += 1;
+		}
+		if (teamIndex < teams.size()) {
+			muckMatch = muckMatch ?? createMidRoundPitch(VARIANT_FREEPLAY);
+			const waiting = teams[teamIndex];
+			if (muckMatch && muckMatch.registerTeam(waiting.id) === undefined && muckMatch.hasTeam(waiting.id)) {
+				matchByTeamId.set(waiting.id, muckMatch);
+				LeagueCoordinator.assignMuckabout(waiting.id, muckMatch.pitch.folder.Name);
+			} else {
+				warn(`[Football] could not prepare neutral muckabout for ${waiting.name}; team remains queued`);
 			}
 		}
 
@@ -2118,7 +2081,7 @@ const footballMatch = {
 				return;
 			}
 			for (const match of matches) {
-				// FreePlay counts too: fun goals show on the scoreboard.
+				// Neutral goals count only as a physical ball-reset trigger.
 				if (match.phase !== "Play" && match.phase !== "FreePlay") {
 					continue;
 				}
@@ -2129,29 +2092,19 @@ const footballMatch = {
 			}
 		});
 
-		// Clock watchdog: the shared clock starts at the first real kickoff — but
-		// if every pairing falls apart before any match reaches Play (leavers at
-		// the wrong moment, failed spawns), it would never start, endRoundForAll
-		// would never fire and the whole server wedged in free play forever.
-		// Once at least two teams are seated on real pitches a whistle MUST
-		// eventually come so the next beginRound can re-pair everyone.
-		task.delay(CLOCK_WATCHDOG_TIME, () => {
-			if (matchGen !== localMatchGen || clockStarted) {
-				return;
-			}
-			let seatedTeams = 0;
-			for (const match of matches) {
-				if (!match.muckabout) {
-					seatedTeams += match.sideByTeamId.size();
-				}
-			}
-			if (seatedTeams >= 2) {
-				warn("[Football] watchdog: no match reached kickoff — starting the shared clock so the round can end");
-				clockStarted = true;
-				startClock();
-			}
-		});
 		warn(`[Football] round ready: ${matches.size()} pitch(es), ${teams.size()} team(s)`);
+	},
+
+	/** Explicit eligibility/assignment event. Spawn lookup itself remains pure
+	 * and will fail closed until this transaction has committed. */
+	reconcileTeam(team: LadderTeam): boolean {
+		const current = matchByTeamId.get(team.id);
+		if (current && current.phase !== "Ended" && LeagueCoordinator.getAssignment(team.id)) return true;
+		let assigned = false;
+		LeagueCoordinator.requestReconcile("IdlePopulationChanged", () => {
+			assigned = assignTeamToPitch(team) !== undefined;
+		});
+		return assigned;
 	},
 
 	getSpawnCFrame(player: Player): CFrame | undefined {
@@ -2167,33 +2120,9 @@ const footballMatch = {
 			warn(`[Football] ${player.Name} tried to spawn after the whistle — not rostering onto ${match.pitch.folder.Name}`);
 			return undefined;
 		}
-		// Booked on a real pitch: only spawn THERE when a live opponent exists.
-		// Otherwise the BODY goes to the muckabout host while the BOOKING stays
-		// put — the ladder pairing/pitch index is untouched, but nobody ever
-		// drives a gold/green pitch alone. When the opponent's first player
-		// spawns, their arrival recalls every waiting body onto the booking.
-		if (!isFreePlayHost(match)) {
-			const myTeam = TeamRegistry.getTeamOf(player);
-			let opponentLive = false;
-			for (const [teamId] of match.sideByTeamId) {
-				if ((myTeam === undefined || teamId !== myTeam.id) && teamIsLive(teamId)) {
-					opponentLive = true;
-				}
-			}
-			if (opponentLive) {
-				// The pairing is going live right now: pull any bodies still
-				// waiting on the muckabout (opponents AND my own teammates) over.
-				const strays = collectBookedStrays(match);
-				if (strays.size() > 0) {
-					moveTeamBehindCover(match, strays);
-				}
-			} else {
-				const host = pickFreePlayHost();
-				if (host) {
-					return host.spawnCFrameFor(host.assignSideFreePlay(player));
-				}
-			}
-		}
+		// Canonical assignment and physical roster are the same destination.
+		// The retired flow booked a team here but put its body on muckabout,
+		// which allowed stale callbacks to teleport it between unrelated games.
 		return match.spawnCFrameFor(match.assignSide(player));
 	},
 
@@ -2216,9 +2145,8 @@ const footballMatch = {
 	},
 
 	onPlayerSpawned(player: Player) {
-		// Roster-first: getSpawnCFrame may have rerouted this body onto the
-		// muckabout host while its team stays booked on a real pitch — matchOf
-		// would return the booking and wrongly re-roster the player there.
+		// Prefer the physical roster, then the same canonical assignment. Both
+		// lookups are side-effect free and can never opportunistically reroute.
 		const match = matchWithPlayer(player) ?? matchOf(player);
 		if (!match || match.phase === "Ended") {
 			// Either the whistle blew mid-spawn (Ended: stop() will clean the
@@ -2269,6 +2197,7 @@ const footballMatch = {
 		if (!match || match.phase === "Ended") {
 			return false;
 		}
+		LeagueCoordinator.invalidatePlayer(player, "Respawning");
 		const localMatchGen = matchGen;
 		task.spawn(() => {
 			task.wait(RESPAWN_DELAY);
@@ -2328,12 +2257,15 @@ const footballMatch = {
 		if (!match) {
 			return;
 		}
-		match.roster.delete(player);
+		match.removeRosterPlayer(player);
 		lockGen.set(player, (lockGen.get(player) ?? 0) + 1);
 		clearLockCountdown(player);
 		player.SetAttribute(CONTROL_LOCK_ATTR, undefined);
 		player.SetAttribute("CB_Side", undefined);
 		player.SetAttribute("CB_PitchId", undefined);
+		player.SetAttribute("CB_ArenaKind", undefined);
+		player.SetAttribute("CB_MatchId", undefined);
+		LeagueCoordinator.invalidatePlayer(player, "Menu");
 		pcall(() => {
 			const character = player.Character;
 			const humanoid = character && character.FindFirstChildOfClass("Humanoid");
@@ -2347,36 +2279,46 @@ const footballMatch = {
 			!match.teamsReady()
 		) {
 			if (match.roster.size() > 0) {
-				warn(`[Football] ${player.Name} pulled to a lobby — ${match.pitch.folder.Name} falls back to free play`);
-				match.enterFreePlay(false);
+				warn(`[Football] ${player.Name} pulled to a lobby — ${match.pitch.folder.Name} waits for roster recovery`);
+				if (match.isFreePlay()) match.enterFreePlay(false);
+				else match.enterWaiting();
 			} else {
 				match.enterWaiting();
 			}
 		}
-		// Whoever remains must not free-play alone on a real pitch model.
-		rerouteLoneBodies(match);
+		// A partial roster loss never moves existing competitors. Only complete
+		// opponent-team disbandment (handled by the team callback) may relocate
+		// the surviving side.
 	},
 };
+
+LeagueCoordinator.onSpawnReservationTimedOut((player, reservation) => {
+	// Timeout cleanup may touch a roster only while the timed-out target is
+	// still canonical. A newer assignment owns its own car/roster lifecycle.
+	if (!LeagueCoordinator.reservationTargetsCurrentAssignment(player, reservation)) return;
+	footballMatch.leaveMatch(player);
+	spawnVehicle.KillVehicle(player);
+});
 
 PlayerService.PlayerRemoving.Connect((player) => {
 	lockGen.delete(player);
 	for (const match of matches) {
 		if (match.roster.has(player)) {
-			match.roster.delete(player);
+			match.removeRosterPlayer(player);
 			if (
 				(match.phase === "Play" || match.phase === "Kickoff" || match.phase === "FaceOff" || match.phase === "Goal") &&
 				!match.teamsReady()
 			) {
 				if (match.roster.size() > 0) {
-					warn(`[Football] ${player.Name} left — ${match.pitch.folder.Name} falls back to free play`);
-					match.enterFreePlay(false);
+					warn(`[Football] ${player.Name} left — ${match.pitch.folder.Name} waits for roster recovery`);
+					if (match.isFreePlay()) match.enterFreePlay(false);
+					else match.enterWaiting();
 				} else {
 					warn(`[Football] ${player.Name} left — ${match.pitch.folder.Name} waiting for players`);
 					match.enterWaiting();
 				}
 			}
-			// Whoever remains must not free-play alone on a real pitch model.
-			rerouteLoneBodies(match);
+			// Do not relocate active survivors for an individual departure.
 		}
 	}
 });

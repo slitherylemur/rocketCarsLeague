@@ -6,8 +6,8 @@
 //
 // Derivation is runtime-from-the-real-asset on purpose: RocketCars.rbxlx is a
 // git-LFS pointer in this repo and an offline pipeline would drift from live
-// place edits (ADR §4.7). validateAllTemplates() prints a migration report so
-// a bad template fails loudly at startup, never silently at spawn.
+// place edits (ADR §4.7). validateAllTemplates() logs only invalid templates
+// so a bad asset fails loudly without flooding startup output for clean ones.
 
 import { DEFAULT_PRESET_ID, PHYSICS_PRESETS } from "shared/vehicleV2/PhysicsPresets";
 
@@ -18,7 +18,7 @@ export const TEMPLATE_PRESETS: Record<string, string> = {
 	// sports
 	Lambo: "Sport",
 	Bugati: "Sport",
-	"Horse911": "Sport",
+	Horse911: "Sport",
 	"Horse911-95": "Sport",
 	TokyoDrift: "Sport",
 	MacaiylaCurve: "Sport",
@@ -171,29 +171,20 @@ export function deriveTemplateGeometry(template: Model): TemplateGeometry {
 	return { wheels, problems, hitboxSize, hitboxLocalCFrame };
 }
 
-/** Startup migration report over the whole catalogue. Returns the number of
- * templates with problems (0 = all clean). */
+/** Validate the whole catalogue at startup. Only problems are logged; clean
+ * templates stay silent. Returns the number with problems (0 = all clean). */
 export function validateAllTemplates(vehicleModels: Instance): number {
 	let bad = 0;
-	let total = 0;
 	for (const child of vehicleModels.GetChildren()) {
 		if (!child.IsA("Model")) {
 			continue;
 		}
-		total += 1;
 		const geometry = deriveTemplateGeometry(child);
 		const presetId = presetIdFor(child.Name);
 		if (geometry.problems.size() > 0) {
 			bad += 1;
 			warn(`[VehicleDefs] ${child.Name} (preset ${presetId}): ${geometry.problems.join("; ")}`);
-		} else {
-			print(
-				`[VehicleDefs] ${child.Name}: preset ${presetId}, hitbox ${tostring(geometry.hitboxSize)}, ${geometry.wheels.size()} visual wheels (${geometry.wheels
-					.filter((wheel) => wheel.steers)
-					.size()} steering)`,
-			);
 		}
 	}
-	print(`[VehicleDefs] template validation: ${total - bad}/${total} clean`);
 	return bad;
 }

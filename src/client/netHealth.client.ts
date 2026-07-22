@@ -6,27 +6,26 @@
 // with hysteresis so it doesn't flicker at the threshold). Averaged over the
 // last few samples.
 //
-// Diagnostics (temporary while tuning server authority): once every
-// DIAG_INTERVAL while seated, ONE warn line that separates the two causes of
-// steppy motion:
-//   - predicted≈0        → the car is NOT predicted (authoritative): motion
-//                          renders at replication cadence and inputs cost a
-//                          full round trip. Prediction marking is the problem.
-//   - resimTicks high    → the car IS predicted but rollback-storming:
-//                          some attribute mismatches every server frame
-//                          (see the rollback contract in
-//                          server-authority-migration-state / VehicleSim).
-//   - both healthy       → steppiness is elsewhere (smoothing/interp).
+// Diagnostics (temporary while tuning server authority): one compact [V2Net]
+// line per interval reports direct root/hitbox prediction status, local
+// input→attribute latency, rollback/misprediction rate, resimulation cost and
+// the maximum raw-proxy→rendered-pose gap. Detail is emitted only for the top
+// mispredicted property or an anomaly; healthy intervals stay one short line.
 
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
 import * as CarSim from "shared/vehicleV2/CarSim";
 import { VehicleAttr, VehicleInput, VehicleModelAttr } from "shared/vehicleSim/VehicleSim";
 import { SIM_RATE_HZ } from "shared/simScheduler";
+import { readPredictionSetupDiagnostics } from "shared/vehicleV2/ClientPredictionDiagnostics";
 
 const Players = game.GetService("Players");
 const RunService = game.GetService("RunService");
 const UserInputService = game.GetService("UserInputService");
 const LocalPlayer = Players.LocalPlayer;
+// Compact latency capture is a Studio tool. Production keeps the high-ping
+// badge and anomaly repair/warnings, but does not aggregate or print a line
+// every five seconds on every player's client.
+const NETWORK_DIAGNOSTICS_ENABLED = RunService.IsStudio();
 
 const HIGH_PING_MS = 130;
 const SEVERE_PING_MS = 220;
@@ -122,7 +121,7 @@ function updateBadge(pingMs: number) {
 //   hardware DOWN / action UP  → key events not reaching the IAS
 //   action ≠ attribute         → readPlayerInputs isn't consuming (early-out)
 // It also measures true press→attribute latency for throttle; on a healthy
-// predicted car this is ≤ one sim tick (~33ms at the 30 Hz sim rate)
+// predicted car this is ≤ one sim tick (~17ms at the 60 Hz sim rate)
 // regardless of ping.
 
 const STUCK_AFTER = 0.4;
@@ -152,6 +151,9 @@ const attrProbe: ProbeState = { warned: false };
 let throttleEdgeAt: number | undefined;
 let prevHwThrottle = 0;
 let maxInputLatencyMs = 0; // reported+reset each DIAG_INTERVAL
+let inputLatencySamples = 0;
+let maxVisualPos = 0;
+let maxVisualRotDeg = 0;
 
 function localVehicleBase(): BasePart | undefined {
 	const vehicles = game.Workspace.FindFirstChild("Vehicles");
@@ -168,6 +170,20 @@ function localVehicleBase(): BasePart | undefined {
 		}
 	}
 	return undefined;
+}
+
+function samplePresentationOffset(base: BasePart) {
+	if (!NETWORK_DIAGNOSTICS_ENABLED) {
+		return;
+	}
+	const subject = game.Workspace.CurrentCamera?.CameraSubject;
+	if (!subject || !subject.IsA("BasePart") || subject.Name !== "CarRigCameraTarget") {
+		return;
+	}
+	const relative = base.CFrame.ToObjectSpace(subject.CFrame);
+	const [, angle] = relative.Rotation.ToAxisAngle();
+	maxVisualPos = math.max(maxVisualPos, relative.Position.Magnitude);
+	maxVisualRotDeg = math.max(maxVisualRotDeg, math.deg(math.abs(angle)));
 }
 
 // Hardware state across keyboard AND gamepad bindings — a held controller
@@ -254,14 +270,10 @@ RunService.Heartbeat.Connect(() => {
 			state = { warned: false };
 			iasProbe.set(actionName, state);
 		}
-		probeStage(
-			actionName,
-			state,
-			actionDown !== hardwareDown,
-			() =>
-				hardwareDown
-					? `key DOWN but action UP for ${STUCK_AFTER}s — key events not reaching the IAS`
-					: `key UP but action still DOWN for ${STUCK_AFTER}s — IAS latch (release transition lost)`,
+		probeStage(actionName, state, actionDown !== hardwareDown, () =>
+			hardwareDown
+				? `key DOWN but action UP for ${STUCK_AFTER}s — key events not reaching the IAS`
+				: `key UP but action still DOWN for ${STUCK_AFTER}s — IAS latch (release transition lost)`,
 		);
 		// Active unlatch: repair a lost release instead of just reporting it.
 		if (!hardwareDown && actionDown) {
@@ -286,6 +298,7 @@ RunService.Heartbeat.Connect(() => {
 		throttleEdgeAt = undefined;
 		return;
 	}
+	samplePresentationOffset(base);
 	if (base.GetAttribute(VehicleAttr.InputLocked) === true) {
 		// Match control lock: the sim zeroes inputs on purpose — not a fault.
 		attrProbe.mismatchSince = undefined;
@@ -301,6 +314,7 @@ RunService.Heartbeat.Connect(() => {
 	const attrMatches = attrThrottle === hwThrottle;
 	if (throttleEdgeAt !== undefined && attrMatches) {
 		maxInputLatencyMs = math.max(maxInputLatencyMs, (os.clock() - throttleEdgeAt) * 1000);
+		inputLatencySamples += 1;
 		throttleEdgeAt = undefined;
 	}
 	probeStage(
@@ -316,7 +330,7 @@ RunService.Heartbeat.Connect(() => {
 // The exact rollback signal: which INSTANCE diverged, which PROPERTY or
 // ATTRIBUTE, and by how much — replacing guesswork about why the car
 // corrected. Aggregated (never one log per event: a rollback storm at
-// 30 Hz would flood the console and cost more than the storm itself) and
+// 60 Hz would flood the console and cost more than the storm itself) and
 // summarized once per DIAG_INTERVAL alongside the ping/latency line.
 //
 // The event is part of the server-authority beta, so both its existence and
@@ -452,15 +466,17 @@ function recordMisprediction(...args: unknown[]) {
 	recordEntryValue(instance, name ?? "?", values[0], values[1]);
 }
 
-pcall(() => {
-	const signal = (RunService as unknown as Record<string, unknown>)["Misprediction"];
-	if (typeIs(signal, "RBXScriptSignal")) {
-		signal.Connect(recordMisprediction);
-		mispredictSupported = true;
+if (NETWORK_DIAGNOSTICS_ENABLED) {
+	pcall(() => {
+		const signal = (RunService as unknown as Record<string, unknown>)["Misprediction"];
+		if (typeIs(signal, "RBXScriptSignal")) {
+			signal.Connect(recordMisprediction);
+			mispredictSupported = true;
+		}
+	});
+	if (!mispredictSupported) {
+		warn("[NetHealth] RunService.Misprediction unavailable — using the rollback heuristic");
 	}
-});
-if (!mispredictSupported) {
-	warn("[NetHealth] RunService.Misprediction unavailable on this engine — falling back to the resim-tick heuristic");
 }
 
 // Stamp intentional-teleport and lock transitions on the local car so the
@@ -488,51 +504,51 @@ if (!mispredictSupported) {
 	});
 }
 
-function mispredictSummary(intervalSeconds: number): string | undefined {
+interface MispredictSummary {
+	total: number;
+	resimAvgMs?: number;
+	resimMaxMs?: number;
+	top?: string;
+}
+
+function takeMispredictSummary(): MispredictSummary | undefined {
 	if (!mispredictSupported) {
-		return undefined; // warned once at startup — no per-interval spam
+		return undefined;
 	}
-	const total = mispredictEvents;
+	const summary: MispredictSummary = { total: mispredictEvents };
 	mispredictEvents = 0;
-	if (total === 0) {
-		mispredictStats.clear();
-		return "0 misprediction events";
+	if (resimTimeCount > 0) {
+		summary.resimAvgMs = (resimTimeSum / resimTimeCount) * 1000;
+		summary.resimMaxMs = resimTimeMax * 1000;
 	}
+	resimTimeSum = 0;
+	resimTimeMax = 0;
+	resimTimeCount = 0;
+
 	const entries: Array<[string, MispredictStat]> = [];
 	for (const [key, stat] of mispredictStats) {
 		entries.push([key, stat]);
 	}
 	mispredictStats.clear();
 	table.sort(entries, (a, b) => a[1].count > b[1].count);
-	let header = `${total} misprediction events (${string.format("%.1f", total / intervalSeconds)}/s)`;
-	if (resimTimeCount > 0) {
-		header += `, resim avg=${string.format("%.2f", (resimTimeSum / resimTimeCount) * 1000)}ms max=${string.format(
-			"%.2f",
-			resimTimeMax * 1000,
-		)}ms`;
-		resimTimeSum = 0;
-		resimTimeMax = 0;
-		resimTimeCount = 0;
-	}
-	const lines: string[] = [`${header}, top offenders:`];
-	for (let i = 0; i < math.min(entries.size(), 5); i++) {
-		const [key, stat] = entries[i];
-		let detail = `${key} x${stat.count}`;
+	if (entries.size() > 0) {
+		const [key, stat] = entries[0];
+		let detail = `${key}:${stat.count}`;
 		if (stat.posDeltaMax > 0) {
-			detail += ` pos avg=${string.format("%.2f", stat.posDeltaSum / stat.count)} max=${string.format("%.2f", stat.posDeltaMax)}`;
+			detail += `/${string.format("%.2f", stat.posDeltaMax)}st`;
 		}
 		if (stat.rotDegMax > 0) {
-			detail += ` rot avg=${string.format("%.1f", stat.rotDegSum / stat.count)}° max=${string.format("%.1f", stat.rotDegMax)}°`;
+			detail += `/${string.format("%.1f", stat.rotDegMax)}deg`;
 		}
 		if (stat.nearTeleport > 0) {
-			detail += ` [${stat.nearTeleport} near teleport]`;
+			detail += `/tp${stat.nearTeleport}`;
 		}
 		if (stat.nearLock > 0) {
-			detail += ` [${stat.nearLock} near lock change]`;
+			detail += `/lk${stat.nearLock}`;
 		}
-		lines.push(`    ${detail}`);
+		summary.top = detail;
 	}
-	return lines.join("\n");
+	return summary;
 }
 
 // ---- diagnostics ---------------------------------------------------------
@@ -554,6 +570,42 @@ function predictedInstanceCount(): number | undefined {
 		count = game.GetService("AuroraService").GetPredictedInstances().size();
 	});
 	return count;
+}
+
+function predictionCode(instance: Instance): string {
+	let code = "?";
+	pcall(() => {
+		const status = (
+			RunService as unknown as { GetPredictionStatus(context: Instance): Enum.PredictionStatus }
+		).GetPredictionStatus(instance);
+		code =
+			status === Enum.PredictionStatus.Predicted
+				? "P"
+				: status === Enum.PredictionStatus.Authoritative
+					? "A"
+					: "N";
+	});
+	return code;
+}
+
+function hitboxPredictionSummary(root: BasePart): string {
+	const hitboxes = root.Parent?.FindFirstChild("Hitboxes");
+	if (!hitboxes) {
+		return "-";
+	}
+	let predicted = 0;
+	let authoritative = 0;
+	let none = 0;
+	for (const descendant of hitboxes.GetDescendants()) {
+		if (!descendant.IsA("BasePart")) {
+			continue;
+		}
+		const code = predictionCode(descendant);
+		if (code === "P") predicted += 1;
+		else if (code === "A") authoritative += 1;
+		else none += 1;
+	}
+	return `${predicted}P${authoritative}A${none}N`;
 }
 
 task.spawn(() => {
@@ -581,35 +633,41 @@ task.spawn(() => {
 		}
 		diagAccumulator = 0;
 		const resimTicks = VehicleSim.readResimTicks() + CarSim.readResimTicks();
+		if (!NETWORK_DIAGNOSTICS_ENABLED) {
+			maxInputLatencyMs = 0;
+			inputLatencySamples = 0;
+			maxVisualPos = 0;
+			maxVisualRotDeg = 0;
+			continue;
+		}
 		if (!isSeated()) {
 			continue; // nothing meaningful to report from the menu/lobby
 		}
-		const predicted = predictedInstanceCount();
-		// resimTicks > 0 is PROOF the car is predicted: only rollback
-		// resimulation replays ticks behind the max sim clock seen. Estimate
-		// discrete rollback events from the depth a rollback rewinds (≈ ping
-		// worth of SIM_RATE_HZ ticks) — each event is one visual correction,
-		// and the correction's size scales with ping. Kept as a fallback;
-		// RunService.Misprediction (summary below) is the exact signal.
-		let verdict: string;
-		if (resimTicks > 0) {
-			const depthTicks = math.max(1, (pingMs / 1000) * SIM_RATE_HZ);
-			const rollbacksPerSec = resimTicks / DIAG_INTERVAL / depthTicks;
-			verdict = `PREDICTING; ~${string.format("%.1f", rollbacksPerSec)} rollback(s)/s (corrections deepen with ping)`;
-		} else if (predicted !== undefined && predicted < 10) {
-			verdict = "CAR NOT PREDICTED (authoritative): replication-cadence motion + input round-trip";
-		} else if (predicted === undefined) {
-			verdict = "no resims observed, predicted-count API unavailable — if inputs feel delayed the car may be authoritative";
-		} else {
-			verdict = "predicting cleanly — no rollbacks observed";
+		const base = localVehicleBase();
+		if (!base) {
+			continue;
 		}
-		const inputLatency = maxInputLatencyMs;
+		const predicted = predictedInstanceCount();
+		const depthTicks = math.max(1, (pingMs / 1000) * SIM_RATE_HZ);
+		const rollbacksPerSec = resimTicks / DIAG_INTERVAL / depthTicks;
+		const inputLatency = inputLatencySamples > 0 ? tostring(math.round(maxInputLatencyMs)) : "-";
 		maxInputLatencyMs = 0;
-		const summary = mispredictSummary(DIAG_INTERVAL);
-		warn(
-			`[NetHealth] ping=${math.round(pingMs)}ms predicted=${predicted ?? "unavailable"} resimTicks/${DIAG_INTERVAL}s=${resimTicks} inputLat=${math.round(inputLatency)}ms → ${verdict}${
-				summary !== undefined ? `\n[NetHealth] ${summary}` : ""
-			}`,
-		);
+		inputLatencySamples = 0;
+		const summary = takeMispredictSummary();
+		const setup = readPredictionSetupDiagnostics();
+		let line = `[V2Net] p=${math.round(pingMs)} in=${inputLatency} root=${predictionCode(base)} hb=${hitboxPredictionSummary(base)} n=${
+			predicted ?? "?"
+		} rb=${string.format("%.1f", rollbacksPerSec)} mp=${summary?.total ?? "?"}`;
+		if (summary?.resimAvgMs !== undefined && summary.resimMaxMs !== undefined) {
+			line += ` rs=${string.format("%.2f", summary.resimAvgMs)}/${string.format("%.2f", summary.resimMaxMs)}`;
+		}
+		line += ` vis=${string.format("%.2f", maxVisualPos)}/${string.format("%.1f", maxVisualRotDeg)}`;
+		if (base.GetAttribute(VehicleAttr.InputLocked) === true) line += " lock=1";
+		if (setup.latePhysicsMarks > 0) line += ` late=${setup.latePhysicsMarks}`;
+		if (setup.markFailures > 0) line += ` fail=${setup.markFailures}`;
+		if (summary?.top !== undefined) line += ` top=${summary.top}`;
+		maxVisualPos = 0;
+		maxVisualRotDeg = 0;
+		warn(line);
 	}
 });

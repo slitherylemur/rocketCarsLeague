@@ -29,9 +29,8 @@
 	(NOT stock 1.4). Local modifications preserved:
 	  1. SaveAsync does NOT early-return when the value was not updated — it
 	     warns (with UserId + time-in-game debug info) and saves anyway.
-	  2. Save() success log includes the UserId.
-	  3. "player left, saved" log includes the UserId.
-	  4. Get() waits 1s between failed load attempts. Stock behaviour re-issues
+	  2. Routine save-success logs are suppressed; failures still surface.
+	  3. Get() waits 1s between failed load attempts. Stock behaviour re-issues
 	     the next DataStore request the moment the previous one rejects — a
 	     production outage/throttle turned the retry-forever loop into a
 	     request-budget hammer that starved its own recovery.
@@ -65,7 +64,9 @@ interface Promise2Instance {
 interface Promise2Static {
 	// Declared as arrow-typed PROPERTIES (not methods) so calls emit dot-style
 	// (`Promise.async(...)`) exactly like the original library's static calls.
-	async: (executor: (resolve: (...args: unknown[]) => void, reject: (...args: unknown[]) => void) => void) => Promise2Instance;
+	async: (
+		executor: (resolve: (...args: unknown[]) => void, reject: (...args: unknown[]) => void) => void,
+	) => Promise2Instance;
 	defer: (executor: (...args: unknown[]) => void) => Promise2Instance;
 	delay: (seconds: number) => Promise2Instance;
 	promisify: <A extends unknown[]>(callback: (...args: A) => unknown) => (...args: A) => Promise2Instance;
@@ -346,9 +347,7 @@ class DataStore {
 	Save() {
 		const [success, result] = this.SaveAsync().await();
 
-		if (success) {
-			print("saved P:" + this.UserId, this.Name);
-		} else {
+		if (!success) {
 			error(result);
 		}
 	}
@@ -373,7 +372,9 @@ class DataStore {
 			}
 
 			if (RunService.IsStudio() && !SaveInStudio) {
-				warn(string.format("Data store %s attempted to save in studio while SaveInStudio is false.", this.Name));
+				warn(
+					string.format("Data store %s attempted to save in studio while SaveInStudio is false.", this.Name),
+				);
 				if (!SaveInStudioObject) {
 					warn("You can set the value of this by creating a BoolValue named SaveInStudio in ServerStorage.");
 				}
@@ -680,9 +681,6 @@ function DataStore2Call(dataStoreName: string, player: Player): DataStore {
 	]).andThen(() => {
 		dataStore
 			.SaveAsync()
-			.andThen(() => {
-				print("player: " + player.UserId + " left, saved", dataStoreName);
-			})
 			.catch((err: unknown) => {
 				// TODO: Something more elegant
 				warn("error when player left!", err);

@@ -13,6 +13,8 @@ import { CrateCatalog } from "shared/CrateCatalog";
 import { Globals } from "./Globals";
 import footballMatch from "./Modules/footballMatch";
 import TeamRegistry, { CarBallRemotes, RENAME_PRODUCT_ID } from "./Modules/TeamRegistry";
+import LeagueCoordinator from "./Modules/LeagueCoordinator";
+import type { SpawnReservation } from "./Modules/LeagueCoordinator";
 import UiState from "./ui/UiState";
 import { getUiIntentEvent, type UiIntentEventName } from "shared/UiIntents";
 import type { LadderTeam } from "./Modules/TeamRegistry";
@@ -62,16 +64,12 @@ game.BindToClose(() => {
 		return;
 	}
 
-	print("saving player data");
-
 	// go through all players, saving their data
 	const players = Players.GetPlayers();
 	for (const player of players) {
 		const playerMoney = DataStore2("money", player).Get(0) as number;
 		testStoreMap.SetAsync(tostring(player.UserId), playerMoney, 600000);
 	}
-
-	print("completed saving player data");
 });
 
 Players.PlayerAdded.Connect((player) => {
@@ -482,6 +480,18 @@ function tryLaunchTeam(team: LadderTeam) {
 			return;
 		}
 	}
+	// Eligibility is committed before pitch construction. This lets an idle
+	// pitchless server build on demand and lets the post-shop snapshot include
+	// every friends team whose vote completed during the window.
+	TeamRegistry.markQueued(team);
+	if (!footballMatch.isRoundLive() || Globals.shopPhaseActive === true) {
+		if (Globals.shopPhaseActive !== true) {
+			const [roundOk, roundError] = pcall(() => roundHandler.startRound());
+			if (!roundOk) {
+				warn(`[TeamLobby] could not prepare round for ${team.name}: ${roundError}`);
+			}
+		}
+	}
 	if (!footballMatch.isRoundLive() || Globals.shopPhaseActive === true) {
 		pendingLaunchTeams.add(team.id);
 		pcall(() => team.robloxTeam.SetAttribute("CB_Pending", true));
@@ -492,6 +502,7 @@ function tryLaunchTeam(team: LadderTeam) {
 		return;
 	}
 	clearTeamVotes(team);
+	footballMatch.reconcileTeam(team);
 	warn(`[TeamLobby] ${team.name} vote complete — launching ${team.members.size()} player(s)`);
 	for (const member of team.members) {
 		// spawnIntoMatch flips each member to "spawning", which hides their
@@ -574,7 +585,10 @@ function leaveTeamToLanding(player: Player) {
 	// The leaver drops out of team.members inside leaveTeam, so clear their
 	// published vote explicitly.
 	UiState.setPlayerAttr(player, "CB_Ready", undefined);
-	TeamRegistry.leaveTeam(player);
+	LeagueCoordinator.requestReconcile("VoluntaryLeave", () => {
+		TeamRegistry.leaveTeam(player);
+		if (team && !TeamRegistry.teamExists(team)) LeagueCoordinator.unassignTeam(team.id, true);
+	});
 	if (team) {
 		// Membership changed: stale votes must not launch the rest.
 		clearTeamVotes(team);
@@ -592,9 +606,12 @@ function exitToLanding(player: Player) {
 		// shown over a live match), leaving the TEAM without leaving the MATCH
 		// stranded a teamless roster entry nothing ever cleaned. No-op for the
 		// normal shop-phase press.
-		footballMatch.leaveMatch(player);
-		UiState.setPlayerAttr(player, "CB_Ready", undefined);
-		TeamRegistry.leaveTeam(player);
+		LeagueCoordinator.requestReconcile("VoluntaryLeave", () => {
+			footballMatch.leaveMatch(player);
+			UiState.setPlayerAttr(player, "CB_Ready", undefined);
+			TeamRegistry.leaveTeam(player);
+			if (!TeamRegistry.teamExists(team)) LeagueCoordinator.unassignTeam(team.id, true);
+		});
 		clearTeamVotes(team);
 	}
 	enterLandingState(player);
@@ -631,7 +648,7 @@ function sendInvite(target: Player, from: Player) {
 	const team = TeamRegistry.getTeamOf(from);
 	// No invites for playing teams (referral popups can arrive long after the
 	// lobby launched) — joining mid-play is only via the allow-randoms path.
-	if (!team || team.inPlay || team.members.size() >= 3) {
+	if (!team || team.lifecycle !== "Forming" || team.members.size() >= 3) {
 		return;
 	}
 	// Same audience the old invite rows offered: anyone in the server who is
@@ -675,7 +692,7 @@ function resolveInvite(target: Player, accept: boolean) {
 	let failText: string | undefined;
 	if (team === undefined) {
 		failText = `${invite.teamName} no longer exists`;
-	} else if (team.inPlay) {
+	} else if (team.lifecycle !== "Forming") {
 		failText = `${invite.teamName} already started playing`;
 	} else if (team.members.size() >= 3) {
 		failText = `${invite.teamName} is full`;
@@ -694,7 +711,16 @@ function resolveInvite(target: Player, accept: boolean) {
 	}
 	const oldTeam = TeamRegistry.getTeamOf(target);
 	const wasInMatch = footballMatch.isInMatch(target);
-	if (!TeamRegistry.addToTeam(target, team)) {
+	let joined = false;
+	LeagueCoordinator.requestReconcile("InviteAccepted", () => {
+		// Withdraw while old membership is still authoritative, then change
+		// membership in the same non-yielding transaction. Team disband handling
+		// is deferred from the registry until this commit is complete.
+		if (wasInMatch) footballMatch.leaveMatch(target);
+		joined = TeamRegistry.addToTeam(target, team, true);
+		if (oldTeam && !TeamRegistry.teamExists(oldTeam)) LeagueCoordinator.unassignTeam(oldTeam.id, true);
+	});
+	if (!joined) {
 		warn(`[Invite] ${target.Name} accepted but ${team.name} is full/gone`);
 		return;
 	}
@@ -714,7 +740,6 @@ function resolveInvite(target: Player, accept: boolean) {
 	// its next checkpoint (menu-family supersession also cleans up its car).
 	const [ok, err] = pcall(() => {
 		if (wasInMatch) {
-			footballMatch.leaveMatch(target);
 			ResetAndInitialisePlayerMenuUI(target);
 		}
 		enterLobbyState(target);
@@ -955,6 +980,8 @@ function spawnInPlayerInner(player: Player, flowGen: number): boolean {
 	// point. Spawn points live INSIDE pitch folders now; the flat
 	// Workspace.SpawnPoints folder is only a legacy fallback.
 	let spawnCFrame: CFrame | undefined;
+	let leagueReservationId: string | undefined;
+	let leagueReservation: SpawnReservation | undefined;
 	if (Globals.gamemode === "Football") {
 		TeamRegistry.joinRandom(player);
 		// Spawning is THE transition out of the lobby state: markInPlay seats
@@ -963,6 +990,7 @@ function spawnInPlayerInner(player: Player, flowGen: number): boolean {
 		const ladderTeam = TeamRegistry.getTeamOf(player);
 		if (ladderTeam) {
 			TeamRegistry.markInPlay(ladderTeam);
+			footballMatch.reconcileTeam(ladderTeam);
 			if (pendingLaunchTeams.delete(ladderTeam.id)) {
 				pcall(() => ladderTeam.robloxTeam.SetAttribute("CB_Pending", false));
 			}
@@ -970,8 +998,27 @@ function spawnInPlayerInner(player: Player, flowGen: number): boolean {
 		}
 		player.SetAttribute("CB_PendingLaunch", undefined);
 		spawnCFrame = footballMatch.getSpawnCFrame(player);
+		if (spawnCFrame !== undefined) {
+			const reservation = LeagueCoordinator.reserveSpawn(player, spawnCFrame);
+			if (reservation !== undefined) {
+				leagueReservation = reservation;
+				leagueReservationId = reservation.reservationId;
+				spawnCFrame = reservation.spawnCFrame;
+			} else {
+				spawnCFrame = undefined;
+			}
+		}
 	}
 	if (spawnCFrame === undefined) {
+		if (Globals.gamemode === "Football") {
+			warn(`[SpawnInPlayer] ABORT no canonical league spawn for ${player.Name}`);
+			const targetsCurrent =
+				leagueReservation === undefined ||
+				LeagueCoordinator.reservationTargetsCurrentAssignment(player, leagueReservation);
+			LeagueCoordinator.failSpawn(player, leagueReservationId);
+			if (targetsCurrent) pcall(() => footballMatch.leaveMatch(player));
+			return false;
+		}
 		const spawnParts: BasePart[] = [];
 		// FindFirstChild, not a direct index: PitchManager CLEARS this legacy
 		// folder on every round build, and a missing/empty folder must mean
@@ -1021,22 +1068,28 @@ function spawnInPlayerInner(player: Player, flowGen: number): boolean {
 		spawnedRoot.IsA("BasePart") &&
 		spawnedRoot.GetAttribute(CarAttr.Driving) === true;
 	const legacyReady = spawnedSeat !== undefined && spawnedSeat.Occupant !== undefined;
-	if (
-		spawnedVehicle === undefined ||
-		spawnedVehicle.model.Parent === undefined ||
-		(!v2Ready && !legacyReady)
-	) {
+	if (spawnedVehicle === undefined || spawnedVehicle.model.Parent === undefined || (!v2Ready && !legacyReady)) {
 		warn(`[SpawnInPlayer] ABORT no driven vehicle after SpawnVehicle for ${player.Name}`);
 		if (Globals.gamemode === "Football") {
 			// Un-roster cleanly (clears CB_Side/CB_PitchId/lock marker) so the
 			// pitch doesn't wait on a ghost; the shop-phase auto start retries
 			// this player next round.
+			LeagueCoordinator.failSpawn(player, leagueReservationId);
 			pcall(() => footballMatch.leaveMatch(player));
 		}
 		return false;
 	}
 
 	if (Globals.gamemode === "Football") {
+		if (leagueReservationId === undefined || !LeagueCoordinator.confirmSpawn(player, leagueReservationId)) {
+			warn(`[SpawnInPlayer] stale league reservation for ${player.Name} — cleaning the late car`);
+			if (
+				leagueReservation !== undefined &&
+				LeagueCoordinator.reservationTargetsCurrentAssignment(player, leagueReservation)
+			) pcall(() => footballMatch.leaveMatch(player));
+			spawnVehicle.KillVehicle(player);
+			return false;
+		}
 		// onPlayerSpawned starts the countdown/lock bookkeeping; the marker set
 		// by preSpawnLock already kept the sit-edge enable from firing.
 		// (MatchHud is CLIENT-mounted now — matchHud.client.ts derives its
@@ -1467,7 +1520,21 @@ task.spawn(() => {
 		if (getFlowState(player) !== "menu") {
 			return;
 		}
-		TeamRegistry.joinRandom(player);
+		const team = TeamRegistry.joinRandom(player);
+		TeamRegistry.markQueued(team);
+		if (Globals.shopPhaseActive === true) {
+			player.SetAttribute("CB_PendingLaunch", true);
+			team.robloxTeam.SetAttribute("CB_Pending", true);
+			return;
+		}
+		if (!footballMatch.isRoundLive()) {
+			const [roundOk, roundError] = pcall(() => roundHandler.startRound());
+			if (!roundOk) {
+				warn(`[Landing] could not prepare an on-demand round: ${roundError}`);
+				return;
+			}
+		}
+		footballMatch.reconcileTeam(team);
 		spawnIntoMatch(player);
 	});
 
@@ -1478,7 +1545,7 @@ task.spawn(() => {
 			return;
 		}
 		if (!TeamRegistry.getTeamOf(player)) {
-			TeamRegistry.createTeam(player, false);
+			TeamRegistry.createTeam(player, false, "Friends");
 		}
 		enterLobbyState(player);
 	});

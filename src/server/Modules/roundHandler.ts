@@ -191,7 +191,7 @@ handler.startRound = () => {
 	// startFFA/startTDM/startFootball's StarterGuiState.Visible writes too.
 	UiState.setReplicatedAttr("CB_Gamemode", Globals.gamemode);
 	const pitches = loadMap();
-	if (pitches.size() === 0) {
+	if (pitches.size() === 0 && TeamRegistry.getTeams().size() > 0) {
 		// ServerStorage.Maps is empty (see loadMap warn) — retry until maps
 		// exist rather than crashing the round system.
 		task.delay(10, () => handler.startRound());
@@ -288,15 +288,14 @@ handler.endRound = () => {
 		if (!stopOk) {
 			warn(`[Round] football stop FAILED: ${stopErr}`);
 		}
-		warn("[Round] building next round");
-		const [startOk, startErr] = pcall(() => handler.startRound());
-		if (!startOk) {
-			warn(`[Round] startRound FAILED: ${startErr}`);
-		}
-		// Shop phase flag BEFORE the menu remount so players land on the CARS
-		// page with the restart countdown, not the landing page.
+		// Shop first. Team joins/leaves/renames during this window become part of
+		// the one final snapshot used to build the next round's pitches.
 		warn(`[Round] shop phase (${SESSION_END_SHOP_TIME}s)`);
-		MatchDirector.startShopPhase(sessionEnd ? SESSION_END_SHOP_TIME : undefined);
+		MatchDirector.startShopPhase(sessionEnd ? SESSION_END_SHOP_TIME : undefined, () => {
+			warn("[Round] reconciling and building next round after shop");
+			TeamRegistry.reconcileIdleRandomTeams();
+			handler.startRound();
+		});
 		sendToMenu();
 		return;
 	}
@@ -341,21 +340,16 @@ function runSessionEnd() {
 // end
 
 function loadMap(): import("./PitchManager").Pitch[] {
-	// PitchManager owns cloning + placement (Phase 3b): pitch count follows
-	// the live team count (min 1 so the first joiners have somewhere to go);
-	// odd team counts get the muckabout pitch. SpawnPoints stay INSIDE each
+	// PitchManager owns cloning + placement: pitch count follows the final
+	// reconciled team count; odd counts get the one muckabout pitch. SpawnPoints stay INSIDE each
 	// pitch folder now — PitchMatch reads its own.
 	const teamCount = TeamRegistry.getTeams().size();
-	const realPitches = math.max(1, math.floor(teamCount / 2));
-	// Muckabout FreePlayPitch is ALWAYS parked at the end of the line (not just
-	// for odd counts): players who spawn before their booked opponent is live
-	// wait there — nobody ever drives a gold/green pitch alone.
-	const withMuckabout = teamCount > 1;
-	// 0–1 teams: the single pitch can only host free play — use FreePlayPitch,
-	// not gold. (If a second team pairs onto it mid-round the match still runs
-	// there; the next round rebuild brings gold back.)
-	const built = PitchManager.buildPitches(realPitches, withMuckabout, teamCount <= 1);
-	if (built.size() === 0) {
+	const realPitches = math.floor(teamCount / 2);
+	// The neutral pitch exists only for the one genuinely unmatched team.
+	// Zero teams means a pitchless idle server; even counts need no muckabout.
+	const withMuckabout = teamCount % 2 === 1;
+	const built = PitchManager.buildPitches(realPitches, withMuckabout);
+	if (built.size() === 0 && teamCount > 0) {
 		warn(
 			"[loadMap] no pitch could be built — ServerStorage.Maps needs the pitch variant folders " +
 				"(GoldPitch/GreenPitch/MudPitch/FreePlayPitch: map parts + SpawnPoints/Red|Blue + Blue/Red goal parts). No map loaded.",
@@ -363,10 +357,15 @@ function loadMap(): import("./PitchManager").Pitch[] {
 		return [];
 	}
 	// Balls raycast against their pitch for the floor, so spawn after parenting.
-	for (const pitch of built) {
+	// A pitch is not prepared until its ball exists; failed candidates are
+	// removed before any assignment can commit.
+	const prepared: import("./PitchManager").Pitch[] = [];
+	for (const pitch of [...built]) {
 		ballSpawner.SpawnBall(pitch.folder);
+		if (ballSpawner.GetBall(pitch.folder)) prepared.push(pitch);
+		else PitchManager.destroyPitch(pitch.folder.Name);
 	}
-	return built;
+	return prepared;
 }
 
 /** Landing page, Friends Team lobby, or the garage reached FROM the landing
