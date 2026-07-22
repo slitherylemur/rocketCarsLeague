@@ -139,6 +139,33 @@ const uiConnections = new Map<Player, Map<string, RBXScriptConnection>>();
 const crateDebounces = new Map<Player, boolean>();
 const selectedCrate = new Map<Player, number>();
 
+// ---- UI flow ownership (menu vs spawn) -------------------------------------
+// SpawnInPlayer and the menu (re)initialisers both span yields (LoadCharacter,
+// SpawnVehicle's internal ~2s of waits, cold/throttled DataStore Gets) and
+// both rewrite the whole PlayerGui. When they interleave for the same player —
+// round-end sendToMenu firing while a PLAY press is mid-spawn, the shop-end
+// auto-spawn landing inside a datastore-delayed initialisePlayerUi, an invite
+// accepted mid-spawn — whichever thread resumes LAST wins, so a player could
+// end up seated in a match car with the landing/garage menu enabled on top
+// (or vice versa). Same idiom as shopGen/inviteGen: every flow that takes over
+// the player's UI claims a generation; long flows re-check after their yields
+// and stand down when superseded, so the NEWEST intent always wins.
+type UiFlowKind = "menu" | "spawn";
+const uiFlowGen = new Map<Player, number>();
+const uiFlowKind = new Map<Player, UiFlowKind>();
+
+function claimUiFlow(player: Player, kind: UiFlowKind): number {
+	const gen = (uiFlowGen.get(player) ?? 0) + 1;
+	uiFlowGen.set(player, gen);
+	uiFlowKind.set(player, kind);
+	return gen;
+}
+
+Players.PlayerRemoving.Connect((player) => {
+	uiFlowGen.delete(player);
+	uiFlowKind.delete(player);
+});
+
 DataStore2.Combine(
 	"BumperCarsRelease",
 	"money",
@@ -575,6 +602,8 @@ interface LandingGuiShape extends ScreenGui {
  * in view via the menu camera. Buttons are wired server-side like every other
  * menu screen. */
 function showLanding(player: Player) {
+	// Landing = menu state: invalidate any in-flight spawn for this player.
+	claimUiFlow(player, "menu");
 	if (!uiConnections.get(player)) {
 		uiConnections.set(player, new Map());
 	}
@@ -918,6 +947,10 @@ function refreshTeamPage(player: Player) {
 }
 
 function showTeamPage(player: Player) {
+	// The mini lobby = menu state: an invite accepted while a spawn is in
+	// flight must win over that spawn, not be buried by its tail (which used
+	// to leave the accepter seated in a car with the team page on screen).
+	claimUiFlow(player, "menu");
 	if (!uiConnections.get(player)) {
 		uiConnections.set(player, new Map());
 	}
@@ -1331,6 +1364,45 @@ const resetting = new Map<Player, boolean>();
 
 Globals.SpawnInPlayer = (player: Player): boolean => {
 	warn(`[SpawnInPlayer] ENTER ${player.Name}`);
+	const flowGen = claimUiFlow(player, "spawn");
+	// True (and cleans up) when a newer flow claimed the player's UI while this
+	// spawn was inside one of its yields. Returning true afterwards is
+	// deliberate: the newer flow owns the UI, so spawnIntoMatch's failure path
+	// must NOT stomp it with yet another menu remount.
+	const standDownIfSuperseded = (stage: string): boolean => {
+		if (uiFlowGen.get(player) === flowGen) {
+			return false;
+		}
+		warn(`[SpawnInPlayer] superseded ${stage} for ${player.Name} — standing down`);
+		if (uiFlowKind.get(player) === "menu") {
+			// A menu flow owns the UI now (round-end sendToMenu, an accepted
+			// invite, a menu re-init) — put the world half back the way menu
+			// players are left (stop()/leaveMatch idiom): off any pitch
+			// roster, dead character, no match car. leaveMatch no-ops when
+			// this spawn never reached a roster, hence the direct cleanup too.
+			pcall(() => footballMatch.leaveMatch(player));
+			pcall(() => {
+				const character = player.Character;
+				const humanoid = character?.FindFirstChildOfClass("Humanoid");
+				if (humanoid) {
+					humanoid.Health = 0;
+				}
+				const vehicle = Globals.vehiclesTable[player.UserId];
+				const vehiclesFolder = game.Workspace.FindFirstChild("Vehicles");
+				if (
+					vehicle !== undefined &&
+					vehiclesFolder !== undefined &&
+					vehicle.model.IsDescendantOf(vehiclesFolder)
+				) {
+					// Match car only — a garage display car spawned by the
+					// menu flow lives under the garage's VehicleFolder and
+					// belongs to that flow.
+					spawnVehicle.KillVehicle(player);
+				}
+			});
+		}
+		return true;
+	};
 	Globals.clearPlayerGarage(player);
 
 	// Original: for i,v in pairs(player.PlayerGui:GetChildren()) do v:Destroy() end
@@ -1338,6 +1410,9 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 
 	player.LoadCharacter();
 	warn(`[SpawnInPlayer] after LoadCharacter Character=${player.Character?.GetFullName() ?? "nil"}`);
+	if (standDownIfSuperseded("during LoadCharacter")) {
+		return true;
+	}
 	// Original: the engine re-cloned StarterGui into PlayerGui on LoadCharacter
 	// (every ScreenGui has ResetOnSpawn = true) — the React equivalent mounts here.
 	PlayerGuiManager.mountAll(player);
@@ -1402,6 +1477,14 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 	}
 	spawnVehicle.SpawnVehicle(player, true, DataUtilities.getPlayerEquippedVehicle(player), spawnCFrame);
 
+	// SpawnVehicle spans ~2s of internal waits — the widest window for a
+	// round-end sendToMenu / accepted invite to remount the menus. Without this
+	// check the code below re-enabled MatchHud on the fresh MENU mount and the
+	// player ended up seated in a match car with the menu still on screen.
+	if (standDownIfSuperseded("during SpawnVehicle")) {
+		return true;
+	}
+
 	if (Globals.gamemode === "Football") {
 		// onPlayerSpawned starts the countdown/lock bookkeeping; the marker set
 		// by preSpawnLock already kept the sit-edge enable from firing.
@@ -1435,10 +1518,18 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 
 	task.wait(1);
 	//game.ReplicatedStorage.FunctionsAndEvents.ToggleMenuCamera:FireClient(player,false)
+	// Final yield above is the last window a menu flow can land in — if it did,
+	// clean up the now-stray car/character so the player really is in the menu.
+	if (standDownIfSuperseded("after spawn")) {
+		return true;
+	}
 	return true;
 };
 
 function initialisePlayerUi(player: Player) {
+	// Callers (initializePlayer / ResetAndInitialisePlayerMenuUI) claimed the
+	// menu flow; remember which claim this run belongs to.
+	const flowGen = uiFlowGen.get(player);
 	task.spawn(() => {
 		DataStore2.SaveAll(player);
 	});
@@ -1464,6 +1555,15 @@ function initialisePlayerUi(player: Player) {
 
 	setPlayerCash(player, playerMoney.Get(DataStoreDefaults.money) as number);
 	setPlayerTrophies(player, DataStore2("trophies", player).Get(DataStoreDefaults.trophies) as number);
+
+	// The Gets above yield on a cold/throttled datastore (live-server latency
+	// Studio never showed). If a spawn flow claimed the UI in that window (the
+	// shop-end auto-spawn, a PLAY press), enabling the menus now would paint
+	// them over a player who is already seated in the match — stand down.
+	if (uiFlowGen.get(player) !== flowGen) {
+		warn(`[initialisePlayerUi] superseded for ${player.Name} — leaving the UI to the newer flow`);
+		return;
+	}
 
 	FunctionsAndEvents.ToggleMenuCamera.FireClient(player, true, playerGarage);
 
@@ -1573,6 +1673,9 @@ function enableSpectateScreen(player: Player, playerToWatch: Player | undefined)
 game.GetService("Players").CharacterAutoLoads = false;
 
 function ResetAndInitialisePlayerMenuUI(player: Player) {
+	// Take the UI over from any in-flight spawn (it stands down at its next
+	// checkpoint instead of re-enabling gameplay UI on top of the menus).
+	claimUiFlow(player, "menu");
 	player.WaitForChild("PlayerGui");
 	// Original: destroy every PlayerGui child, then clone every StarterGui child
 	// back in — PlayerGuiManager reproduces both steps.
@@ -1629,6 +1732,7 @@ function initializePlayer(player: Player) {
 
 	const ui = player.WaitForChild("PlayerGui");
 
+	claimUiFlow(player, "menu");
 	// Original: clone every StarterGui child into PlayerGui.
 	PlayerGuiManager.mountAll(player);
 
