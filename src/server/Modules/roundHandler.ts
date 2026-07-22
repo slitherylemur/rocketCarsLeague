@@ -181,13 +181,21 @@ handler.startRound = () => {
 
 	for (const player of PlayerService.GetPlayers()) {
 		pcall(() => {
+			// FindFirstChild, NOT WaitForChild: a player still mid-join
+			// (createValues / PlayerGui mounts not done yet) must not stall the
+			// round rebuild — an unbounded WaitForChild here yielded startRound
+			// between footballMatch.stop() and beginRound, which both widened
+			// the spawn/rebuild race window and could wedge the whole server.
+			// A mid-join player's values are created at 0 moments later anyway;
+			// a missing one just errors this player's pcall and the rebuild
+			// moves on.
 			const p = player as PlayerWithStats;
-			(p.WaitForChild("kills") as NumberValue).Value = 0;
-			(p.WaitForChild("deaths") as NumberValue).Value = 0;
-			(p.WaitForChild("damageDealt") as NumberValue).Value = 0;
-			(p.WaitForChild("survivalTime") as NumberValue).Value = -1;
-			(p.WaitForChild("spawned") as NumberValue).Value = 0;
-			((player as unknown as { PlayerGui: Instance }).PlayerGui.WaitForChild("Game") as GameGuiShape).Information.Gamemode.Text =
+			(p.FindFirstChild("kills") as NumberValue).Value = 0;
+			(p.FindFirstChild("deaths") as NumberValue).Value = 0;
+			(p.FindFirstChild("damageDealt") as NumberValue).Value = 0;
+			(p.FindFirstChild("survivalTime") as NumberValue).Value = -1;
+			(p.FindFirstChild("spawned") as NumberValue).Value = 0;
+			((player as unknown as { PlayerGui: Instance }).PlayerGui.FindFirstChild("Game") as GameGuiShape).Information.Gamemode.Text =
 				gamemodeName(Globals.gamemode)!;
 		});
 	}

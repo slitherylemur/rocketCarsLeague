@@ -675,6 +675,33 @@ function showLanding(player: Player) {
 
 function spawnIntoMatch(player: Player) {
 	task.spawn(() => {
+		// Round-end interlude: the old round is being torn down and rebuilt
+		// (~20 s of victory scene / ladder map / summary). A SpawnInPlayer
+		// started now would roster onto the DYING round and race the
+		// stop()/beginRound rebuild — its car lands after the roster wipe and
+		// the player ends up driving unrostered on the wrong pitch (and their
+		// team can then never reach kickoff). Hold until the rebuilt round is
+		// spawnable; bail through on timeout so a wedged round can't trap the
+		// button forever.
+		if (!footballMatch.isRoundLive()) {
+			pcall(() => {
+				const timerGui = player.FindFirstChild("PlayerGui")?.FindFirstChild("TimerGui");
+				if (timerGui && timerGui.IsA("ScreenGui")) {
+					const label = timerGui.FindFirstChild("TextLabel");
+					if (label && label.IsA("TextLabel")) {
+						label.Text = "NEXT ROUND STARTING…";
+					}
+					timerGui.Enabled = true;
+				}
+			});
+			for (let i = 0; i < 60 && !footballMatch.isRoundLive(); i++) {
+				task.wait(0.5);
+			}
+			MatchDirector.hideTimer(player);
+			if (player.Parent === undefined) {
+				return;
+			}
+		}
 		const [ok, result] = pcall(() => Globals.SpawnInPlayer(player));
 		if (!ok || result !== true) {
 			warn(`[Landing] SpawnInPlayer failed (ok=${ok} result=${tostring(result)}) — returning to menu`);
