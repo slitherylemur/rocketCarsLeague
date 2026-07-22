@@ -181,14 +181,29 @@ handler.startRound = () => {
 
 	for (const player of PlayerService.GetPlayers()) {
 		pcall(() => {
-			const p = player as PlayerWithStats;
-			(p.WaitForChild("kills") as NumberValue).Value = 0;
-			(p.WaitForChild("deaths") as NumberValue).Value = 0;
-			(p.WaitForChild("damageDealt") as NumberValue).Value = 0;
-			(p.WaitForChild("survivalTime") as NumberValue).Value = -1;
-			(p.WaitForChild("spawned") as NumberValue).Value = 0;
-			((player as unknown as { PlayerGui: Instance }).PlayerGui.WaitForChild("Game") as GameGuiShape).Information.Gamemode.Text =
-				gamemodeName(Globals.gamemode)!;
+			// FindFirstChild, NOT WaitForChild: a player mid-join (createValues
+			// hasn't run yet) or mid-leave has no stat values, and an untimed
+			// WaitForChild on them parks THIS thread forever — pcall does not
+			// rescue a yield — wedging the entire round pipeline (no pitches, no
+			// shop phase, no menu). A half-joined player just skips the reset.
+			const resetStat = (name: string, value: number) => {
+				const stat = player.FindFirstChild(name);
+				if (stat && stat.IsA("NumberValue")) {
+					stat.Value = value;
+				}
+			};
+			resetStat("kills", 0);
+			resetStat("deaths", 0);
+			resetStat("damageDealt", 0);
+			resetStat("survivalTime", -1);
+			resetStat("spawned", 0);
+			const playerGui = player.FindFirstChild("PlayerGui");
+			const gameGui = playerGui && playerGui.FindFirstChild("Game");
+			const information = gameGui && gameGui.FindFirstChild("Information");
+			const gamemodeLabel = information && information.FindFirstChild("Gamemode");
+			if (gamemodeLabel && gamemodeLabel.IsA("TextLabel")) {
+				gamemodeLabel.Text = gamemodeName(Globals.gamemode)!;
+			}
 		});
 	}
 

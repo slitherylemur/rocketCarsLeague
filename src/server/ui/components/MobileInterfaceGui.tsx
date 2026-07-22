@@ -4,9 +4,124 @@
 // omitted here; their behaviour lives in src/client/uiClientBehaviors.client.ts.
 // React owns the STRUCTURE only — translated game code mutates the mounted
 // instances imperatively, exactly like the original operated on cloned templates.
+//
+// POST-LAUNCH ADDITION (hand-written, not from the place file): the custom
+// mobile drive controls — a WASD-style MovePad button cluster on the left
+// (replaces the default Roblox thumbstick, which drives the Humanoid and not
+// the car) and RollLeft/RollRight aerial buttons on the right. Every button is
+// NAMED after the VehicleInput action it drives; VehicleKeyHandler.client.ts
+// wires press/release into the same InputActions the keyboard bindings feed.
 /* eslint-disable */
 
 import React from "@rbxts/react";
+import { VehicleInput } from "shared/vehicleSim/VehicleSim";
+
+// The arrow asset the original Jump button uses (rotated -90 = pointing up).
+const ARROW_IMAGE = "http://www.roblox.com/asset/?id=6031094674";
+
+interface HoldButtonSpec {
+	name: string;
+	color: Color3;
+	anchor: Vector2;
+	position: UDim2;
+	size: UDim2;
+	iconRotation?: number; // ARROW_IMAGE rotation; -90 = up (Jump's convention)
+	text?: string; // used instead of the icon when set (ASCII only — glyph-safe)
+}
+
+// Circle-button factory matching the original Boost/Jump/Drift styling
+// (translucent filled circle, grey UIStroke, centred 80% icon).
+function holdButton(spec: HoldButtonSpec): React.Element {
+	const children: React.Element[] = [
+		React.createElement("UIAspectRatioConstraint", {
+			Name: "UIAspectRatioConstraint",
+			AspectRatio: 1,
+			AspectType: Enum.AspectType.FitWithinMaxSize,
+			DominantAxis: Enum.DominantAxis.Width,
+		} as never),
+		React.createElement("UICorner", {
+			Name: "UICorner",
+			BottomLeftRadius: new UDim(1, 0),
+			BottomRightRadius: new UDim(1, 0),
+			TopLeftRadius: new UDim(1, 0),
+			TopRightRadius: new UDim(1, 0),
+		} as never),
+		React.createElement("UIStroke", {
+			Name: "UIStroke",
+			ApplyStrokeMode: Enum.ApplyStrokeMode.Border,
+			BorderOffset: new UDim(0, 0),
+			BorderStrokePosition: Enum.BorderStrokePosition.Outer,
+			Color: new Color3(0.694117665, 0.694117665, 0.694117665),
+			Enabled: true,
+			LineJoinMode: Enum.LineJoinMode.Round,
+			StrokeSizingMode: Enum.StrokeSizingMode.FixedSize,
+			Thickness: 3,
+			Transparency: 0,
+			ZIndex: 1,
+		} as never),
+	];
+	if (spec.iconRotation !== undefined) {
+		children.push(
+			React.createElement(
+				"ImageLabel",
+				{
+					Name: "ImageLabel",
+					Active: false,
+					AnchorPoint: new Vector2(0.5, 0.5),
+					AutoLocalize: false,
+					BackgroundColor3: new Color3(1, 1, 1),
+					BackgroundTransparency: 1,
+					Image: ARROW_IMAGE,
+					ImageColor3: new Color3(1, 1, 1),
+					Position: new UDim2(0.5, 0, 0.5, 0),
+					Rotation: spec.iconRotation,
+					ScaleType: Enum.ScaleType.Stretch,
+					Selectable: false,
+					Size: new UDim2(0.800000012, 0, 0.800000012, 0),
+					Visible: true,
+					ZIndex: 1,
+				} as never,
+				[
+					React.createElement("UIAspectRatioConstraint", {
+						Name: "UIAspectRatioConstraint",
+						AspectRatio: 1,
+						AspectType: Enum.AspectType.FitWithinMaxSize,
+						DominantAxis: Enum.DominantAxis.Width,
+					} as never),
+				],
+			),
+		);
+	}
+	return React.createElement(
+		"TextButton",
+		{
+			Name: spec.name,
+			Active: true,
+			AnchorPoint: spec.anchor,
+			AutoButtonColor: true,
+			AutoLocalize: false,
+			BackgroundColor3: spec.color,
+			BackgroundTransparency: 0.400000006,
+			FontFace: new Font(
+				"rbxasset://fonts/families/SourceSansPro.json",
+				Enum.FontWeight.Bold,
+				Enum.FontStyle.Normal,
+			),
+			Position: spec.position,
+			Selectable: true,
+			Size: spec.size,
+			Style: Enum.ButtonStyle.Custom,
+			Text: spec.text !== undefined ? spec.text : "",
+			TextColor3: new Color3(1, 1, 1),
+			TextScaled: true,
+			TextStrokeColor3: new Color3(0, 0, 0),
+			TextStrokeTransparency: 0.5,
+			Visible: true,
+			ZIndex: 1,
+		} as never,
+		children,
+	);
+}
 
 export function MobileInterfaceGui(): React.Element {
 	return (
@@ -408,6 +523,81 @@ export function MobileInterfaceGui(): React.Element {
 				} as never),
 			]),
 		]),
+		// ---- custom mobile drive controls (hand-written, see header note) ----
+		// Left: WASD-style MovePad. These fire the same ThrottleForward/
+		// ThrottleBackward/SteerLeft/SteerRight Bool actions as W/S/A/D, so
+		// on the ground they drive/steer and in the air they pitch/yaw —
+		// identical to keyboard. The frame keeps its own aspect ratio so the
+		// cluster geometry is stable across phone/tablet aspect ratios.
+		React.createElement("Frame", {
+			Name: "MovePad",
+			AnchorPoint: new Vector2(0, 1),
+			BackgroundColor3: new Color3(1, 1, 1),
+			BackgroundTransparency: 1,
+			BorderSizePixel: 0,
+			Position: new UDim2(0, 0, 1, 0),
+			Size: new UDim2(0.340000004, 0, 0.5, 0),
+			Visible: true,
+			ZIndex: 1,
+		} as never, [
+			React.createElement("UIAspectRatioConstraint", {
+				Name: "UIAspectRatioConstraint",
+				AspectRatio: 1.5,
+				AspectType: Enum.AspectType.FitWithinMaxSize,
+				DominantAxis: Enum.DominantAxis.Width,
+			} as never),
+			holdButton({
+				name: VehicleInput.ThrottleForward,
+				color: new Color3(0.21960786, 0.235294133, 0.24313727),
+				anchor: new Vector2(0.5, 0.5),
+				position: new UDim2(0.5, 0, 0.259999990, 0),
+				size: new UDim2(0.300000012, 0, 0.439999998, 0),
+				iconRotation: -90, // up
+			}),
+			holdButton({
+				name: VehicleInput.ThrottleBackward,
+				color: new Color3(0.21960786, 0.235294133, 0.24313727),
+				anchor: new Vector2(0.5, 0.5),
+				position: new UDim2(0.5, 0, 0.740000010, 0),
+				size: new UDim2(0.300000012, 0, 0.439999998, 0),
+				iconRotation: 90, // down
+			}),
+			holdButton({
+				name: VehicleInput.SteerLeft,
+				color: new Color3(0.21960786, 0.235294133, 0.24313727),
+				anchor: new Vector2(0.5, 0.5),
+				position: new UDim2(0.170000002, 0, 0.740000010, 0),
+				size: new UDim2(0.300000012, 0, 0.439999998, 0),
+				iconRotation: 180, // left
+			}),
+			holdButton({
+				name: VehicleInput.SteerRight,
+				color: new Color3(0.21960786, 0.235294133, 0.24313727),
+				anchor: new Vector2(0.5, 0.5),
+				position: new UDim2(0.829999983, 0, 0.740000010, 0),
+				size: new UDim2(0.300000012, 0, 0.439999998, 0),
+				iconRotation: 0, // right
+			}),
+		]),
+		// Right: aerial roll buttons (Q/E on keyboard) above the Jump/Drift
+		// row. Pitch/yaw in the air already come from the MovePad; roll is the
+		// only aerial input with no touch equivalent. ASCII text — glyph-safe.
+		holdButton({
+			name: VehicleInput.RollLeft,
+			color: new Color3(0.203921571, 0.486274511, 0.921568632),
+			anchor: new Vector2(1, 0.5),
+			position: new UDim2(0.794216573, 0, 0.280000001, 0),
+			size: new UDim2(0.119999997, 0, 0.119999997, 0),
+			text: "<ROLL",
+		}),
+		holdButton({
+			name: VehicleInput.RollRight,
+			color: new Color3(0.203921571, 0.486274511, 0.921568632),
+			anchor: new Vector2(1, 0.5),
+			position: new UDim2(0.958261728, 0, 0.280000001, 0),
+			size: new UDim2(0.119999997, 0, 0.119999997, 0),
+			text: "ROLL>",
+		}),
 	])
 	);
 }
