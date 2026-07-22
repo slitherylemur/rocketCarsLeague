@@ -614,7 +614,8 @@ const MAX_STEER_ANGLE = math.rad(28);
 
 function poseWheels(rig: Rig, visible: CFrame, dt: number) {
 	const root = rig.root;
-	const steerAttr = attrNumber(root, CarAttr.Steer, 0);
+	// Filtered steer (the angle the sim actually turns with); raw as fallback.
+	const steerAttr = attrNumber(root, CarAttr.SteerFilt, attrNumber(root, CarAttr.Steer, 0));
 	rig.steerVisual += (steerAttr - rig.steerVisual) * math.clamp(dt * 12, 0, 1);
 	const drifting = root.GetAttribute(CarAttr.DriftEngaged) === true;
 
