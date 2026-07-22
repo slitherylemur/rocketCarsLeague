@@ -25,6 +25,7 @@ import TeamRegistry from "./TeamRegistry";
 import type { LadderTeam } from "./TeamRegistry";
 import { Globals } from "../Globals";
 import UiState from "../ui/UiState";
+import { getUiIntentEvent } from "shared/UiIntents";
 import { BallAttr } from "shared/ballSim/BallSim";
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
 import { VehicleInput } from "shared/vehicleSim/VehicleSim";
@@ -36,6 +37,7 @@ export { mapHasGoalParts };
 const PlayerService = game.GetService("Players");
 const RunService = game.GetService("RunService");
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
+const HttpService = game.GetService("HttpService");
 
 export type TeamName = "Red" | "Blue";
 const TEAM_NAMES: TeamName[] = ["Blue", "Red"];
@@ -1052,64 +1054,44 @@ function awardRoundMoney() {
 	}
 }
 
-interface SummaryGuiShape extends ScreenGui {
-	Columns: Frame;
+// ---- round summary payload (Phase 7: the RoundSummary gui is CLIENT-owned) --
+// The server no longer builds the stat columns imperatively; it composes one
+// per-viewer payload (a column per ladder teammate, the viewer's own centered)
+// and delivers it twice: pushed over the Ui_RoundSummary remote AND mirrored as
+// the CB_Summary player attribute for the scene's duration, so a client that
+// (re)connects its renderer mid-scene still paints from replicated state.
+// src/client/ui/roundSummary.client.ts reproduces the old imperative layout
+// (fonts, sizes, ordering) exactly.
+
+interface SummaryColumn {
+	/** LayoutOrder inside Columns — the viewer's own column takes the middle. */
+	order: number;
+	self: boolean;
+	name: string;
+	trophies: number;
+	champion: boolean;
+	goals: number;
+	kills: number;
+	money: number;
 }
 
-const SUMMARY_FONT = new Font("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Heavy, Enum.FontStyle.Normal);
+interface SummaryPayload {
+	duration: number;
+	columns: SummaryColumn[];
+}
 
-function buildSummaryColumn(parent: Frame, forPlayer: Player, subject: Player, layoutOrder: number) {
-	const isSelf = forPlayer === subject;
-	const column = new Instance("Frame");
-	column.Name = "Column";
-	column.LayoutOrder = layoutOrder;
-	column.BackgroundColor3 = Color3.fromRGB(25, 32, 40);
-	column.BackgroundTransparency = 0.15;
-	column.Size = isSelf ? new UDim2(0.24, 0, 0.7, 0) : new UDim2(0.17, 0, 0.55, 0);
-	const corner = new Instance("UICorner");
-	corner.CornerRadius = new UDim(0.06, 0);
-	corner.Parent = column;
-	const layout = new Instance("UIListLayout");
-	layout.FillDirection = Enum.FillDirection.Vertical;
-	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center;
-	layout.VerticalAlignment = Enum.VerticalAlignment.Center;
-	layout.Padding = new UDim(0.03, 0);
-	layout.SortOrder = Enum.SortOrder.LayoutOrder;
-	layout.Parent = column;
-
+function summaryColumnFor(forPlayer: Player, subject: Player, order: number): SummaryColumn {
 	const kills = subject.FindFirstChild("kills");
-	// Trophy gain is the hero row: top and biggest. "CHAMPIONS 🏆+2" makes it
-	// obvious the double trophy comes from winning the champions round.
-	const trophies = roundTrophies.get(subject) ?? 0;
-	const isChampion = roundChampions.has(subject);
-	const rows: Array<[string, string, Color3]> = [
-		[
-			"Trophy",
-			isChampion ? `CHAMPIONS 🏆+${trophies}` : `🏆 +${trophies}`,
-			trophies > 0 ? Color3.fromRGB(255, 215, 0) : Color3.fromRGB(150, 150, 150),
-		],
-		["Name", isSelf ? "YOU" : subject.Name, new Color3(1, 1, 1)],
-		["Goals", `Goals: ${roundGoals.get(subject) ?? 0}`, Color3.fromRGB(255, 220, 120)],
-		["Kills", `Kills: ${kills && kills.IsA("NumberValue") ? kills.Value : 0}`, Color3.fromRGB(255, 140, 120)],
-		["Money", `+$${roundEarnings.get(subject) ?? 0}`, Color3.fromRGB(140, 255, 160)],
-	];
-	for (let i = 0; i < rows.size(); i++) {
-		const label = new Instance("TextLabel");
-		label.Name = rows[i][0];
-		label.LayoutOrder = i;
-		label.BackgroundTransparency = 1;
-		label.FontFace = SUMMARY_FONT;
-		label.TextScaled = true;
-		label.TextColor3 = rows[i][2];
-		label.Text = rows[i][1];
-		label.Size = new UDim2(0.9, 0, i === 0 ? 0.28 : i === 1 ? 0.18 : 0.12, 0);
-		if (i === 0 && isChampion) {
-			label.TextStrokeTransparency = 0;
-			label.TextStrokeColor3 = Color3.fromRGB(90, 60, 0);
-		}
-		label.Parent = column;
-	}
-	column.Parent = parent;
+	return {
+		order,
+		self: forPlayer === subject,
+		name: subject.Name,
+		trophies: roundTrophies.get(subject) ?? 0,
+		champion: roundChampions.has(subject),
+		goals: roundGoals.get(subject) ?? 0,
+		kills: kills && kills.IsA("NumberValue") ? kills.Value : 0,
+		money: roundEarnings.get(subject) ?? 0,
+	};
 }
 
 // ---- coordinator (public API — same surface the callers already use) -----
@@ -1722,22 +1704,13 @@ const footballMatch = {
 
 	/** Full-screen per-player round summary (design §9): a stats column per
 	 * LADDER TEAMMATE of the viewer (never the opponents) — yours centered and
-	 * bigger. Blocks ~6 s. */
+	 * bigger. Blocks ~6 s (the wait gates the round flow exactly as before;
+	 * only the DOM construction moved client-side in Phase 7). */
 	showRoundSummary() {
+		const summaryRemote = getUiIntentEvent("Ui_RoundSummary");
 		for (const match of matches) {
 			for (const [player] of match.roster) {
 				pcall(() => {
-					const playerGui = player.FindFirstChild("PlayerGui");
-					const gui = playerGui && playerGui.FindFirstChild("RoundSummary");
-					if (!gui || !gui.IsA("ScreenGui") || !gui.FindFirstChild("Columns")) {
-						return;
-					}
-					const summary = gui as SummaryGuiShape;
-					for (const child of summary.Columns.GetChildren()) {
-						if (child.IsA("Frame")) {
-							child.Destroy();
-						}
-					}
 					// Only the viewer's own ladder team makes the board: same
 					// LadderTeam members, restricted to this match's roster so
 					// the stats maps actually cover them.
@@ -1755,6 +1728,7 @@ const footballMatch = {
 					}
 					// Own column centered: teammates fill orders around the middle.
 					const middle = math.floor(teammates.size() / 2);
+					const columns: SummaryColumn[] = [];
 					let order = 0;
 					for (const subject of teammates) {
 						if (subject === player) {
@@ -1763,22 +1737,24 @@ const footballMatch = {
 						if (order === middle) {
 							order += 1; // reserve the middle slot
 						}
-						buildSummaryColumn(summary.Columns, player, subject, order);
+						columns.push(summaryColumnFor(player, subject, order));
 						order += 1;
 					}
-					buildSummaryColumn(summary.Columns, player, player, middle);
-					summary.Enabled = true;
+					columns.push(summaryColumnFor(player, player, middle));
+					const payload: SummaryPayload = { duration: SUMMARY_TIME, columns };
+					const encoded = HttpService.JSONEncode(payload);
+					// Attribute FIRST (state), then the push (event) — a client
+					// handling the event can rely on the mirror being current.
+					UiState.setPlayerAttr(player, "CB_Summary", encoded);
+					summaryRemote.FireClient(player, encoded);
 				});
 			}
 		}
 		task.wait(SUMMARY_TIME);
 		for (const player of PlayerService.GetPlayers()) {
 			pcall(() => {
-				const playerGui = player.FindFirstChild("PlayerGui");
-				const gui = playerGui && playerGui.FindFirstChild("RoundSummary");
-				if (gui && gui.IsA("ScreenGui")) {
-					gui.Enabled = false;
-				}
+				// Scene over: clearing the mirror hides the client-rendered gui.
+				UiState.setPlayerAttr(player, "CB_Summary", undefined);
 			});
 		}
 	},

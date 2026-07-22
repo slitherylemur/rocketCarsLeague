@@ -10,13 +10,17 @@
 //     — the ENGINE then re-cloned StarterGui into PlayerGui (all these ScreenGuis
 //     have ResetOnSpawn = true).
 //
-// mountAll() = "clone every StarterGui child" (every SERVER-owned ScreenGui +
-// the Steer NumberValue — the client-owned ScreenGuis listed in buildTree's
-// comment are mounted once by src/client/ui/bootstrap.client.ts instead).
-// destroyAll() = the destroy-all loops (React roots are unmounted
-// rather than Destroy()ed so the reconciler stays consistent; any non-React
-// leftovers in PlayerGui — e.g. sounds parented there by the money popups — are
-// destroyed exactly like the original loop did).
+// Phase 7: the server-owned tree is EMPTY — every ScreenGui is client-mounted
+// now (see buildTree's comment), so mountAll renders nothing and destroyAll's
+// React half is a no-op. The module survives until the Phase 8 demolition
+// because the lifecycle CALLS still run (initializePlayer / SpawnInPlayer /
+// ResetAndInitialisePlayerMenuUI), and destroyAll's non-React sweep is still
+// the original "destroy every PlayerGui child" loop — client-created guis
+// never replicate to the server, so it only ever sees genuinely server-side
+// strays (the client-owned UI is untouchable from here by construction).
+//
+// mountAll() = "clone every StarterGui child" — an empty set since Phase 7.
+// destroyAll() = the destroy-all loops.
 //
 // A synchronous legacy root is used so instances exist the moment mountAll
 // returns — the translated game code dot-accesses them immediately, exactly as
@@ -28,8 +32,6 @@
 
 import React from "@rbxts/react";
 import ReactRoblox from "@rbxts/react-roblox";
-import { RoundSummaryGui } from "shared/ui/components/RoundSummaryGui";
-import { LadderMapGui } from "shared/ui/components/LadderMapGui";
 
 interface PlayerRootInfo {
 	root: ReactRoblox.Root;
@@ -39,26 +41,20 @@ interface PlayerRootInfo {
 const roots = new Map<Player, PlayerRootInfo>();
 
 function buildTree(): React.Element {
-	// (Multipliers retired with the timed cash-multiplier products.
-	// CLIENT-mounted now — src/client/ui/bootstrap.client.ts owns: TimerGui
-	// [Phase 2]; MatchHud, FaceOff, Victory, MobileInterface,
+	// EMPTY since Phase 7. (Multipliers retired with the timed cash-multiplier
+	// products. CLIENT-mounted now — src/client/ui/bootstrap.client.ts owns:
+	// TimerGui [Phase 2]; MatchHud, FaceOff, Victory, MobileInterface,
 	// PlayerMoneyGainedPopups, DataLoss [Phase 3]; Landing, CreateTeam,
 	// InvitePopup, RenamePopup [Phase 4 — rendered by
 	// src/client/ui/menu.client.ts from CB_FlowState & friends]; Garage,
 	// CrateMenu [Phase 5 — rendered by src/client/ui/garage.client.ts +
 	// crateAnimation.client.ts from the Ui_GetProfile snapshot & friends];
-	// Game [Phase 6 — src/client/ui/gameHud.client.ts + gameUi.client.ts].)
-	return React.createElement(
-		React.Fragment,
-		undefined,
-		React.createElement(RoundSummaryGui, { key: "RoundSummary" }),
-		// Ladder map after the victory scene + summary (Top Table Phase 4b);
-		// doubles as the session-end champions screen (Phase 5).
-		React.createElement(LadderMapGui, { key: "LadderMap" }),
-		// Steer NumberValue — a plain (non-UI) StarterGui child, cloned along
-		// with everything else in the original. Value was 0 in the place file.
-		React.createElement("NumberValue", { Name: "Steer", Value: 0, key: "Steer" } as never),
-	);
+	// Game [Phase 6 — src/client/ui/gameHud.client.ts + gameUi.client.ts];
+	// RoundSummary, LadderMap [Phase 7 — roundSummary.client.ts /
+	// ladderMap.client.ts from Ui_RoundSummary+CB_Summary / CB_LadderData].
+	// The old Steer NumberValue StarterGui child is dropped too: zero
+	// consumers anywhere — the sim's Steer is a vehicle attribute.)
+	return React.createElement(React.Fragment, undefined);
 }
 
 // (applyNextSelectionWirings removed in Phase 5, applyTemplateState in Phase 6

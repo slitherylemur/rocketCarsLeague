@@ -1,8 +1,9 @@
 // Full-screen ladder map shell (Top Table Phase 4b, redesigned 2026-07-22).
-// Structure only: the server (src/server/ui/LadderMapScreen.ts) builds the
-// horizontal pitch strip into Canvas.Stage.World imperatively and owns the
-// timeline; the actual tweens run CLIENT-side (src/client/ladderMap.client.ts)
-// off CB_* attributes the server stages.
+// Structure only: since migration Phase 7 the CLIENT builds the horizontal
+// pitch strip into Canvas.Stage.World (src/client/ladderMap.client.ts, from
+// the CB_LadderData payload) and runs the tweens; the server
+// (src/server/ui/LadderMapScreen.ts) owns the blocking timeline and stages
+// the phases via CB_LadderAnim.
 //
 // Layer contract:
 //   * Canvas (CanvasGroup) — EVERYTHING visual sits inside it so the whole
@@ -34,7 +35,9 @@ export function LadderMapGui(): React.Element {
 			Enabled: false,
 			// Full-bleed: the Backdrop must cover the topbar/notch areas.
 			IgnoreGuiInset: true,
-			ResetOnSpawn: true,
+			// Phase 7: CLIENT-mounted (bootstrap.client.ts) — must survive
+			// respawns; Enabled derives from CB_LadderData presence.
+			ResetOnSpawn: false,
 			ScreenInsets: Enum.ScreenInsets.None,
 			ZIndexBehavior: Enum.ZIndexBehavior.Sibling,
 		} as never,

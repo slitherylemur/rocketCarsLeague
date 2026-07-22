@@ -40,11 +40,11 @@ Players.CharacterAutoLoads = false;
 const MemoryStoreService = game.GetService("MemoryStoreService");
 const testStoreMap = MemoryStoreService.GetSortedMap("testStoreMap");
 
-// (GarageGuiShape retired in Phase 5; GameGuiShape/playerGuiOf in Phase 6: the
-// Garage/CrateMenu/Game ScreenGuis are CLIENT-owned — the server never touches
-// their instances any more. The server-rendered tree is down to RoundSummary +
-// LadderMap, whose instances only PlayerGuiManager/LadderMapScreen/
-// footballMatch access.)
+// (GarageGuiShape retired in Phase 5; GameGuiShape/playerGuiOf in Phase 6;
+// RoundSummary/LadderMap moved client-side in Phase 7: EVERY ScreenGui is
+// CLIENT-owned now — the server publishes attributes/remotes only and never
+// touches PlayerGui instances. PlayerGuiManager renders an empty tree until
+// the Phase 8 demolition.)
 
 Players.PlayerRemoving.Connect((player) => {
 	const playerMoney = DataStore2("money", player).Get(0) as number;

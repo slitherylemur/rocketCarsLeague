@@ -29,6 +29,8 @@ import { CreateTeamGui, InvitePopupGui, RenamePopupGui } from "shared/ui/compone
 import { GarageGui } from "shared/ui/components/GarageGui";
 import { CrateMenuGui } from "shared/ui/components/CrateMenuGui";
 import { GameGui } from "shared/ui/components/GameGui";
+import { RoundSummaryGui } from "shared/ui/components/RoundSummaryGui";
+import { LadderMapGui } from "shared/ui/components/LadderMapGui";
 
 const Players = game.GetService("Players");
 const LocalPlayer = Players.LocalPlayer;
@@ -75,6 +77,14 @@ const MOUNTS: Array<[string, () => React.Element]> = [
 	// CB_Gamemode / CB_EndScreen; the legacy remote consumers (UiTimer,
 	// spectatePlayer, infoUi, CloseToWin) stay in src/client/gameUi.client.ts.
 	["Game", GameGui],
+	// Phase 7: end-of-round stats columns — built by
+	// src/client/ui/roundSummary.client.ts from the Ui_RoundSummary push with
+	// the CB_Summary attribute as the state-shaped fallback.
+	["RoundSummary", RoundSummaryGui],
+	// Phase 7: ladder map / champions scene — board built and tweened by
+	// src/client/ladderMap.client.ts from CB_LadderData + CB_LadderAnim (the
+	// server keeps the blocking scene timeline).
+	["LadderMap", LadderMapGui],
 ];
 
 // The holder is only the React root container bookkeeping object; the actual
