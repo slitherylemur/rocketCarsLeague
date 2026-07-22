@@ -268,6 +268,10 @@ const spawnVehicleModule = {
 		} else {
 			newModel.Parent = (game.Workspace as unknown as { Vehicles: Folder }).Vehicles;
 			newModel.Name = `${newModel.Name}${player.UserId}`;
+			// killNotowned grace marker: the car is occupant-less until
+			// SeatPlayer's Sit, and a sweep landing in that window used to
+			// destroy it mid-spawn (see killNotowned.server.ts).
+			newModel.SetAttribute("CB_SpawnedAt", os.clock());
 			warn(`[SpawnVehicle] parented match vehicle to ${newModel.GetFullName()}`);
 		}
 

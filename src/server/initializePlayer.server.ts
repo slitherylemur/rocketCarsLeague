@@ -41,6 +41,15 @@ import DataStore2 from "./Modules/DataStore2";
 
 //MemoryStoreTest--
 const Players = game.GetService("Players");
+
+// Stops the engine auto-spawning characters (menu-first flow; UIs are mounted
+// into the player manually). This used to sit mid-file, AFTER hundreds of
+// lines of handler setup — moved to the top of the body so the window in
+// which a production first-joiner can be admitted with the flag still true is
+// as small as this script can make it (initCharacterAutoLoads.server.ts and
+// the StarterPlayer property in default.project.json cover the imports above).
+Players.CharacterAutoLoads = false;
+
 const MemoryStoreService = game.GetService("MemoryStoreService");
 const testStoreMap = MemoryStoreService.GetSortedMap("testStoreMap");
 
@@ -1350,6 +1359,10 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 	// Original: for i,v in pairs(player.PlayerGui:GetChildren()) do v:Destroy() end
 	PlayerGuiManager.destroyAll(player);
 
+	// Mark this engine spawn as requested: initializePlayer's CharacterAdded
+	// guard destroys any character that appears WITHOUT this mark (boot-race
+	// auto-loads at 0,0,0). Cleared by ResetAndInitialisePlayerMenuUI.
+	player.SetAttribute("CB_ExpectCharacter", true);
 	player.LoadCharacter();
 	warn(`[SpawnInPlayer] after LoadCharacter Character=${player.Character?.GetFullName() ?? "nil"}`);
 	// Original: the engine re-cloned StarterGui into PlayerGui on LoadCharacter
@@ -1397,9 +1410,17 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 	}
 	if (spawnCFrame === undefined) {
 		const spawnParts: BasePart[] = [];
-		for (const descendant of (game.Workspace as unknown as { SpawnPoints: Folder }).SpawnPoints.GetDescendants()) {
-			if (descendant.IsA("BasePart")) {
-				spawnParts.push(descendant);
+		// FindFirstChild, not a direct index: PitchManager CLEARS this legacy
+		// folder on every round build, and a missing/empty folder must mean
+		// "no spawn" (clean false → caller returns the player to the menu),
+		// never a throw that strands the character LoadCharacter just put at
+		// the world origin.
+		const legacySpawnPoints = game.Workspace.FindFirstChild("SpawnPoints");
+		if (legacySpawnPoints) {
+			for (const descendant of legacySpawnPoints.GetDescendants()) {
+				if (descendant.IsA("BasePart")) {
+					spawnParts.push(descendant);
+				}
 			}
 		}
 		if (spawnParts.size() === 0) {
@@ -1415,6 +1436,31 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 		footballMatch.preSpawnLock(player);
 	}
 	spawnVehicle.SpawnVehicle(player, true, DataUtilities.getPlayerEquippedVehicle(player), spawnCFrame);
+
+	// SpawnVehicle can abort WITHOUT throwing (missing template, car destroyed
+	// mid-choreography by a sweeper, SeatPlayer bailing before Sit). Every one
+	// of those left the player as a raw walking character at the LoadCharacter
+	// spawn — the world origin, since no SpawnLocation exists — with the match
+	// HUD on and the round running without them. Verify car + occupied seat
+	// before declaring success; callers route `false` back to the menu, which
+	// clears the character.
+	const spawnedVehicle = Globals.vehiclesTable[player.UserId];
+	const spawnedSeat = spawnedVehicle?.model.FindFirstChildWhichIsA("VehicleSeat", true);
+	if (
+		spawnedVehicle === undefined ||
+		spawnedVehicle.model.Parent === undefined ||
+		spawnedSeat === undefined ||
+		spawnedSeat.Occupant === undefined
+	) {
+		warn(`[SpawnInPlayer] ABORT no seated vehicle after SpawnVehicle for ${player.Name}`);
+		if (Globals.gamemode === "Football") {
+			// Un-roster cleanly (clears CB_Side/CB_PitchId/lock marker) so the
+			// pitch doesn't wait on a ghost; the shop-phase auto start retries
+			// this player next round.
+			pcall(() => footballMatch.leaveMatch(player));
+		}
+		return false;
+	}
 
 	if (Globals.gamemode === "Football") {
 		// onPlayerSpawned starts the countdown/lock bookkeeping; the marker set
@@ -1583,10 +1629,23 @@ function enableSpectateScreen(player: Player, playerToWatch: Player | undefined)
 	FunctionsAndEvents.spectatePlayer.FireClient(player, playerToWatch);
 }
 
-//stops the players character from spawning and moves all the uis into the player as it deosnt automaticaly happen without spawning character
-game.GetService("Players").CharacterAutoLoads = false;
+// (CharacterAutoLoads = false moved to the top of this script's body — see the
+// comment there. Keeping the flag OFF is what makes a character in the menu
+// flow always a bug.)
 
 function ResetAndInitialisePlayerMenuUI(player: Player) {
+	// Menu-flow players never have a character (menu camera + garage). Any
+	// character reaching here is a leftover: SpawnInPlayer's LoadCharacter
+	// after a failed spawn attempt, or a boot-race engine auto-load — standing
+	// at the world origin, since the place has no SpawnLocation. Destroying it
+	// also kills the owned car via spawnVehicle's CharacterRemoving hook, and
+	// lets the MenuCameraReady handshake re-aim the menu camera (it refuses
+	// while a character exists).
+	player.SetAttribute("CB_ExpectCharacter", undefined);
+	const leftoverCharacter = player.Character;
+	if (leftoverCharacter) {
+		leftoverCharacter.Destroy();
+	}
 	player.WaitForChild("PlayerGui");
 	// Original: destroy every PlayerGui child, then clone every StarterGui child
 	// back in — PlayerGuiManager reproduces both steps.
@@ -1633,10 +1692,35 @@ function initializePlayer(player: Player) {
 	if (initializedPlayers.has(player)) return;
 	initializedPlayers.add(player);
 
+	// Production DataStore resilience: DataStore2.Get() retries FOREVER when
+	// the service errors (no backup was configured anywhere) — a launch-day
+	// outage or throttle wedged join/spawn threads mid-flow, leaving players
+	// with no menu (or standing at 0,0,0 mid-SpawnInPlayer) and the game never
+	// starting. After 5 failed attempts Get() now falls back to the provided
+	// defaults; DataStore2 marks the session as a backup so those defaults are
+	// never saved over the player's real data. All keys are combined into one
+	// store, so this single call covers every key.
+	DataStore2("money", player).SetBackup(5);
+
 	const existingCharacter = player.Character;
 	if (existingCharacter) {
 		existingCharacter.Destroy();
 	}
+	// The destroy above only helps when the auto-loaded character ALREADY
+	// exists. A player admitted while this script was still evaluating (the
+	// engine will do that on a slow production cold boot, with
+	// CharacterAutoLoads still true) can have their character materialize
+	// AFTER that check — it then stands at the world origin forever (no
+	// SpawnLocation in the place, and nothing else ever removes it, while the
+	// MenuCameraReady handshake refuses to aim the menu camera as long as a
+	// character exists). Destroy any character that appears without
+	// SpawnInPlayer having requested it.
+	player.CharacterAdded.Connect((character) => {
+		if (player.GetAttribute("CB_ExpectCharacter") !== true) {
+			warn(`[initializePlayer] destroying stray auto-loaded character for ${player.Name}`);
+			character.Destroy();
+		}
+	});
 
 	//task.wait(0.2)
 	Globals.PlayerJoinedTimes[player.UserId] = os.time();
@@ -1837,4 +1921,20 @@ FunctionsAndEvents.PlayerReset.OnServerEvent.Connect((player) => {
 	}
 });
 
-roundHandler.startRound();
+// The whole round system hangs off this one boot call. If it throws (a
+// production-only hiccup during pitch build/ball spawn), no round ever
+// exists, footballMatch.getSpawnCFrame returns nil for everyone, and every
+// PLAY press bounces straight back to the menu — the game never starts.
+// Retry until a round is up instead of dying silently.
+task.spawn(() => {
+	let bootAttempt = 0;
+	while (true) {
+		bootAttempt += 1;
+		const [ok, err] = pcall(() => roundHandler.startRound());
+		if (ok) {
+			break;
+		}
+		warn(`[Boot] startRound failed (attempt ${bootAttempt}): ${err} — retrying in 10s`);
+		task.wait(10);
+	}
+});
