@@ -16,7 +16,10 @@ export function DataLossGui(): React.Element {
 		ClipToDeviceSafeArea: true,
 		DisplayOrder: 0,
 		Enabled: false,
-		ResetOnSpawn: true,
+		// Was true in the place file — this gui is now CLIENT-mounted once by
+		// src/client/ui/bootstrap.client.ts and must survive respawns
+		// (src/client/ui/dataLoss.client.ts derives Enabled from CB_DataLoss).
+		ResetOnSpawn: false,
 		SafeAreaCompatibility: Enum.SafeAreaCompatibility.FullscreenExtension,
 		ScreenInsets: Enum.ScreenInsets.CoreUISafeInsets,
 		SelectionBehaviorDown: Enum.SelectionBehavior.Escape,

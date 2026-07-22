@@ -140,7 +140,9 @@ Players.PlayerAdded.Connect((player) => {
 				", MSValue: " +
 				playerMoneyMS,
 		);
-		(player.WaitForChild("PlayerGui").WaitForChild("DataLoss") as ScreenGui).Enabled = true;
+		// DataLoss is CLIENT-mounted (Phase 3) — publish the flag as a player
+		// attribute; src/client/ui/dataLoss.client.ts derives Enabled from it.
+		UiState.setPlayerAttr(player, "CB_DataLoss", true);
 	}
 });
 
@@ -1567,8 +1569,9 @@ function spawnInPlayerInner(player: Player): boolean {
 
 	// SpawnVehicle spans ~2s of internal waits — the widest window for a
 	// round-end sendToMenu / accepted invite to remount the menus. Without this
-	// check the code below re-enabled MatchHud on the fresh MENU mount and the
-	// player ended up seated in a match car with the menu still on screen.
+	// check the code below ran match bookkeeping (onPlayerSpawned) on top of a
+	// fresh MENU mount and the player ended up seated in a match car with the
+	// menu still on screen.
 	if (standDownIfSuperseded("during SpawnVehicle")) {
 		return true;
 	}
@@ -1601,11 +1604,9 @@ function spawnInPlayerInner(player: Player): boolean {
 	if (Globals.gamemode === "Football") {
 		// onPlayerSpawned starts the countdown/lock bookkeeping; the marker set
 		// by preSpawnLock already kept the sit-edge enable from firing.
+		// (MatchHud is CLIENT-mounted now — matchHud.client.ts derives its
+		// Enabled from the CB_PitchId attribute the roster flow already set.)
 		footballMatch.onPlayerSpawned(player);
-		const matchHud = player.WaitForChild("PlayerGui").FindFirstChild("MatchHud");
-		if (matchHud && matchHud.IsA("ScreenGui")) {
-			matchHud.Enabled = true;
-		}
 	}
 	//game.ReplicatedStorage.FunctionsAndEvents.ToggleMenuCamera:FireClient(player,false)
 	// player.PlayerGui.Game.KillVehicle.MouseButton1Click:Connect(function()

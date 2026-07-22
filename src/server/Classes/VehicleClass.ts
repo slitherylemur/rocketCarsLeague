@@ -15,7 +15,7 @@ import DSDefaultValues from "../Modules/DataStoreDefaults";
 import spawnVehicle from "../Modules/spawnVehicle";
 import { Globals } from "../Globals";
 import { COLLISION_GROUPS } from "shared/collisionGroups";
-import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
+import { getUiIntentEvent } from "shared/UiIntents";
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
 import { VehicleModel, VehicleModelAttr } from "shared/vehicleSim/VehicleSim";
 
@@ -25,7 +25,6 @@ export type { VehicleWheel, VehicleBase, VehicleModel } from "shared/vehicleSim/
 
 //services
 const Players = game.GetService("Players");
-const TweenService = game.GetService("TweenService");
 const MarketplaceService = game.GetService("MarketplaceService");
 const RunService = game.GetService("RunService");
 
@@ -643,95 +642,44 @@ function getCenterOfIntersectingPoints(hitBoxPart: BasePart, damagePart: BasePar
 	return centerPoint;
 }
 
-function CreateMoneyUiAnimation(MoneyUi: TextLabel, screenPosition: Vector3) {
-	MoneyUi.Position = new UDim2(0, screenPosition.X, 0, screenPosition.Y);
+// Phase 3 (client UI migration): PlayerMoneyGainedPopups is CLIENT-mounted and
+// the whole presentation (label clones, tweens, cash/coin sounds) runs in
+// src/client/ui/moneyPopups.client.ts. The server keeps computing the amounts
+// exactly as before (calculateMultMoney × DAMAGE_MONEY_MULT / KILL_MONEY —
+// display-only; the actual grant stays in roundHandler's PlayerDamaged handler)
+// and pushes them over the Ui_MoneyGained remote with the WORLD anchor point —
+// no more per-hit GetPlayerPointToScreenSpace.InvokeClient (a server-blocking
+// client invoke), server-side tweens, or Sounds parented into PlayerGui.
+let moneyGainedRemote: RemoteEvent | undefined;
 
-	const startPos = new UDim2(
-		(math.random(1, 20) - 10) / 50,
-		screenPosition.X,
-		(math.random(1, 20) - 10) / 50,
-		screenPosition.Y,
-	);
-
-	const tweenIn = TweenService.Create(
-		MoneyUi,
-		new TweenInfo(1, Enum.EasingStyle.Elastic, Enum.EasingDirection.Out),
-		{ Position: startPos },
-	);
-	tweenIn.Play();
-	tweenIn.Completed.Wait();
-
-	const tweenInfo = new TweenInfo(1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
-	task.wait(0.6);
-
-	const tweenOut = TweenService.Create(MoneyUi, tweenInfo, {
-		Position: new UDim2(startPos.X.Scale, startPos.X.Offset, 1.5, startPos.Y.Offset),
-	});
-	tweenOut.Play();
+function moneyGainedEvent(): RemoteEvent {
+	if (moneyGainedRemote === undefined) {
+		moneyGainedRemote = getUiIntentEvent("Ui_MoneyGained");
+	}
+	return moneyGainedRemote;
 }
 
 function showMoneyGainedOnAttackersScreen(attacker: Player, damage: number, wasKill: boolean, collisionPoint: Vector3) {
-	const Gui = (attacker as unknown as { PlayerGui: { PlayerMoneyGainedPopups: ScreenGui } }).PlayerGui
-		.PlayerMoneyGainedPopups;
-	let screenPosition: Vector3 | undefined = undefined;
-
+	let worldPoint = collisionPoint;
 	// eslint-disable-next-line no-self-compare
 	if (collisionPoint !== collisionPoint) {
-		// NaN check (raycast found no intersection points → 0/0)
-		screenPosition = FunctionsAndEvents.GetPlayerPointToScreenSpace.InvokeClient(
-			attacker,
-			(attacker.Character as unknown as { HumanoidRootPart: BasePart }).HumanoidRootPart.Position,
-		) as Vector3;
-	} else {
-		screenPosition = FunctionsAndEvents.GetPlayerPointToScreenSpace.InvokeClient(
-			attacker,
-			collisionPoint,
-		) as Vector3;
+		// NaN check (raycast found no intersection points → 0/0) — anchor on the
+		// attacker's own character instead, like the original screen-space
+		// fallback did (originally a dot-access that threw without a character).
+		const character = attacker.Character;
+		const root = character ? character.FindFirstChild("HumanoidRootPart") : undefined;
+		if (!root || !root.IsA("BasePart")) {
+			return;
+		}
+		worldPoint = root.Position;
 	}
 
-	const damageUi = (
-		game.GetService("ReplicatedStorage") as unknown as { Ui: { DamageMoney: TextLabel } }
-	).Ui.DamageMoney.Clone();
-	task.delay(0.1, () => {
-		const damageMoney = Globals.calculateMultMoney(attacker, damage * Globals.DAMAGE_MONEY_MULT);
-		const sound = (
-			game.GetService("ServerStorage") as unknown as { Sounds: { cashSmall: Sound; cashBig: Sound } }
-		).Sounds.cashSmall.Clone();
-		if (damageMoney >= 10) {
-			// Original declared a shadowed `local sound` here that was never used
-			// outside this branch — preserved (the outer cashSmall still plays).
-			const soundBig = (
-				game.GetService("ServerStorage") as unknown as { Sounds: { cashBig: Sound } }
-			).Sounds.cashBig.Clone();
-		}
-		sound.Parent = (attacker as unknown as { PlayerGui: Instance }).PlayerGui;
-		sound.Play();
-		damageUi.Text = "+" + damageMoney + "$";
-
-		damageUi.Parent = Gui;
-		CreateMoneyUiAnimation(damageUi, screenPosition!);
-	});
+	const damageMoney = Globals.calculateMultMoney(attacker, damage * Globals.DAMAGE_MONEY_MULT);
+	moneyGainedEvent().FireClient(attacker, damageMoney, "damage", worldPoint);
 
 	if (wasKill) {
-		for (let i = 1; i <= 2; i++) {
-			const sound = (
-				(game.GetService("ServerStorage") as unknown as { Sounds: Folder }).Sounds.FindFirstChild(
-					"killCoins" + i,
-				) as Sound
-			).Clone();
-			sound.Parent = (attacker as unknown as { PlayerGui: Instance }).PlayerGui;
-			sound.Play();
-		}
-		const KillMoney = Globals.calculateMultMoney(attacker, Globals.KILL_MONEY);
-
-		const killUi = (
-			game.GetService("ReplicatedStorage") as unknown as { Ui: { KillMoney: TextLabel } }
-		).Ui.KillMoney.Clone();
-		killUi.Text = "+" + KillMoney + "$";
-		task.delay(0.4, () => {
-			killUi.Parent = Gui;
-			CreateMoneyUiAnimation(killUi, screenPosition!);
-		});
+		const killMoney = Globals.calculateMultMoney(attacker, Globals.KILL_MONEY);
+		moneyGainedEvent().FireClient(attacker, killMoney, "kill", worldPoint);
 	}
 }
 

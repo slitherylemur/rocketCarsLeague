@@ -50,9 +50,25 @@ export type UiPushEventName = (typeof UI_PUSH_EVENT_NAMES)[number];
 export const UI_FUNCTION_NAMES = ["Ui_GetProfile"] as const;
 export type UiFunctionName = (typeof UI_FUNCTION_NAMES)[number];
 
+/**
+ * Runtime-replicated sound templates for client-rendered UI (Phase 3): the
+ * money-popup sounds live in ServerStorage.Sounds in the place file, which the
+ * client cannot read — UiIntents.server.ts clones them into this folder (under
+ * UiIntents) at startup so moneyPopups.client.ts can play the exact same
+ * assets locally.
+ */
+export const UI_SOUNDS_FOLDER_NAME = "UiSounds";
+export const UI_SOUND_NAMES = ["cashSmall", "cashBig", "killCoins1", "killCoins2"] as const;
+export type UiSoundName = (typeof UI_SOUND_NAMES)[number];
+
 /** Waits for the server-created UiIntents folder (client-safe). */
 export function getUiIntentsFolder(): Folder {
 	return ReplicatedStorage.WaitForChild(UI_INTENTS_FOLDER_NAME) as Folder;
+}
+
+/** Waits for the server-replicated UI sound templates folder (client-safe). */
+export function getUiSoundsFolder(): Folder {
+	return getUiIntentsFolder().WaitForChild(UI_SOUNDS_FOLDER_NAME) as Folder;
 }
 
 /** Waits for one of the UiIntents RemoteEvents by (typed) name. */

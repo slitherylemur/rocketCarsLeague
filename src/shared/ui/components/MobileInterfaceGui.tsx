@@ -131,7 +131,10 @@ export function MobileInterfaceGui(): React.Element {
 		ClipToDeviceSafeArea: true,
 		DisplayOrder: 0,
 		Enabled: false,
-		ResetOnSpawn: true,
+		// Was true in the place file — this gui is now CLIENT-mounted once by
+		// src/client/ui/bootstrap.client.ts and must survive respawns
+		// (VehicleKeyHandler.client.ts owns Enabled/wiring per sit).
+		ResetOnSpawn: false,
 		SafeAreaCompatibility: Enum.SafeAreaCompatibility.FullscreenExtension,
 		ScreenInsets: Enum.ScreenInsets.CoreUISafeInsets,
 		SelectionBehaviorDown: Enum.SelectionBehavior.Escape,

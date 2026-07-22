@@ -306,12 +306,15 @@ UserInputService.InputChanged.Connect((input) => {
 	}
 });
 
-// MobileInterface is destroyed and re-mounted server-side on every spawn, so
-// this must re-wire whenever the instance changes — it's retried from the
-// per-sit maintenance loop (and the PlayerGui.ChildAdded remount hook) until
-// the base buttons exist: the ScreenGui and its children can replicate over
-// several frames, and dot-accessing a button that hadn't arrived yet used to
-// error and kill the whole seating thread, leaving visible-but-dead buttons.
+// MobileInterface is CLIENT-mounted once at boot now (Phase 3,
+// src/client/ui/bootstrap.client.ts, ResetOnSpawn=false) — one instance for
+// the whole session. The re-wire-on-instance-change machinery below predates
+// that and stays as harmless robustness: it's retried from the per-sit
+// maintenance loop (and the PlayerGui.ChildAdded hook, which now fires at
+// most once at boot) until the base buttons exist — the React mount can
+// parent the ScreenGui before its children finish building, and dot-accessing
+// a button that hadn't arrived yet used to error and kill the whole seating
+// thread, leaving visible-but-dead buttons.
 let wiredMobileInterface: Instance | undefined = undefined;
 
 function wireTouchButtons(mobileInterface: ScreenGui) {
@@ -608,9 +611,9 @@ function onSeated(humanoid: Humanoid, isSeated: boolean) {
 			// The joystick sampler stays bound as a fallback: with the core
 			// controls hidden MoveDirection is always zero, so it fires nothing.
 			RunService.BindToRenderStep("MobileSteer", 1, mobileSteerFunction);
-			// The server destroys + re-mounts MobileInterface on every spawn and
-			// it can replicate AFTER the sit does — keep the UI enabled/wired
-			// from current state for the whole sit instead of sampling once.
+			// MobileInterface is client-mounted at boot (Phase 3) so it exists
+			// before any sit — the loop stays to keep the UI enabled/wired from
+			// current state for the whole sit instead of sampling once.
 			task.spawn(() => {
 				const playerGui = Player.WaitForChild("PlayerGui") as PlayerGui;
 				while (seatSession === session) {
@@ -713,10 +716,10 @@ if (Player.Character) {
 	task.spawn(() => connectCharacter(Player.Character!));
 }
 
-// Remount robustness: the server destroys/recreates MobileInterface on every
-// respawn (ResetOnSpawn) and the timing races the seat events. If a fresh
-// instance arrives while we are already driving, show and re-wire it instead
-// of driving blind with no buttons for the rest of the round.
+// Remount robustness: MobileInterface is client-mounted once at boot (Phase 3)
+// so this ChildAdded simply fires once when bootstrap parents it. Kept in case
+// a fresh instance ever arrives while already driving — show and re-wire it
+// instead of driving blind with no buttons for the rest of the round.
 if (UserInputService.TouchEnabled) {
 	task.spawn(() => {
 		const playerGui = Player.WaitForChild("PlayerGui") as PlayerGui;
@@ -840,6 +843,9 @@ function OpenKeyBindMenu(keyBindingsMenu: Frame & { Controls: Frame; CloseButton
 	}
 });
 
+// Phase 3: the server's only caller (VehicleClass money popups) now fires
+// Ui_MoneyGained with a WORLD point instead of invoking this — the handler is
+// kept for safety and is slated for retirement with the remote in Phase 8.
 FunctionsAndEvents.GetPlayerPointToScreenSpace.OnClientInvoke = (position) => {
 	const camera = game.Workspace.CurrentCamera!;
 	const [vector, onScreen] = camera.WorldToScreenPoint(position as Vector3);

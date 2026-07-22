@@ -10,8 +10,10 @@
 //     — the ENGINE then re-cloned StarterGui into PlayerGui (all these ScreenGuis
 //     have ResetOnSpawn = true).
 //
-// mountAll() = "clone every StarterGui child" (all 8 ScreenGuis + the Steer
-// NumberValue). destroyAll() = the destroy-all loops (React roots are unmounted
+// mountAll() = "clone every StarterGui child" (every SERVER-owned ScreenGui +
+// the Steer NumberValue — the client-owned ScreenGuis listed in buildTree's
+// comment are mounted once by src/client/ui/bootstrap.client.ts instead).
+// destroyAll() = the destroy-all loops (React roots are unmounted
 // rather than Destroy()ed so the reconciler stays consistent; any non-React
 // leftovers in PlayerGui — e.g. sounds parented there by the money popups — are
 // destroyed exactly like the original loop did).
@@ -27,18 +29,12 @@
 import React from "@rbxts/react";
 import ReactRoblox from "@rbxts/react-roblox";
 import { GameGui } from "shared/ui/components/GameGui";
-import { MobileInterfaceGui } from "shared/ui/components/MobileInterfaceGui";
 import { GarageGui } from "shared/ui/components/GarageGui";
 import { CrateMenuGui } from "shared/ui/components/CrateMenuGui";
-import { MatchHudGui } from "shared/ui/components/MatchHudGui";
-import { FaceOffGui } from "shared/ui/components/FaceOffGui";
-import { VictoryGui } from "shared/ui/components/VictoryGui";
 import { LandingGui } from "shared/ui/components/LandingGui";
 import { CreateTeamGui, InvitePopupGui, RenamePopupGui } from "shared/ui/components/CarBallMenusGui";
 import { RoundSummaryGui } from "shared/ui/components/RoundSummaryGui";
 import { LadderMapGui } from "shared/ui/components/LadderMapGui";
-import { PlayerMoneyGainedPopupsGui } from "shared/ui/components/PlayerMoneyGainedPopupsGui";
-import { DataLossGui } from "shared/ui/components/DataLossGui";
 import { NEXT_SELECTION_WIRINGS } from "shared/ui/components/guiMetadata";
 import { StarterGuiState } from "./StarterGuiState";
 
@@ -59,24 +55,17 @@ function resolvePath(base: Instance, path: string): Instance | undefined {
 }
 
 function buildTree(): React.Element {
-	// Order matches the original StarterGui child order (Game, MobileInterface,
-	// Garage, CrateMenu, Steer, PlayerMoneyGainedPopups, DataLoss).
-	// (Multipliers retired with the timed cash-multiplier products. TimerGui is
-	// CLIENT-mounted now — src/client/ui/bootstrap.client.ts owns it, rendered
-	// from replicated attributes by src/client/ui/timer.client.ts.)
+	// Order matches the original StarterGui child order (Game, Garage,
+	// CrateMenu, Steer). (Multipliers retired with the timed cash-multiplier
+	// products. CLIENT-mounted now — src/client/ui/bootstrap.client.ts owns:
+	// TimerGui [Phase 2]; MatchHud, FaceOff, Victory, MobileInterface,
+	// PlayerMoneyGainedPopups, DataLoss [Phase 3].)
 	return React.createElement(
 		React.Fragment,
 		undefined,
 		React.createElement(GameGui, { key: "Game" }),
-		React.createElement(MobileInterfaceGui, { key: "MobileInterface" }),
 		React.createElement(GarageGui, { key: "Garage" }),
 		React.createElement(CrateMenuGui, { key: "CrateMenu" }),
-		// Football match HUD (new, not from the original place file).
-		React.createElement(MatchHudGui, { key: "MatchHud" }),
-		// Round-start face-off overlay (blue vs red name plates).
-		React.createElement(FaceOffGui, { key: "FaceOff" }),
-		// End-of-match victory overlay (WINNERS/YOU LOSE + confetti).
-		React.createElement(VictoryGui, { key: "Victory" }),
 		// Car Ball landing page (Top Table Phase 1).
 		React.createElement(LandingGui, { key: "Landing" }),
 		// Top Table Phase 2 menus.
@@ -90,8 +79,6 @@ function buildTree(): React.Element {
 		// Steer NumberValue — a plain (non-UI) StarterGui child, cloned along
 		// with everything else in the original. Value was 0 in the place file.
 		React.createElement("NumberValue", { Name: "Steer", Value: 0, key: "Steer" } as never),
-		React.createElement(PlayerMoneyGainedPopupsGui, { key: "PlayerMoneyGainedPopups" }),
-		React.createElement(DataLossGui, { key: "DataLoss" }),
 	);
 }
 

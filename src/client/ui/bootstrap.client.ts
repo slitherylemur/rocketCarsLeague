@@ -18,6 +18,12 @@
 import React from "@rbxts/react";
 import ReactRoblox from "@rbxts/react-roblox";
 import { TimerGui } from "shared/ui/components/TimerGui";
+import { MatchHudGui } from "shared/ui/components/MatchHudGui";
+import { FaceOffGui } from "shared/ui/components/FaceOffGui";
+import { VictoryGui } from "shared/ui/components/VictoryGui";
+import { MobileInterfaceGui } from "shared/ui/components/MobileInterfaceGui";
+import { PlayerMoneyGainedPopupsGui } from "shared/ui/components/PlayerMoneyGainedPopupsGui";
+import { DataLossGui } from "shared/ui/components/DataLossGui";
 
 const Players = game.GetService("Players");
 const LocalPlayer = Players.LocalPlayer;
@@ -30,6 +36,21 @@ const MOUNTS: Array<[string, () => React.Element]> = [
 	// Phase 2: shop/kickoff/interlude countdown label (rendered by
 	// src/client/ui/timer.client.ts from replicated attributes).
 	["TimerGui", TimerGui],
+	// Phase 3: football match chrome — content rendered by
+	// src/client/matchHud.client.ts from FB_*/CB_* attributes (which also
+	// derives MatchHud.Enabled from the CB_PitchId player attribute).
+	["MatchHud", MatchHudGui],
+	["FaceOff", FaceOffGui],
+	["Victory", VictoryGui],
+	// Phase 3: touch driving buttons — enable/wiring fully owned by
+	// src/client/VehicleKeyHandler.client.ts (mounted Enabled=false).
+	["MobileInterface", MobileInterfaceGui],
+	// Phase 3: empty shell filled by src/client/ui/moneyPopups.client.ts
+	// from the Ui_MoneyGained remote.
+	["PlayerMoneyGainedPopups", PlayerMoneyGainedPopupsGui],
+	// Phase 3: Enabled derived from the CB_DataLoss player attribute by
+	// src/client/ui/dataLoss.client.ts.
+	["DataLoss", DataLossGui],
 ];
 
 // The holder is only the React root container bookkeeping object; the actual

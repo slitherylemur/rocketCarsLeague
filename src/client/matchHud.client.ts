@@ -5,10 +5,13 @@
 //     side, cloned from ReplicatedStorage.Ui.PlayerIcon like the old
 //     Leaderboard row did.
 //
-// The server-rendered UI is destroyed and remounted on every respawn
-// (PlayerGuiManager), so nothing here caches instances: every update
-// re-resolves the current MatchHud, and a PlayerGui.ChildAdded repaints the
-// fresh mount with the latest state.
+// MatchHud/FaceOff/Victory are CLIENT-mounted (Phase 3) by
+// src/client/ui/bootstrap.client.ts with ResetOnSpawn=false, so the instances
+// survive respawns. The instance re-resolution on every update (and the
+// PlayerGui.ChildAdded repaint hook) predate that and stay as harmless
+// robustness. MatchHud.Enabled is derived HERE from the CB_PitchId player
+// attribute (set while rostered on a pitch) — the server used to enable it
+// after a football spawn and disable it via the respawn remount.
 
 import { startUiConfetti } from "shared/UiConfetti";
 
@@ -762,6 +765,17 @@ function handleVictoryCamera() {
 	}
 }
 
+// Enabled ownership (Phase 3): on a pitch = HUD on, off a pitch = HUD off.
+// CB_PitchId is set by footballMatch when the player is rostered and cleared
+// by leaveMatch/stop — the same edges the old server enable/remount produced.
+function refreshHudEnabled() {
+	const hud = currentHud();
+	if (!hud) {
+		return;
+	}
+	hud.Enabled = typeIs(LocalPlayer.GetAttribute("CB_PitchId"), "string");
+}
+
 // The scoreboard bar has no place over the face-off presentation — the
 // FaceOff overlay owns the screen until the phase moves on to Kickoff.
 function refreshTopBarVisibility() {
@@ -773,6 +787,7 @@ function refreshTopBarVisibility() {
 }
 
 function refreshAll() {
+	refreshHudEnabled();
 	refreshScore();
 	refreshClock();
 	refreshRound();
@@ -912,7 +927,10 @@ for (const player of Players.GetPlayers()) {
 }
 Players.PlayerRemoving.Connect(() => task.defer(rebuildTeamRows));
 
-// Repaint every fresh mount (the server remounts PlayerGui on each respawn).
+// Repaint on a fresh mount. Phase 3: these guis are client-mounted once at
+// boot (bootstrap.client.ts) and never remounted, so this fires at most once —
+// kept as harmless robustness (the initial refreshAll below covers first
+// paint; bootstrap mounts synchronously at client start, before any state).
 LocalPlayer.WaitForChild("PlayerGui").ChildAdded.Connect((child) => {
 	if (child.Name === "MatchHud" || child.Name === "FaceOff" || child.Name === "Victory") {
 		task.defer(refreshAll);

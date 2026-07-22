@@ -16,7 +16,10 @@ export function PlayerMoneyGainedPopupsGui(): React.Element {
 		ClipToDeviceSafeArea: true,
 		DisplayOrder: 10,
 		Enabled: true,
-		ResetOnSpawn: true,
+		// Was true in the place file — this gui is now CLIENT-mounted once by
+		// src/client/ui/bootstrap.client.ts and must survive respawns
+		// (src/client/ui/moneyPopups.client.ts parents popup labels into it).
+		ResetOnSpawn: false,
 		SafeAreaCompatibility: Enum.SafeAreaCompatibility.FullscreenExtension,
 		ScreenInsets: Enum.ScreenInsets.CoreUISafeInsets,
 		SelectionBehaviorDown: Enum.SelectionBehavior.Escape,

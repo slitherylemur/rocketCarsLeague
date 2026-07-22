@@ -4,9 +4,9 @@
 // announce label (kickoff 3-2-1 / GOAL / winner).
 //
 // Same contract as every other ScreenGui here: React owns the STRUCTURE only.
-// matchHud.client.ts fills the labels from the replicated FB_* attributes and
-// clones ReplicatedStorage.Ui.PlayerIcon into the team rows; the server
-// enables the gui when the player spawns into the match (SpawnInPlayer).
+// matchHud.client.ts fills the labels from the replicated FB_* attributes,
+// clones ReplicatedStorage.Ui.PlayerIcon into the team rows, and derives
+// Enabled from the CB_PitchId player attribute (set while rostered on a pitch).
 
 import React from "@rbxts/react";
 
@@ -39,7 +39,9 @@ export function MatchHudGui(): React.Element {
 			Name: "MatchHud",
 			DisplayOrder: 2,
 			Enabled: false,
-			ResetOnSpawn: true,
+			// CLIENT-mounted once by src/client/ui/bootstrap.client.ts — must
+			// survive respawns (matchHud.client.ts drives it from attributes).
+			ResetOnSpawn: false,
 			ScreenInsets: Enum.ScreenInsets.DeviceSafeInsets,
 			ZIndexBehavior: Enum.ZIndexBehavior.Sibling,
 		} as never,
