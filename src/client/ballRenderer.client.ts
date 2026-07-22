@@ -16,7 +16,6 @@ import { BallAttr } from "shared/ballSim/BallSim";
 
 const RunService = game.GetService("RunService");
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
-const TweenService = game.GetService("TweenService");
 const Players = game.GetService("Players");
 const SoundService = game.GetService("SoundService");
 const Debris = game.GetService("Debris");
@@ -312,37 +311,37 @@ function setupBall(ball: BasePart) {
 		ballVisual?.setSize(ball.Size);
 	});
 
-	let smoothing = false;
-	let smoothVelocity = new Vector3();
+	// Corrected-present continuity with a magnitude/context-scaled decay
+	// instead of the old binary engage/SmoothDamp: errors below the noise gate
+	// pin exactly (zero permanent lag), everything above decays with a
+	// half-life that SHRINKS as the error grows and near gameplay-critical
+	// moments (fresh car contact — goal-line truth matters more than polish),
+	// so there is no threshold below which everything snaps and above which
+	// everything lags (BALL_PHYSICS.md / VEHICLE_V2_ADR.md §3).
+	const NOISE_GATE = 0.05; // studs — pin outright below this
+	const BASE_HALF_LIFE = 0.08; // seconds at the engage-scale error
+	const MIN_HALF_LIFE = 0.02;
+	const SNAP_DISTANCE = 40; // beyond this the correction is a respawn/teleport
+	const CONTACT_FAST_WINDOW = 0.35; // seconds after a car hit: truth, fast
 
 	const renderConn = RunService.RenderStepped.Connect((dt) => {
 		const simCF = ball.CFrame;
+		const err = renderer.Position.sub(simCF.Position);
+		const errMag = err.Magnitude;
 
-		if (!smoothing && renderer.Position.sub(simCF.Position).Magnitude > ballTunables.smoothEngageDistance) {
-			smoothing = true;
-			smoothVelocity = new Vector3();
-		}
-
-		if (smoothing) {
-			const [smoothPos, newVelocity] = TweenService.SmoothDamp(
-				renderer.Position,
-				simCF.Position,
-				smoothVelocity,
-				ballTunables.smoothTime,
-				math.huge,
-				dt,
-			);
-			smoothVelocity = newVelocity;
-
-			if (smoothPos.sub(simCF.Position).Magnitude <= ballTunables.smoothReleaseDistance) {
-				smoothing = false;
-				renderer.CFrame = simCF;
-			} else {
-				// Keep the sim's rotation (rolling), smooth only the position.
-				renderer.CFrame = simCF.Rotation.add(smoothPos);
-			}
-		} else {
+		if (errMag <= NOISE_GATE || errMag > SNAP_DISTANCE) {
 			renderer.CFrame = simCF;
+		} else {
+			const engage = math.max(ballTunables.smoothEngageDistance, 0.1);
+			let halfLife = math.clamp(BASE_HALF_LIFE * (engage / errMag), MIN_HALF_LIFE, BASE_HALF_LIFE);
+			const lastHit = ball.GetAttribute(BallAttr.LastHitTime);
+			const simTime = ball.GetAttribute(BallAttr.SimTime);
+			if (typeIs(lastHit, "number") && typeIs(simTime, "number") && simTime - lastHit < CONTACT_FAST_WINDOW) {
+				halfLife *= 0.4;
+			}
+			const remain = math.pow(0.5, dt / halfLife);
+			// Keep the sim's rotation (rolling), decay only the position error.
+			renderer.CFrame = simCF.Rotation.add(simCF.Position.add(err.mul(remain)));
 		}
 
 		ballVisual?.setCFrame(renderer.CFrame);

@@ -36,6 +36,12 @@
 import { BALL_NAME, BALL_FIELDS, ballTunables, ballTuneAttr } from "shared/ballSim/BallConfig";
 import { COLLISION_GROUPS } from "shared/collisionGroups";
 import { registerSimHook, SIM_ORDER_BALL } from "shared/simScheduler";
+import { getPreset } from "shared/vehicleV2/PhysicsPresets";
+
+// V2 reciprocal-recoil lookup (leaf import only — no sim<->sim cycle).
+function ballRecoilFor(carModel: Model): number {
+	return getPreset(carModel.GetAttribute("PresetId")).ballRecoil;
+}
 
 const RunService = game.GetService("RunService");
 const Players = game.GetService("Players");
@@ -483,32 +489,60 @@ function stepBall(ball: BasePart, dt: number) {
 	// 5. car hits via the HitboxMain boxes (the overlap's include list holds
 	// exactly those parts; the name guard is belt-and-braces).
 	//
+	// CONTINUOUS relative detection: a fast ball vs a moving hitbox can cross
+	// the thin dimension of the box within one 30 Hz tick, so besides the
+	// current-position overlap the RELATIVE motion over this tick is sampled
+	// at t = 0.5 and t = 1 (ball travel minus car travel). The broadphase
+	// radius is expanded by the travel so sweep candidates are found.
+	//
 	// One contact per tick, chosen DETERMINISTICALLY: GetPartBoundsInRadius
 	// returns results in no guaranteed order, so "first box wins" could pick
 	// a different car on client and server from identical physics state — a
-	// guaranteed misprediction whenever two cars pinch the ball. The deepest
-	// penetration wins instead (ties broken by model name), which both peers
-	// compute identically from the same state.
-	const nearby = game.Workspace.GetPartBoundsInRadius(position, radius, carOverlapParams);
+	// guaranteed misprediction whenever two cars pinch the ball. Ordering:
+	// earliest sample time wins, then deepest penetration, then model name —
+	// all computed identically from the same state on both peers.
+	const travelSweep = v.mul(dt);
+	const nearby = game.Workspace.GetPartBoundsInRadius(
+		position,
+		radius + travelSweep.Magnitude,
+		carOverlapParams,
+	);
 	let best: CarContact | undefined;
+	let bestSampleT = math.huge;
 	for (const part of nearby) {
 		if (part.Name !== HITBOX_MAIN_NAME || part.Parent === undefined) {
 			continue;
 		}
-		const contact = boxContact(ball, part, position, radius);
-		if (contact === undefined) {
-			continue;
-		}
-		if (
-			best === undefined ||
-			contact.penetration > best.penetration + 1e-6 ||
-			(math.abs(contact.penetration - best.penetration) <= 1e-6 && contact.carModel.Name < best.carModel.Name)
-		) {
-			best = contact;
+		const carVel = part.GetVelocityAtPosition(part.Position);
+		const relTravel = travelSweep.sub(carVel.mul(dt));
+		for (const sampleT of [0, 0.5, 1]) {
+			const center = sampleT === 0 ? position : position.add(relTravel.mul(sampleT));
+			const contact = boxContact(ball, part, center, radius);
+			if (contact === undefined) {
+				continue;
+			}
+			if (sampleT > 0) {
+				// Future-sample contact: respond to the velocity, but never
+				// de-penetrate from a position the ball is not yet at.
+				contact.penetration = 0;
+			}
+			const better =
+				best === undefined ||
+				sampleT < bestSampleT - 1e-9 ||
+				(math.abs(sampleT - bestSampleT) <= 1e-9 &&
+					(contact.penetration > best.penetration + 1e-6 ||
+						(math.abs(contact.penetration - best.penetration) <= 1e-6 &&
+							contact.carModel.Name < best.carModel.Name)));
+			if (better) {
+				best = contact;
+				bestSampleT = sampleT;
+			}
+			break; // earliest sample for THIS part found; later samples can't beat it
 		}
 	}
 	if (best !== undefined) {
 		const contact = best;
+		const vBeforeCarContact = v;
 
 		const n = contact.normal;
 		const relV = v.sub(contact.carVelocity);
@@ -532,6 +566,24 @@ function stepBall(ball: BasePart, dt: number) {
 				ball.SetAttribute(BallAttr.LastHitCar, contact.carModel.Name);
 				ball.SetAttribute(BallAttr.LastHitTime, now);
 				ball.SetAttribute(BallAttr.LastHitSpeed, closing);
+			}
+		}
+
+		// Reciprocal car recoil (preset experiment, default 0 = Rocket League
+		// rules). Deterministic on both peers: computed inside the same sim
+		// step from the same restored state, applied through the same
+		// rollback-aware assembly velocity property the ball itself uses.
+		const dvBall = v.sub(vBeforeCarContact);
+		if (dvBall.Magnitude > 1e-3 && contact.carModel.GetAttribute("V2") !== undefined) {
+			const recoil = ballRecoilFor(contact.carModel);
+			if (recoil > 0) {
+				const carRoot = contact.carModel.FindFirstChild("VehicleRoot");
+				if (carRoot !== undefined && carRoot.IsA("BasePart")) {
+					const massRatio = ball.AssemblyMass / math.max(carRoot.AssemblyMass, 1);
+					carRoot.AssemblyLinearVelocity = carRoot.AssemblyLinearVelocity.sub(
+						dvBall.mul(massRatio * recoil),
+					);
+				}
 			}
 		}
 
