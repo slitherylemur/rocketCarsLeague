@@ -16,7 +16,7 @@ Single source of truth for the numeric budgets. Code reads none of these at runt
 | G-7 | Teleports/respawns snap atomically (TeleportGen), clearing E and camera smoothing | scenario L-10 |
 | G-8 | Goal blast launches the single proxy, is visible locally, and is not cancelled by speed control | overspeed brake suppressed for `BLAST_CONTROL_HOLDOFF` after BlastGen bump; scenario L-10 |
 | G-9 | Ball contact stays authoritative and usable at all profiles; corrections near goals favor truth | ladder L-7/L-8 at each profile |
-| G-10 | Same preset ⇒ identical physics across cosmetics | presets contain all physics constants; no model-derived quantity feeds the sim (mass/dims from preset) |
+| G-10 | Every car preserves its authored gameplay envelope while cosmetics cannot alter movement tuning | builder copies `Hitboxes/HitboxMain` pose+size into `VehicleRoot`; both peers resolve inertia/contact rays from replicated root size; family preset supplies mass/drive/aerial tuning |
 | G-11 | Client FPS does not change trajectory beyond tolerance (fixed-step sim; render decoupled) | 30/60/144 FPS runs of L-1..L-3, trajectory divergence < 0.5 vehicle lengths over 30 s |
 | G-12 | Server sustains the 60 Hz fixed rate under full load including resim (server heartbeat ≥59) | Server Authority visualizer + netHealth server-rate alert |
 | G-13 | Misprediction telemetry names real properties/attributes and context (never "unknown entry") | netHealth v2 parser matches documented event shape |

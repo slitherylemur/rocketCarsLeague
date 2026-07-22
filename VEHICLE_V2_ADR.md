@@ -60,17 +60,18 @@ anchored render rig animated client-side.
 
 Key properties:
 
-- **Physics preset, not model, defines physics.** `src/shared/vehicleV2/PhysicsPresets.ts`
-  declares collision box size, center-of-mass height, four canonical contact hardpoints, wheel
-  radius, suspension/tire/drive/boost/jump/dodge/aerial constants. Templates map to presets in
-  `src/shared/vehicleV2/VehicleDefs.ts`. Cosmetics can never change mass (gate G-11).
+- **Authored envelope plus immutable movement preset defines physics.** Each template's existing
+  `Hitboxes/HitboxMain` pose and size becomes its V2 rigid body and BallSim envelope. Server and
+  predicting client scale inertia and the four canonical contact rays from replicated
+  `VehicleRoot.Size`. `PhysicsPresets.ts` supplies mass and suspension/tire/drive/boost/jump/
+  dodge/aerial tuning; render cosmetics cannot alter either contract.
 - **Four canonical contacts** even for 6/8-wheel visual templates; extra visual axles derive
   compression/steer/spin from the nearest canonical contact (`CarRig` interpolates by Z).
 - **Forces are per-tick impulses accumulated in code and committed as one
   `AssemblyLinearVelocity`/`AssemblyAngularVelocity` write** at the end of the vehicle step.
   Rationale: these are rollback-aware, replicated physics properties, and this exact pattern is
   already proven in-repo under server authority (`BallSim.ts:575`). Angular response uses the
-  analytic box inertia of the preset (identical constants on both peers) instead of engine
+  analytic box inertia of the replicated authored envelope (identical on both peers) instead of engine
   queries, so a resimulated tick reproduces the original bit-for-bit from restored state. The
   engine still owns integration and box-vs-world/box-vs-box contact resolution between our
   writes, so walls, cars and goal blasts remain real physics.

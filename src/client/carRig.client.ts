@@ -38,7 +38,7 @@ import {
 	MAX_DIVERGENCE_LENGTHS,
 	Severity,
 } from "shared/vehicleV2/CorrectionPolicy";
-import { getPreset } from "shared/vehicleV2/PhysicsPresets";
+import { getPresetForBox } from "shared/vehicleV2/PhysicsPresets";
 import * as CarSim from "shared/vehicleV2/CarSim";
 import { RENDER_DEBUG_OVERLAY } from "shared/vehicleV2/FeatureFlags";
 
@@ -82,7 +82,7 @@ interface Snapshot {
 interface Rig {
 	model: Model;
 	root: BasePart;
-	preset: ReturnType<typeof getPreset>;
+	preset: ReturnType<typeof getPresetForBox>;
 	isLocal: boolean;
 	parts: RigPart[];
 	wheels: RigWheel[];
@@ -168,7 +168,7 @@ function buildRig(model: Model) {
 		const rig: Rig = {
 			model,
 			root,
-			preset: getPreset(model.GetAttribute(CarModelAttr.PresetId)),
+			preset: getPresetForBox(model.GetAttribute(CarModelAttr.PresetId), root.Size),
 			isLocal: model.GetAttribute(CarModelAttr.OwnerUserId) === LocalPlayer.UserId,
 			parts: [],
 			wheels: [],

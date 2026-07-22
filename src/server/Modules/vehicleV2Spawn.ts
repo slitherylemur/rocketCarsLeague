@@ -77,21 +77,25 @@ export function buildProxy(model: Model, templateName: string, owner?: Player): 
 	}
 
 	const baseCF = oldBase.CFrame;
+	const physicsBoxSize = geometry.hitboxSize ?? preset.boxSize;
+	const physicsBoxCF = geometry.hitboxLocalCFrame !== undefined
+		? baseCF.mul(geometry.hitboxLocalCFrame)
+		: baseCF.mul(new CFrame(0, (preset.boxSize.Y - oldBase.Size.Y) / 2, 0));
 
 	// ---- the rigid body ----
 	const root = new Instance("Part");
 	root.Name = "VehicleRoot";
-	root.Size = preset.boxSize;
-	// Place the box so its bottom sits where the old Base's bottom sat —
-	// keeps spawn-height math (bounding-box lift) behaving.
-	root.CFrame = baseCF.mul(new CFrame(0, (preset.boxSize.Y - oldBase.Size.Y) / 2, 0));
+	// Preserve the per-template gameplay envelope exactly. The old game's
+	// HitboxMain was already the authored car/ball collision contract.
+	root.Size = physicsBoxSize;
+	root.CFrame = physicsBoxCF;
 	root.Transparency = 1;
 	root.CanCollide = true;
 	root.CanTouch = false;
 	root.CanQuery = true;
 	root.CollisionGroup = COLLISION_GROUPS.Vehicle;
 	root.Anchored = false;
-	const volume = preset.boxSize.X * preset.boxSize.Y * preset.boxSize.Z;
+	const volume = physicsBoxSize.X * physicsBoxSize.Y * physicsBoxSize.Z;
 	root.CustomPhysicalProperties = new PhysicalProperties(preset.mass / volume, preset.boxFriction, 0.1, 100, 1);
 	root.RootPriority = 10;
 
@@ -211,8 +215,8 @@ export function buildProxy(model: Model, templateName: string, owner?: Player): 
 	// ---- query boxes ----
 	const newHitboxes = new Instance("Model");
 	newHitboxes.Name = "Hitboxes";
-	makeQueryBox("HitboxMain", preset.hitboxSize, preset.hitboxOffset, root).Parent = newHitboxes;
-	makeQueryBox("damageBlock", preset.hitboxSize.mul(1.02), preset.hitboxOffset, root).Parent = newHitboxes;
+	makeQueryBox("HitboxMain", physicsBoxSize, new Vector3(), root).Parent = newHitboxes;
+	makeQueryBox("damageBlock", physicsBoxSize.mul(1.02), new Vector3(), root).Parent = newHitboxes;
 
 	root.Parent = model;
 	newHitboxes.Parent = model;

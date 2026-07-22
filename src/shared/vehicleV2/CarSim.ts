@@ -20,7 +20,7 @@
 //     on the entry and consumed INSIDE the next step.
 
 import { registerSimHook, SIM_ORDER_VEHICLE } from "shared/simScheduler";
-import { getPreset, PhysicsPreset } from "shared/vehicleV2/PhysicsPresets";
+import { getPresetForBox, PhysicsPreset } from "shared/vehicleV2/PhysicsPresets";
 import {
 	boxInertiaDiag,
 	contactMassShare,
@@ -190,7 +190,7 @@ export function registerServer(model: Model, root: BasePart, owner?: Player) {
 		warn(`[CarSim] refusing to register non-V2 model ${model.Name} (gate G-14)`);
 		return;
 	}
-	const preset = getPreset(model.GetAttribute(CarModelAttr.PresetId));
+	const preset = getPresetForBox(model.GetAttribute(CarModelAttr.PresetId), root.Size);
 	const entry = buildEntry(model, root, preset, owner);
 
 	root.SetAttribute(CarAttr.SimTime, 0);
@@ -237,7 +237,7 @@ export function registerReplica(model: Model, owner: Player): boolean {
 	if (root.GetAttribute(CarAttr.SimTime) === undefined) {
 		return false; // state attributes not replicated yet
 	}
-	registry.set(model, buildEntry(model, root, getPreset(presetId), owner));
+	registry.set(model, buildEntry(model, root, getPresetForBox(presetId, root.Size), owner));
 	return true;
 }
 

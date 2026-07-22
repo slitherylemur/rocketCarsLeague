@@ -265,6 +265,9 @@ function renderTeamPage() {
 
 function applyFlowState() {
 	const state = flowState();
+	// A pitch assignment is the hard gameplay signal and is cleared before a
+	// legitimate return to the menus. It guards against a delayed/stale flow
+	// update painting the menu over an active player.
 	const inMatch = typeIs(LocalPlayer.GetAttribute("CB_PitchId"), "string");
 	landing.Enabled = state === "menu" && !inMatch;
 	const lobby = state === "lobby" && !inMatch;
@@ -273,6 +276,7 @@ function applyFlowState() {
 	}
 	teamPage.Enabled = lobby;
 	if (inMatch || (state !== "menu" && state !== "lobby" && state !== "garage")) {
+		// This popup opens locally, so it needs an explicit play-transition edge.
 		renamePopup.Enabled = false;
 	}
 }

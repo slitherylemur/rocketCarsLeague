@@ -1,10 +1,9 @@
 // Vehicle V2 physics presets — the ONLY source of physics-affecting numbers.
 //
-// A preset fully determines a car's physics: collision box, mass, canonical
-// contact hardpoints, suspension, tires, drive, boost, jump, aerial and
-// recovery constants. Cosmetic templates map to presets in VehicleDefs.ts;
-// nothing measured from a cosmetic model may feed the simulation (acceptance
-// gate G-10: same preset ⇒ identical physics under any skin/paint).
+// A preset determines movement tuning: mass, suspension, tires, drive, boost,
+// jump, aerial and recovery constants. Each vehicle template's authored
+// Hitboxes/HitboxMain determines its collision size; both peers resolve the
+// matching contact geometry from the replicated VehicleRoot.Size.
 //
 // Values are seeded from the tuned legacy feel (see VEHICLE_V2_ADR.md §1 and
 // the legacy constants in vehicleSim/VehicleSim.ts): top speed 120 (150×0.8),
@@ -274,4 +273,23 @@ export function getPreset(id: unknown): PhysicsPreset {
 		}
 	}
 	return PHYSICS_PRESETS[DEFAULT_PRESET_ID];
+}
+
+/** Resolve the geometry-dependent portion of a tuning preset from a vehicle's
+ * authored main hitbox. This must run identically on server and predicting
+ * client using the replicated VehicleRoot.Size. */
+export function getPresetForBox(id: unknown, boxSize: Vector3): PhysicsPreset {
+	const base = getPreset(id);
+	if (boxSize.X <= 0 || boxSize.Y <= 0 || boxSize.Z <= 0) {
+		return base;
+	}
+	return {
+		...base,
+		boxSize,
+		contacts: contacts(boxSize.X * 0.42, boxSize.Z * 0.36, boxSize.Z * 0.36, -boxSize.Y * 0.5),
+		// VehicleRoot is placed directly at the authored HitboxMain pose, so
+		// BallSim's query twin has the same exact envelope and zero offset.
+		hitboxSize: boxSize,
+		hitboxOffset: new Vector3(),
+	};
 }

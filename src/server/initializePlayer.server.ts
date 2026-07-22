@@ -105,16 +105,15 @@ const crateDebounces = new Map<Player, boolean>();
 // whichever thread resumes LAST wins, so a player could end up seated in a
 // match car with the landing/garage menu enabled on top (or vice versa).
 //
-// CB_FlowState is the replicated presentation state. A separate monotonically
-// increasing token is the actual ownership claim, because the state string
-// alone cannot distinguish spawning(A) -> menu -> spawning(B). Long flows
-// re-check both after yielding so only the newest intent can complete.
+// CB_FlowState remains the replicated state rendered by the client and read by
+// MatchDirector/roundHandler. It is paired with a server-only generation token
+// so yielding operations can prove they still own the current transition.
 type FlowStateValue = "menu" | "lobby" | "garage" | "spawning" | "match";
 const flowGeneration = new Map<Player, number>();
 
-/** Replicate presentation state and issue an identity token. The token is
- * required for ABA transitions such as spawning(A) -> menu -> spawning(B),
- * where the state string alone cannot tell stale A from current B. */
+/** Replicate the visible state and issue a unique server-side ownership token.
+ * The token detects ABA transitions (menu -> spawning -> menu) which cannot be
+ * distinguished by comparing CB_FlowState alone after a yielding operation. */
 function claimFlowState(player: Player, state: FlowStateValue): number {
 	const generation = (flowGeneration.get(player) ?? 0) + 1;
 	flowGeneration.set(player, generation);
@@ -309,16 +308,11 @@ function enterLandingState(player: Player) {
 	if (playerGarage) {
 		task.spawn(() => {
 			const [okSpawn, errSpawn] = pcall(() => {
+				const vehicleName = DataUtilities.getPlayerEquippedVehicle(player);
 				if (!ownsFlow(player, flowGen)) {
 					return;
 				}
-				spawnVehicle.SpawnVehicle(
-					player,
-					false,
-					DataUtilities.getPlayerEquippedVehicle(player),
-					playerGarage.spawnPlate.CFrame,
-					true,
-				);
+				spawnVehicle.SpawnVehicle(player, false, vehicleName, playerGarage.spawnPlate.CFrame, true);
 			});
 			if (!okSpawn) {
 				warn(`[Landing] garage display SpawnVehicle failed: ${errSpawn}`);
@@ -351,16 +345,11 @@ function enterGarageState(player: Player) {
 	if (playerGarage) {
 		task.spawn(() => {
 			const [okSpawn, errSpawn] = pcall(() => {
+				const vehicleName = DataUtilities.getPlayerEquippedVehicle(player);
 				if (!ownsFlow(player, flowGen)) {
 					return;
 				}
-				spawnVehicle.SpawnVehicle(
-					player,
-					false,
-					DataUtilities.getPlayerEquippedVehicle(player),
-					playerGarage.spawnPlate.CFrame,
-					true,
-				);
+				spawnVehicle.SpawnVehicle(player, false, vehicleName, playerGarage.spawnPlate.CFrame, true);
 			});
 			if (!okSpawn) {
 				warn(`[Garage] display SpawnVehicle failed: ${errSpawn}`);
@@ -405,6 +394,8 @@ function spawnIntoMatch(player: Player) {
 				return;
 			}
 		}
+		// The interlude wait yields for many seconds. A newer menu/lobby claim
+		// must cancel this launch instead of being overwritten when it resumes.
 		if (!ownsFlow(player, flowGen)) {
 			UiState.setPlayerAttr(player, "CB_InterludeHold", undefined);
 			return;
@@ -795,6 +786,10 @@ const SPAWN_IN_FLIGHT_TIMEOUT = 45;
 Globals.SpawnInPlayer = (player: Player): boolean => {
 	const startedAt = spawnInFlight.get(player);
 	if (startedAt !== undefined && os.clock() - startedAt < SPAWN_IN_FLIGHT_TIMEOUT) {
+		warn(`[SpawnInPlayer] ${player.Name} is already spawning — duplicate call ignored`);
+		// If a menu claim occurred between the two spawn requests, the active
+		// generation will stand down. Remember the newer request so the wrapper
+		// starts it after the old operation releases the single-flight lock.
 		const currentGeneration = flowGeneration.get(player);
 		if (
 			getFlowState(player) === "spawning" &&
@@ -803,9 +798,8 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 		) {
 			pendingSpawnGeneration.set(player, currentGeneration);
 		}
-		warn(`[SpawnInPlayer] ${player.Name} is already spawning — duplicate call ignored`);
-		// "true": the in-flight spawn is handling this player; a false here
-		// would make spawnIntoMatch force the menu state OVER the live spawn.
+		// "true": either the active spawn is handling this request or the retry
+		// above will. A false would force the menu over both operations.
 		return true;
 	}
 	const flowGen = claimFlowState(player, "spawning");
@@ -825,6 +819,7 @@ Globals.SpawnInPlayer = (player: Player): boolean => {
 		task.defer(() => {
 			const [retryOk, retryResult] = pcall(() => Globals.SpawnInPlayer(player));
 			if (!retryOk || retryResult !== true) {
+				warn(`[SpawnInPlayer] queued retry failed for ${player.Name} — returning to menu`);
 				ResetAndInitialisePlayerMenuUI(player);
 			}
 		});
@@ -1126,7 +1121,6 @@ function initialisePlayerUi(player: Player, flowGen: number) {
 	//local rand = math.random(1, #workspace.SpawnPoints:GetChildren())
 	//local spawnPoint = workspace.SpawnPoints:GetChildren()[rand]
 	//spawnVehicle.SpawnVehicle(player, true, DataUtilities.getPlayerEquippedVehicle(player), spawnPoint.CFrame)
-
 }
 
 //removes players garage and sets door playerValue to nil

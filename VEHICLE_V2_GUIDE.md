@@ -22,7 +22,7 @@ rationale: `VEHICLE_V2_ADR.md`. Numeric gates: `VEHICLE_V2_ACCEPTANCE.md`.
 ## Add a visual car
 
 1. Author the template in `ServerStorage.VehicleModels` with the usual shape
-   (`Base`, `Wheels/<name>/{DisplayWheel|Wheel}`, `Model`, `BoostEffectPart`,
+   (`Base`, `Hitboxes/HitboxMain`, `Wheels/<name>/{DisplayWheel|Wheel}`, `Model`, `BoostEffectPart`,
    sounds on `Base`). Wheels named `FL/FR/BL/BR` (+`BR2`… for extra axles).
 2. Add a `VehicleSubClass` module as before (economy/health params).
 3. Map the template to a preset family in `VehicleDefs.TEMPLATE_PRESETS`
@@ -32,8 +32,10 @@ rationale: `VEHICLE_V2_ADR.md`. Numeric gates: `VEHICLE_V2_ACCEPTANCE.md`.
    must be listed as clean. `vehicleV2Spawn.validateProxy` also hard-fails a
    bad spawn (forbidden constraint classes, assembly leaks, missing hitbox).
 
-Cosmetics can NEVER change physics: mass/dimensions/handling come only from
-the preset (acceptance gate G-10).
+`Hitboxes/HitboxMain` remains the per-car gameplay envelope. Its authored pose
+and size become `VehicleRoot` and the BallSim query box; both peers scale
+contact rays and inertia from that replicated size. The preset supplies mass
+and handling, while render cosmetics never feed simulation (gate G-10).
 
 ## Add or tune a physics preset
 

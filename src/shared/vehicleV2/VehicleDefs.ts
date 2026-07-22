@@ -80,6 +80,11 @@ export interface VisualWheelDef {
 export interface TemplateGeometry {
 	wheels: VisualWheelDef[];
 	problems: string[];
+	/** Authored gameplay envelope from Hitboxes/HitboxMain. This remains the
+	 * source of truth for the V2 rigid body and BallSim contact box. */
+	hitboxSize?: Vector3;
+	/** Hitbox pose relative to the legacy Base, captured before restructuring. */
+	hitboxLocalCFrame?: CFrame;
 }
 
 /** Derive visual wheel metadata from a template model (server side, before
@@ -93,9 +98,19 @@ export function deriveTemplateGeometry(template: Model): TemplateGeometry {
 		problems.push("missing Base part");
 		return { wheels, problems };
 	}
+	const hitboxes = template.FindFirstChild("Hitboxes");
+	const hitboxMain = hitboxes?.FindFirstChild("HitboxMain");
+	let hitboxSize: Vector3 | undefined;
+	let hitboxLocalCFrame: CFrame | undefined;
+	if (hitboxMain?.IsA("BasePart")) {
+		hitboxSize = hitboxMain.Size;
+		hitboxLocalCFrame = base.CFrame.ToObjectSpace(hitboxMain.CFrame);
+	} else {
+		problems.push("missing Hitboxes/HitboxMain part");
+	}
 	if (!wheelsFolder) {
 		problems.push("missing Wheels folder");
-		return { wheels, problems };
+		return { wheels, problems, hitboxSize, hitboxLocalCFrame };
 	}
 	const baseCF = base.CFrame;
 	const override = OVERRIDES[template.Name];
@@ -128,7 +143,7 @@ export function deriveTemplateGeometry(template: Model): TemplateGeometry {
 		problems.push(`only ${raws.size()} usable wheels (need >= 4)`);
 	}
 	if (raws.size() === 0) {
-		return { wheels, problems };
+		return { wheels, problems, hitboxSize, hitboxLocalCFrame };
 	}
 
 	// Steering rule: a wheel steers when its Z sits in the front half of the
@@ -153,7 +168,7 @@ export function deriveTemplateGeometry(template: Model): TemplateGeometry {
 		const contactIndex = isFront ? (isLeft ? 0 : 1) : isLeft ? 2 : 3;
 		wheels.push({ name: raw.name, localPos: raw.localPos, radius: raw.radius, steers, contactIndex });
 	}
-	return { wheels, problems };
+	return { wheels, problems, hitboxSize, hitboxLocalCFrame };
 }
 
 /** Startup migration report over the whole catalogue. Returns the number of
@@ -173,7 +188,7 @@ export function validateAllTemplates(vehicleModels: Instance): number {
 			warn(`[VehicleDefs] ${child.Name} (preset ${presetId}): ${geometry.problems.join("; ")}`);
 		} else {
 			print(
-				`[VehicleDefs] ${child.Name}: preset ${presetId}, ${geometry.wheels.size()} visual wheels (${geometry.wheels
+				`[VehicleDefs] ${child.Name}: preset ${presetId}, hitbox ${tostring(geometry.hitboxSize)}, ${geometry.wheels.size()} visual wheels (${geometry.wheels
 					.filter((wheel) => wheel.steers)
 					.size()} steering)`,
 			);
