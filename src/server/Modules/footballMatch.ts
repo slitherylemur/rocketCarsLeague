@@ -1157,6 +1157,93 @@ function matchWithPlayer(player: Player): PitchMatch | undefined {
 	return undefined;
 }
 
+/** Tail of onPlayerSpawned: roster the player on `match` and apply the
+ * phase-appropriate lock / kickoff / free-play handling. Shared with the
+ * straddled-spawn recovery below. */
+function enterCurrentPhase(match: PitchMatch, player: Player) {
+	match.assignSide(player);
+	if (match.phase === "Play") {
+		lockPlayer(player, RESPAWN_LOCK);
+		// Re-place at floor level facing the ball — SpawnVehicle's
+		// free-fall placement drops from height and can twist the car.
+		match.placeVehicleFor(player);
+		return;
+	}
+	if (match.phase === "Kickoff" || match.phase === "FaceOff" || match.phase === "Goal") {
+		// startKickoff's GO / the goal-pause resolution unlocks the roster.
+		lockPlayer(player);
+		// Mid-face-off the car belongs on its podium, NOT the kickoff spot
+		// (a late SpawnVehicle return here teleported cars off the stage).
+		if (match.phase === "FaceOff" && match.placeVehicleOnStageFor(player)) {
+			return;
+		}
+		match.placeVehicleFor(player);
+		return;
+	}
+	// Waiting / FreePlay: either this spawn completes the pairing (kickoff)
+	// or the pitch (re-)enters free play with everyone unlocked.
+	if (match.teamsReady()) {
+		warn(`[Football] opponent arrived on ${match.pitch.folder.Name} — kickoff`);
+		match.resetScores();
+		match.startKickoff(match.phase === "FreePlay" ? "OPPONENT ARRIVED!" : undefined);
+	} else {
+		match.enterFreePlay(false);
+		// Re-place too: a spawn that straddled the round rebuild computed its
+		// CFrame against the OLD pitch line (getSpawnCFrame runs seconds
+		// before SpawnVehicle finishes) — without this the player free-plays
+		// on the wrong (previous round's) pitch. Normal spawns are already on
+		// this exact CFrame, so this is a no-op for them.
+		match.placeVehicleFor(player);
+	}
+}
+
+/** A spawn raced the round teardown (SpawnInPlayer spans LoadCharacter and
+ * SpawnVehicle's internal ~2s of waits): its car landed while `matches` was
+ * empty or Ended, so the player never made the new round's roster. Left
+ * alone, the shop auto-spawn skips them forever (hasMatchVehicle sees the
+ * ghost car) and their team can never reach teamsReady — with a solo team
+ * that wedges the whole round in free play, because the shared clock only
+ * starts at a real kickoff and the round then never ends (the
+ * stuck-in-muckabout-all-game failure). Poll for the rebuilt round and seat
+ * them properly. */
+function recoverStraddledSpawn(player: Player) {
+	task.spawn(() => {
+		for (let i = 0; i < 40; i++) {
+			task.wait(0.5);
+			if (player.Parent === undefined) {
+				return;
+			}
+			if (matchWithPlayer(player) !== undefined) {
+				return; // rostered meanwhile — the normal flow owns them
+			}
+			const vehicle = Globals.vehiclesTable[player.UserId];
+			const model = vehicle && vehicle.model;
+			const vehiclesFolder = game.Workspace.FindFirstChild("Vehicles");
+			const hasMatchCar =
+				model !== undefined &&
+				model.Parent !== undefined &&
+				vehiclesFolder !== undefined &&
+				model.IsDescendantOf(vehiclesFolder);
+			if (!hasMatchCar) {
+				return; // car was cleaned up (stop()) — the auto-spawn path owns them
+			}
+			const team = TeamRegistry.getTeamOf(player);
+			if (!team || !team.inPlay) {
+				return; // pulled into a lobby (or teamless) mid-recovery — that flow owns them
+			}
+			const match = matchOf(player);
+			if (match !== undefined && match.phase !== "Ended") {
+				warn(
+					`[Football] ${player.Name}'s spawn straddled the round rebuild — seating on ${match.pitch.folder.Name}`,
+				);
+				enterCurrentPhase(match, player);
+				return;
+			}
+		}
+	});
+}
+
+
 /**
  * A ladder team evaporated (last member left the server or was pulled into
  * another team's lobby). Free its pitch slot, then rescue an abandoned
@@ -1883,6 +1970,12 @@ const footballMatch = {
 	onPlayerSpawned(player: Player) {
 		const match = matchOf(player);
 		if (!match || match.phase === "Ended") {
+			// Either the whistle blew mid-spawn (Ended: stop() will clean the
+			// car — the player is already rostered) or the spawn straddled the
+			// stop()/beginRound rebuild and there is no live match yet. The
+			// recovery poll seats an orphaned car on the rebuilt round; it
+			// bails immediately for the normal rostered-on-Ended case.
+			recoverStraddledSpawn(player);
 			return;
 		}
 		// Round-boundary race: SpawnInPlayer can straddle the whistle — the old
@@ -1917,34 +2010,7 @@ const footballMatch = {
 			});
 			return;
 		}
-		match.assignSide(player);
-		if (match.phase === "Play") {
-			lockPlayer(player, RESPAWN_LOCK);
-			// Re-place at floor level facing the ball — SpawnVehicle's
-			// free-fall placement drops from height and can twist the car.
-			match.placeVehicleFor(player);
-			return;
-		}
-		if (match.phase === "Kickoff" || match.phase === "FaceOff" || match.phase === "Goal") {
-			// startKickoff's GO / the goal-pause resolution unlocks the roster.
-			lockPlayer(player);
-			// Mid-face-off the car belongs on its podium, NOT the kickoff spot
-			// (a late SpawnVehicle return here teleported cars off the stage).
-			if (match.phase === "FaceOff" && match.placeVehicleOnStageFor(player)) {
-				return;
-			}
-			match.placeVehicleFor(player);
-			return;
-		}
-		// Waiting / FreePlay: either this spawn completes the pairing (kickoff)
-		// or the pitch (re-)enters free play with everyone unlocked.
-		if (match.teamsReady()) {
-			warn(`[Football] opponent arrived on ${match.pitch.folder.Name} — kickoff`);
-			match.resetScores();
-			match.startKickoff(match.phase === "FreePlay" ? "OPPONENT ARRIVED!" : undefined);
-		} else {
-			match.enterFreePlay(false);
-		}
+		enterCurrentPhase(match, player);
 	},
 
 	onPlayerDied(player: Player): boolean {
