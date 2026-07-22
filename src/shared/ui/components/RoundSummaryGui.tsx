@@ -1,6 +1,8 @@
 // Full-screen end-of-round stats summary (Top Table §9). Structure only:
-// footballMatch.showRoundSummary builds one stats column per player in your
-// match into Columns (yours centered and bigger) and toggles Enabled.
+// since migration Phase 7 the CLIENT (src/client/ui/roundSummary.client.ts)
+// builds one stats column per ladder teammate into Columns (yours centered
+// and bigger) from the Ui_RoundSummary push / CB_Summary mirror and toggles
+// Enabled; the server composes the payload and keeps the scene pacing.
 
 import React from "@rbxts/react";
 
@@ -11,7 +13,9 @@ export function RoundSummaryGui(): React.Element {
 			Name: "RoundSummary",
 			DisplayOrder: 4,
 			Enabled: false,
-			ResetOnSpawn: true,
+			// Phase 7: CLIENT-mounted (bootstrap.client.ts) — must survive
+			// respawns; Enabled derives from the CB_Summary mirror.
+			ResetOnSpawn: false,
 			ScreenInsets: Enum.ScreenInsets.DeviceSafeInsets,
 			ZIndexBehavior: Enum.ZIndexBehavior.Sibling,
 		} as never,

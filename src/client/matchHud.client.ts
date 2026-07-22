@@ -5,10 +5,13 @@
 //     side, cloned from ReplicatedStorage.Ui.PlayerIcon like the old
 //     Leaderboard row did.
 //
-// The server-rendered UI is destroyed and remounted on every respawn
-// (PlayerGuiManager), so nothing here caches instances: every update
-// re-resolves the current MatchHud, and a PlayerGui.ChildAdded repaints the
-// fresh mount with the latest state.
+// MatchHud/FaceOff/Victory are CLIENT-mounted (Phase 3) by
+// src/client/ui/bootstrap.client.ts with ResetOnSpawn=false — mounted exactly
+// once per session, never recreated. (The instance re-resolution on every
+// update predates that and stays as harmless robustness; the old
+// PlayerGui.ChildAdded repaint hook was removed in Phase 8.) MatchHud.Enabled
+// is derived HERE from the CB_PitchId player attribute (set while rostered on
+// a pitch) — the server used to enable it after a football spawn.
 
 import { startUiConfetti } from "shared/UiConfetti";
 
@@ -388,7 +391,7 @@ function currentFaceOff(): FaceOffShape | undefined {
 }
 
 // Rest positions authored in FaceOffGui.tsx — the entrance tween returns to
-// them, and hiding resets them for the (possibly remounted) next show.
+// them, and hiding resets them for the next show.
 const FACEOFF_BLUE_POS = new UDim2(0.04, 0, 0.5, 0);
 const FACEOFF_RED_POS = new UDim2(0.96, 0, 0.5, 0);
 const FACEOFF_SLIDE = new TweenInfo(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
@@ -406,8 +409,8 @@ function showFaceOff(gui: FaceOffShape, pitch: Instance) {
 	gui.Banner.BluePlate.TeamName.Text = blueName !== "" ? blueName : "BLUE TEAM";
 	gui.Banner.RedPlate.TeamName.Text = redName !== "" ? redName : "RED TEAM";
 	gui.Enabled = true;
-	// Unconditional (not gated on faceOffShown): a respawn remount mid-segment
-	// rebuilds the gui empty, and this repaints the fresh rows.
+	// Unconditional (not gated on faceOffShown): rosters can change between
+	// shows, so repaint the rows every time the banner comes up.
 	rebuildFaceOffIcons();
 	if (faceOffShown) {
 		return;
@@ -557,15 +560,14 @@ function currentVictory(): VictoryShape | undefined {
 	return undefined;
 }
 
-// Effects are bound to ONE mounted gui instance: a respawn remount destroys
-// it (killing the tweens with it), and the repaint then restarts the effects
-// against the fresh mount.
+// Effects are bound to the ONE mounted gui instance (mounted once at boot,
+// never recreated); hideVictory stops the tweens/confetti explicitly.
 let victoryFxGui: VictoryShape | undefined;
 let victoryTweens: Tween[] = [];
 let victoryConfettiStop: (() => void) | undefined;
-// Scene sounds fire once per victory/flip reveal; a respawn remount mid-scene
-// re-runs showVictory/showFlipConfetti against the fresh gui and must not
-// replay them. Cleared when the scene actually ends (hideVictory).
+// Scene sounds fire once per victory/flip reveal, however many times
+// showVictory/showFlipConfetti re-run during the scene. Cleared when the
+// scene actually ends (hideVictory).
 let victorySceneSoundPlayed = false;
 
 function playVictorySceneSound(won: boolean) {
@@ -700,8 +702,8 @@ function refreshVictory() {
 // scene lasts, other camera owners (default/driving camera on respawn) can
 // flip CameraType back — so once the shot is known it is re-asserted every
 // RenderStepped until the phase leaves "Ended" or the pitch goes away. The
-// menu camera takes over when the shop phase remounts the UI (CB_PitchId is
-// cleared by footballMatch.stop(), which ends the loop).
+// menu camera takes over when the shop phase returns players to the menus
+// (CB_PitchId is cleared by footballMatch.stop(), which ends the loop).
 let victoryCamConnection: RBXScriptConnection | undefined;
 
 // The ladder map's 3D pitch rise (ladderMap.client.ts) needs the camera while
@@ -769,6 +771,17 @@ function handleVictoryCamera() {
 	}
 }
 
+// Enabled ownership (Phase 3): on a pitch = HUD on, off a pitch = HUD off.
+// CB_PitchId is set by footballMatch when the player is rostered and cleared
+// by leaveMatch/stop — the same edges the old server enable/disable produced.
+function refreshHudEnabled() {
+	const hud = currentHud();
+	if (!hud) {
+		return;
+	}
+	hud.Enabled = typeIs(LocalPlayer.GetAttribute("CB_PitchId"), "string");
+}
+
 // The scoreboard bar has no place over the face-off presentation — the
 // FaceOff overlay owns the screen until the phase moves on to Kickoff.
 function refreshTopBarVisibility() {
@@ -780,6 +793,7 @@ function refreshTopBarVisibility() {
 }
 
 function refreshAll() {
+	refreshHudEnabled();
 	refreshScore();
 	refreshClock();
 	refreshRound();
@@ -922,11 +936,7 @@ for (const player of Players.GetPlayers()) {
 }
 Players.PlayerRemoving.Connect(() => task.defer(rebuildTeamRows));
 
-// Repaint every fresh mount (the server remounts PlayerGui on each respawn).
-LocalPlayer.WaitForChild("PlayerGui").ChildAdded.Connect((child) => {
-	if (child.Name === "MatchHud" || child.Name === "FaceOff" || child.Name === "Victory") {
-		task.defer(refreshAll);
-	}
-});
-
+// First paint: bootstrap mounts the guis synchronously at client start, so
+// they exist by the time this script runs (no remount ever happens — the old
+// ChildAdded repaint hook was removed in Phase 8).
 refreshAll();

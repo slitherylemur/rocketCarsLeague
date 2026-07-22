@@ -100,7 +100,9 @@ export function FaceOffGui(): React.Element {
 			Name: "FaceOff",
 			DisplayOrder: 3,
 			Enabled: false,
-			ResetOnSpawn: true,
+			// CLIENT-mounted once by src/client/ui/bootstrap.client.ts — must
+			// survive respawns (matchHud.client.ts drives it from attributes).
+			ResetOnSpawn: false,
 			ScreenInsets: Enum.ScreenInsets.DeviceSafeInsets,
 			ZIndexBehavior: Enum.ZIndexBehavior.Sibling,
 		} as never,

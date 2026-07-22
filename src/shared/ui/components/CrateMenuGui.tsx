@@ -16,7 +16,9 @@ export function CrateMenuGui(): React.Element {
 		ClipToDeviceSafeArea: true,
 		DisplayOrder: 0,
 		Enabled: false,
-		ResetOnSpawn: true,
+		// Phase 5: client-mounted once by bootstrap.client.ts — ResetOnSpawn
+		// must be false or the engine destroys it on respawn (original: true).
+		ResetOnSpawn: false,
 		SafeAreaCompatibility: Enum.SafeAreaCompatibility.FullscreenExtension,
 		ScreenInsets: Enum.ScreenInsets.CoreUISafeInsets,
 		SelectionBehaviorDown: Enum.SelectionBehavior.Escape,

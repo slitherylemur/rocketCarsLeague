@@ -2,6 +2,7 @@
 // (One non-functional offensive comment from the original was not carried over.)
 
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
+import { onAimMenuCamera } from "shared/ui/menuCameraBus";
 
 const UserInputService = game.GetService("UserInputService");
 const RunService = game.GetService("RunService");
@@ -308,6 +309,15 @@ FunctionsAndEvents.SetMenuCameraCFrame.OnClientEvent.Connect((...args: unknown[]
 	// An omitted FOV restores normal menu framing, preventing the landing shot
 	// from carrying into the garage pages.
 	cameraFOV = (args[1] as number | undefined) ?? default_CameraFOV;
+	UpdateCamera();
+});
+
+// Phase 5: the client-owned garage aims tab-switch shots LOCALLY over the
+// menuCameraBus — treated exactly like a SetMenuCameraCFrame push (the
+// server keeps aiming the landing/garage-entry/crate shots over the remote).
+onAimMenuCamera((cframe, fov) => {
+	cameraCFrame = cframe;
+	cameraFOV = fov ?? default_CameraFOV;
 	UpdateCamera();
 });
 

@@ -14,6 +14,7 @@ import { ProductIds } from "shared/Monetization";
 const Players = game.GetService("Players");
 const TeamsService = game.GetService("Teams");
 const TextService = game.GetService("TextService");
+const HttpService = game.GetService("HttpService");
 
 /** Developer product for renaming a team (repeatable). PLACEHOLDER — create
  * the product in the Roblox dashboard and paste its id here (Phase 2 wires
@@ -97,22 +98,19 @@ const teamOfPlayer = new Map<Player, LadderTeam>();
 const renameCredits = new Map<Player, number>();
 let nextTeamNumber = 1;
 
-// Runtime remotes folder (nothing place-file-side): PromptGameInvite tells a
-// client to open Roblox's native invite prompt; SubmitTeamName carries the
+// Runtime remotes folder (nothing place-file-side): SubmitTeamName carries the
 // rename popup's typed text (player-typed TextBox.Text never replicates).
+// (PromptGameInvite was removed in Phase 8 — the client-owned team page calls
+// SocialService.PromptGameInvite directly since Phase 4.)
 const ReplicatedStorage = game.GetService("ReplicatedStorage");
 const carBallFolder = new Instance("Folder");
 carBallFolder.Name = "CarBall";
-const promptGameInviteRemote = new Instance("RemoteEvent");
-promptGameInviteRemote.Name = "PromptGameInvite";
-promptGameInviteRemote.Parent = carBallFolder;
 const submitTeamNameRemote = new Instance("RemoteEvent");
 submitTeamNameRemote.Name = "SubmitTeamName";
 submitTeamNameRemote.Parent = carBallFolder;
 carBallFolder.Parent = ReplicatedStorage;
 
 export const CarBallRemotes = {
-	PromptGameInvite: promptGameInviteRemote,
 	SubmitTeamName: submitTeamNameRemote,
 };
 
@@ -191,6 +189,33 @@ function positionForNewTeam(): number | undefined {
 	}
 	waitingMuckabout.position = insertionPosition;
 	return insertionPosition + 1;
+}
+
+// ---- published team state (client-side UI migration, Phase 4) -------------
+// The client menu router renders the Friends Team lobby FROM replicated state:
+// attributes on the ladder team's Roblox Team instance (which replicates to
+// every client). Republished at every mutation point. CB_Pending (pending
+// shop-window launch) is written by initializePlayer at the pendingLaunchTeams
+// mutation sites — publishTeamAttrs only seeds its default.
+function publishTeamAttrs(team: LadderTeam) {
+	pcall(() => {
+		const robloxTeam = team.robloxTeam;
+		robloxTeam.SetAttribute("CB_TeamId", team.id);
+		// The UNPREFIXED name — robloxTeam.Name carries the "rank · name" ladder
+		// prefix for in-play teams (updateLeaderboardNames).
+		robloxTeam.SetAttribute("CB_TeamName", team.name);
+		robloxTeam.SetAttribute("CB_Open", team.open);
+		robloxTeam.SetAttribute("CB_InPlay", team.inPlay);
+		if (robloxTeam.GetAttribute("CB_Pending") === undefined) {
+			robloxTeam.SetAttribute("CB_Pending", false);
+		}
+		// Member order matters to the lobby render (index 0 = creator = crown);
+		// player.Team alone can't express it.
+		robloxTeam.SetAttribute(
+			"CB_Members",
+			HttpService.JSONEncode(team.members.map((member) => member.UserId)),
+		);
+	});
 }
 
 function setPlayerTeam(player: Player, team: LadderTeam | undefined) {
@@ -302,6 +327,7 @@ const TeamRegistry = {
 		const insertedPosition = positionForNewTeam();
 		team.inPlay = true;
 		team.position = insertedPosition ?? nextPosition();
+		publishTeamAttrs(team);
 		TeamRegistry.updateLeaderboardNames();
 		warn(`[TeamRegistry] ${team.name} entered the ladder at table ${team.position + 1}`);
 	},
@@ -337,8 +363,15 @@ const TeamRegistry = {
 		teams.set(id, team);
 		teamOfPlayer.set(creator, team);
 		setPlayerTeam(creator, team);
+		publishTeamAttrs(team);
 		warn(`[TeamRegistry] ${creator.Name} created ${name} (${open ? "open" : "locked"})`);
 		return team;
+	},
+
+	/** Open/locked toggle (AllowRandoms) — mutates AND republishes CB_Open. */
+	setTeamOpen(team: LadderTeam, open: boolean) {
+		team.open = open;
+		publishTeamAttrs(team);
 	},
 
 	/** Add to a specific team (invite acceptance / referred joins). */
@@ -350,6 +383,7 @@ const TeamRegistry = {
 		team.members.push(player);
 		teamOfPlayer.set(player, team);
 		setPlayerTeam(player, team);
+		publishTeamAttrs(team);
 		warn(`[TeamRegistry] ${player.Name} joined ${team.name} (${team.members.size()}/${MAX_MEMBERS})`);
 		return true;
 	},
@@ -413,6 +447,8 @@ const TeamRegistry = {
 		setPlayerTeam(player, undefined);
 		if (team.members.size() === 0) {
 			disband(team);
+		} else {
+			publishTeamAttrs(team);
 		}
 	},
 
@@ -443,6 +479,7 @@ const TeamRegistry = {
 		}
 		team.name = filtered;
 		team.robloxTeam.Name = filtered;
+		publishTeamAttrs(team);
 		warn(`[TeamRegistry] ${requester.Name} renamed team to ${filtered}`);
 		return "ok";
 	},

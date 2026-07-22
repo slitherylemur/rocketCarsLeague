@@ -19,7 +19,11 @@ export function TimerGui(): React.Element {
 		// countdown. 10 keeps the timer above every menu page.
 		DisplayOrder: 2,
 		Enabled: false,
-		ResetOnSpawn: true,
+		// Was true in the place file — this gui is now CLIENT-mounted once by
+		// src/client/ui/bootstrap.client.ts and must survive respawns (the
+		// client root is never remounted; timer.client.ts drives it from
+		// replicated attributes).
+		ResetOnSpawn: false,
 		SafeAreaCompatibility: Enum.SafeAreaCompatibility.FullscreenExtension,
 		ScreenInsets: Enum.ScreenInsets.CoreUISafeInsets,
 		SelectionBehaviorDown: Enum.SelectionBehavior.Escape,

@@ -14,7 +14,7 @@ import type { MovementReport } from "./MatchDirector";
 import requireModule from "shared/requireModule";
 import { Globals } from "../Globals";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
-import { StarterGuiState } from "../ui/StarterGuiState";
+import UiState from "../ui/UiState";
 import LadderMapScreen from "../ui/LadderMapScreen";
 import type { VehicleSubClassModule } from "../Classes/VehicleSubClass/subClassTypes";
 
@@ -51,20 +51,11 @@ interface PodiumUi extends Frame {
 
 type TeamWithKills = Team & { Kills: NumberValue };
 
-interface GameGuiShape extends ScreenGui {
-	Information: Frame & { Gamemode: TextLabel; Clock: TextLabel };
-	TeamScore: Frame & { Red: TextLabel; Blue: TextLabel };
-	Spectate: Frame & { Information: Frame & { Respawn: TextButton } };
-	ResultScreen: Frame & {
-		PlayerBanner: Frame & {
-			playerIcon: ImageLabel;
-			username: TextLabel;
-			kills: TextLabel;
-			deaths: TextLabel;
-			money: TextLabel;
-		};
-	};
-}
+// (GameGuiShape retired in Phase 6: the Game ScreenGui is CLIENT-owned — the
+// server publishes CB_Gamemode / CB_EndScreen attributes instead of writing
+// its instances; src/client/ui/gameHud.client.ts renders them.)
+
+const HttpService = game.GetService("HttpService");
 
 const handler = {} as {
 	startRound: () => void;
@@ -142,16 +133,9 @@ function incrementPlayerMoney(player: Player, amount: number) {
 	playerMoneyDS.Increment(calcAmount, 0);
 }
 
-function gamemodeName(mode: string): string | undefined {
-	if (mode === "FFA") {
-		return "Free For All";
-	} else if (mode === "TDM") {
-		return "Team Deathmatch";
-	} else if (mode === "Football") {
-		return "Football";
-	}
-	return undefined;
-}
+// (gamemodeName moved client-side in Phase 6: the raw mode travels as the
+// CB_Gamemode replicated attribute and gameHud.client.ts maps it to the
+// display name for the Information/Gamemode label.)
 
 function gamemodeStat(mode: string): string | undefined {
 	if (mode === "FFA") {
@@ -197,19 +181,15 @@ handler.startRound = () => {
 			resetStat("damageDealt", 0);
 			resetStat("survivalTime", -1);
 			resetStat("spawned", 0);
-			const playerGui = player.FindFirstChild("PlayerGui");
-			const gameGui = playerGui && playerGui.FindFirstChild("Game");
-			const information = gameGui && gameGui.FindFirstChild("Information");
-			const gamemodeLabel = information && information.FindFirstChild("Gamemode");
-			if (gamemodeLabel && gamemodeLabel.IsA("TextLabel")) {
-				gamemodeLabel.Text = gamemodeName(Globals.gamemode)!;
-			}
 		});
 	}
 
-	// Original: game.StarterGui.Game.Information.Gamemode.Text = ... (template
-	// mutation so future clones inherit it) — template state module instead.
-	StarterGuiState.Game.Information.GamemodeText = gamemodeName(Globals.gamemode)!;
+	// Phase 6: the Game gui is CLIENT-owned. The old live gamemode-label write
+	// loop + the StarterGui template mutation are one attribute publication now;
+	// gameHud.client.ts sets Information/Gamemode.Text AND the mode-dependent
+	// chrome visibility (Information/Leaderboard/TeamScore) from it — replacing
+	// startFFA/startTDM/startFootball's StarterGuiState.Visible writes too.
+	UiState.setReplicatedAttr("CB_Gamemode", Globals.gamemode);
 	const pitches = loadMap();
 	if (pitches.size() === 0) {
 		// ServerStorage.Maps is empty (see loadMap warn) — retry until maps
@@ -394,17 +374,13 @@ function loadMap(): import("./PitchManager").Pitch[] {
  * them: destroying a mid-vote lobby dumped its members onto the shop page,
  * where the auto-spawn would launch the team without a completed vote. */
 function isInMenus(player: Player): boolean {
-	const playerGui = player.FindFirstChild("PlayerGui");
-	if (!playerGui) {
-		return false;
-	}
-	for (const screenName of ["Landing", "CreateTeam", "Garage"]) {
-		const screen = playerGui.FindFirstChild(screenName);
-		if (screen !== undefined && screen.IsA("ScreenGui") && screen.Enabled) {
-			return true;
-		}
-	}
-	return false;
+	// Phase 4: Landing/CreateTeam are client-owned — read the server's own
+	// CB_FlowState record instead of ScreenGui.Enabled. "garage" counts as a
+	// menu here (unlike MatchDirector.isInMenuFlow) because the old check
+	// included the Garage screen: the round-end remount must not yank a player
+	// browsing cars, whichever page they came from.
+	const state = player.GetAttribute("CB_FlowState");
+	return state === "menu" || state === "lobby" || state === "garage";
 }
 
 function sendToMenu() {
@@ -459,20 +435,15 @@ function giveRewards(winnerTable: Player[]): Map<Player, number> {
 }
 
 function disablePlayerUi() {
+	// Phase 6 (dormant FFA/TDM EndScreen path — Football never calls it): the
+	// Game gui is CLIENT-owned; publishing CB_EndScreen replaces the old
+	// hide-everything-but-ResultScreen loop. gameHud.client.ts hides the Game
+	// chrome while the attribute is set (an empty payload = chrome off, banner
+	// not yet shown); showPlayerBanner overwrites it with the banner stats and
+	// clearVictoryStage clears it.
 	for (const player of PlayerService.GetPlayers()) {
 		pcall(() => {
-			const playerGui = (player as unknown as { PlayerGui: Instance }).PlayerGui;
-			for (const v of playerGui.WaitForChild("Game").GetChildren()) {
-				if ((v.IsA("Frame") || v.IsA("TextButton")) && v.Name !== "ResultScreen") {
-					v.Visible = false;
-				}
-			}
-
-			for (const v of playerGui.WaitForChild("Garage").GetChildren()) {
-				if (v.IsA("Frame") || v.IsA("TextButton")) {
-					v.Visible = false;
-				}
-			}
+			UiState.setPlayerAttr(player, "CB_EndScreen", "{}");
 		});
 	}
 }
@@ -570,56 +541,26 @@ function fireEmitters() {
 }
 
 function showPlayerBanner(rewardsTable: Map<Player, number>) {
+	// Phase 6 (dormant FFA/TDM EndScreen path): the per-player ResultScreen
+	// banner is published as CB_EndScreen JSON; gameHud.client.ts fills the
+	// PlayerBanner (icon/username are the viewer's own, resolved client-side)
+	// and shows the ResultScreen while a stats payload is present.
 	for (const player of PlayerService.GetPlayers()) {
 		pcall(() => {
-			const resultScreen = (player as unknown as { PlayerGui: Instance }).PlayerGui.WaitForChild(
-				"Game",
-			).FindFirstChild("ResultScreen") as GameGuiShape["ResultScreen"];
-			resultScreen.Visible = true;
-
-			const ui = resultScreen.WaitForChild("PlayerBanner") as GameGuiShape["ResultScreen"]["PlayerBanner"];
-
-			const icon = Globals.getPlayerIcon(player);
-			ui.playerIcon.Image = icon;
-
-			ui.username.Text = player.Name;
-			ui.kills.Text = "Kills: " + (player.WaitForChild("kills") as NumberValue).Value;
-			ui.deaths.Text = "Deaths: " + (player.WaitForChild("deaths") as NumberValue).Value;
-			ui.money.Text = "+" + math.round(rewardsTable.get(player)!) + " $";
+			const payload = {
+				kills: (player.WaitForChild("kills") as NumberValue).Value,
+				deaths: (player.WaitForChild("deaths") as NumberValue).Value,
+				money: math.round(rewardsTable.get(player)!),
+			};
+			UiState.setPlayerAttr(player, "CB_EndScreen", HttpService.JSONEncode(payload));
 		});
 	}
 }
 
-// function populatePlayerList(winnerTable)
-// 	if #winnerTable < 4 then
-// 		return
-// 	end
-//
-// 	for i, player in pairs(PlayerService:GetPlayers()) do
-// 		pcall(function()
-// 			for i=4, #winnerTable do
-// 				local winner = winnerTable[i]
-//
-// 				local scrollFrame = player.PlayerGui:WaitForChild("Game").ResultScreen.List.Names
-// 				local winnerEntry = ReplicatedStorage.Ui.playerEntry:Clone()
-// 				winnerEntry.name.Text = i .. ". " .. winner.Name
-//
-// 				if _G.gamemode == "FFA" then
-// 					winnerEntry.Knockouts.Text = winner:WaitForChild("kills").Value
-// 				elseif _G.gamemode == "LMS" then
-// 					winnerEntry.Knockouts.Text = winner:WaitForChild("survivalTime").Value
-// 				end
-//
-// 				winnerEntry.Parent = scrollFrame
-// 				winnerEntry.LayoutOrder = i
-// 			end
-// 			player.PlayerGui.Game.ResultScreen.List.Tabs.Knockouts.Text = gamemodeStat(_G.gamemode)
-// 			player.PlayerGui.Game.ResultScreen.Visible = true
-// 		end)
-//
-// 	end
-//
-// end
+// (Legacy populatePlayerList, never reimplemented: places 4+ of winnerTable
+// were listed on the ResultScreen with the per-mode stat — kills for FFA,
+// survivalTime for LMS. If the dormant FFA/TDM path ever revives it, publish
+// the list in the CB_EndScreen payload and render it in gameHud.client.ts.)
 
 function clearVictoryStage() {
 	const VictoryStage = (game.Workspace as unknown as { VictoryStage: VictoryStageModel }).VictoryStage;
@@ -639,12 +580,11 @@ function clearVictoryStage() {
 	}
 
 	//clear and hide leaderboard
+	// Phase 6: clearing CB_EndScreen hides the client-rendered ResultScreen and
+	// restores the mode-derived Game chrome (gameHud.client.ts).
 	for (const player of PlayerService.GetPlayers()) {
 		pcall(() => {
-			const playerGui = (player as unknown as { PlayerGui: Instance }).PlayerGui;
-			if (playerGui.WaitForChild("Game")) {
-				(playerGui as unknown as { Game: GameGuiShape }).Game.ResultScreen.Visible = false;
-			}
+			UiState.setPlayerAttr(player, "CB_EndScreen", undefined);
 		});
 	}
 }
@@ -686,8 +626,9 @@ function getWinnerDetails(): Player[] {
 }
 
 function startFFA() {
-	// Original: game.StarterGui.Game.TeamScore.Visible = false (template mutation)
-	StarterGuiState.Game.TeamScore.Visible = false;
+	// (The original template mutation game.StarterGui.Game.TeamScore.Visible =
+	// false is covered by the CB_Gamemode publication in startRound — the client
+	// hides TeamScore for FFA.)
 	startRoundTimer(Globals.FFA_GAME_TIME);
 }
 
@@ -705,12 +646,10 @@ function startFootball(pitches: import("./PitchManager").Pitch[]) {
 	Teams.Red.Kills.Value = 0;
 	Teams.Blue.Kills.Value = 0;
 	// MatchHud replaces the deathmatch chrome: the kill-count TeamScore, the
-	// kill-icon Leaderboard row and the old Information clock all stay hidden
-	// on every fresh mount. Teams are assigned per player as they spawn in
+	// kill-icon Leaderboard row and the old Information clock all stay hidden —
+	// derived client-side from CB_Gamemode == "Football" (gameHud.client.ts).
+	// Teams are assigned per player as they spawn in
 	// (footballMatch.getSpawnCFrame), not up front.
-	StarterGuiState.Game.TeamScore.Visible = false;
-	StarterGuiState.Game.Information.Visible = false;
-	StarterGuiState.Game.Leaderboard.Visible = false;
 	// No startRoundTimer: the football layer runs the shared round clock and
 	// calls endRound itself when it expires.
 	footballMatch.beginRound(pitches, () => {
@@ -719,25 +658,11 @@ function startFootball(pitches: import("./PitchManager").Pitch[]) {
 }
 
 function turnOnTeamUi() {
-	const Teams = game.GetService("Teams") as unknown as { Red: TeamWithKills; Blue: TeamWithKills };
-	// Original wrote the StarterGui TEMPLATE texts (future clones); live per-player
-	// UIs update client-side (gameUi.client.ts listens to the same Changed events).
-	StarterGuiState.Game.TeamScore.RedText = "Red: " + 0;
-	StarterGuiState.Game.TeamScore.BlueText = "Blue: " + 0;
-
-	Teams.Red.Kills.Changed.Connect((val) => {
-		pcall(() => {
-			StarterGuiState.Game.TeamScore.RedText = "Red: " + val;
-		});
-	});
-
-	Teams.Blue.Kills.Changed.Connect((val) => {
-		pcall(() => {
-			StarterGuiState.Game.TeamScore.BlueText = "Blue: " + val;
-		});
-	});
-
-	StarterGuiState.Game.TeamScore.Visible = true;
+	// Phase 6 (dormant TDM path): the whole body was StarterGui TEMPLATE
+	// bookkeeping for future Game clones. The client owns all of it now —
+	// gameUi.client.ts keeps the live Red/Blue labels updated from the Teams
+	// Kills.Changed events, and gameHud.client.ts shows TeamScore (resetting the
+	// labels to 0) when CB_Gamemode becomes "TDM". Nothing left to do here.
 }
 
 function assignTeams() {
@@ -769,25 +694,11 @@ function unassignTeams() {
 	}
 }
 
-function enableRespawn() {
-	for (const player of PlayerService.GetPlayers()) {
-		pcall(() => {
-			(
-				(player as unknown as { PlayerGui: Instance }).PlayerGui.WaitForChild("Game") as GameGuiShape
-			).Spectate.Information.Respawn.Visible = true;
-		});
-	}
-}
-
-function disableRespawn() {
-	for (const player of PlayerService.GetPlayers()) {
-		pcall(() => {
-			(
-				(player as unknown as { PlayerGui: Instance }).PlayerGui.WaitForChild("Game") as GameGuiShape
-			).Spectate.Information.Respawn.Visible = false;
-		});
-	}
-}
+// (enableRespawn/disableRespawn DELETED in Phase 6: no caller anywhere — dead
+// even for the dormant deathmatch modes (same unreachable-write category as the
+// old disablePlayerUi Garage loop). The Spectate Respawn button ships Visible
+// in the client-owned GameGui and the spectate flow is client-rendered from
+// CB_Killer; if a mode ever needs to gate respawning, publish an attribute.)
 
 function startRoundTimer(gameTime: number) {
 	const gen = ++roundTimerGeneration;

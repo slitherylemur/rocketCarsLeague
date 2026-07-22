@@ -1,7 +1,31 @@
-// Original: ServerStorage/Modules/Content (ModuleScript)
+// Original: ServerStorage/Modules/Content (ModuleScript) — moved to shared in
+// migration Phase 5: the crate catalog is pure display/pricing data and the
+// CLIENT-owned garage renders the shop + crate pages from it. The server
+// remains the authority for grants (CrateModule re-validates price/policy).
 //Types: CarHorns, Colors, BoostTrails
 
-import type { CrateContent } from "./dataTypes";
+// Item shapes (previously src/server/Modules/dataTypes.ts, which now
+// re-exports these for the server-side modules that import them from there).
+export interface CrateItem {
+	name: string;
+	type: string;
+	rarity: number;
+}
+
+export interface CrateContent {
+	price: number;
+	robuxPurchaceId?: number;
+	content: CrateItem[];
+}
+
+/** Crate display names (previously Globals.CrateNames, assigned in
+ * initializePlayer). Keyed by crate id; -1 = OverDRIVE / Robux crate. */
+export const CRATE_NAMES = new Map<number, string>([
+	[1, "Lightning Crate"],
+	[2, "Interceptor Crate"],
+	[3, "Apex Crate"],
+	[-1, "OverDRIVE Crate"],
+]);
 
 // Keyed by crate id (-1 = OverDRIVE / Robux crate). Mixed negative/positive
 // integer keys — a Map preserves the original `Content[crateName]` access.
@@ -129,4 +153,5 @@ const Content = new Map<number, CrateContent>([
 	],
 ]);
 
-export = Content;
+export const CrateCatalog = Content;
+export default Content;
