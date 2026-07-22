@@ -16,13 +16,13 @@ import paidRandomItemsPolicy from "./Modules/paidRandomItemsPolicy";
 import { Globals } from "./Globals";
 import footballMatch from "./Modules/footballMatch";
 import TeamRegistry, { CarBallRemotes, RENAME_PRODUCT_ID } from "./Modules/TeamRegistry";
-import MatchDirector from "./Modules/MatchDirector";
+import UiState from "./ui/UiState";
 import { ProductIds } from "shared/Monetization";
 import type { LadderTeam } from "./Modules/TeamRegistry";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import { PlayerGuiManager } from "./ui/PlayerGuiManager";
 import VehicleInputActions from "./Modules/vehicleInputActions";
-import { CASH_PURCHACE_MENU_OPEN_SIZE } from "./ui/uiConstants";
+import { CASH_PURCHACE_MENU_OPEN_SIZE } from "shared/ui/uiConstants";
 import type { CrateItem } from "./Modules/dataTypes";
 
 const TweenService = game.GetService("TweenService");
@@ -192,7 +192,6 @@ DataStore2.Combine(
 	"multipliers",
 	"keyBinds",
 	"codes",
-	"crateTutorial",
 );
 
 //DataStores--
@@ -625,10 +624,9 @@ function showLanding(player: Player) {
 	gui.Garage.Enabled = false;
 	landing.Enabled = true;
 
-	// Landing is outside the play loop — the shop-phase countdown skips
-	// menu-flow players, so a label shown in the shop would otherwise freeze
-	// on screen here (EXIT TEAM / Leave mid-countdown).
-	MatchDirector.hideTimer(player);
+	// Landing is outside the play loop — the client-rendered shop countdown
+	// (src/client/ui/timer.client.ts) hides itself while the Landing screen is
+	// enabled, so no server-side TimerGui clear is needed here any more.
 
 	// Aim the menu camera at the garage car. setTab.Inventory used to do this
 	// as a side effect of OpenInventory on join; the landing page must send a
@@ -708,20 +706,13 @@ function spawnIntoMatch(player: Player) {
 		// spawnable; bail through on timeout so a wedged round can't trap the
 		// button forever.
 		if (!footballMatch.isRoundLive()) {
-			pcall(() => {
-				const timerGui = player.FindFirstChild("PlayerGui")?.FindFirstChild("TimerGui");
-				if (timerGui && timerGui.IsA("ScreenGui")) {
-					const label = timerGui.FindFirstChild("TextLabel");
-					if (label && label.IsA("TextLabel")) {
-						label.Text = "NEXT ROUND STARTING…";
-					}
-					timerGui.Enabled = true;
-				}
-			});
+			// The client TimerGui shows "NEXT ROUND STARTING…" while this
+			// attribute is set (src/client/ui/timer.client.ts).
+			UiState.setPlayerAttr(player, "CB_InterludeHold", true);
 			for (let i = 0; i < 60 && !footballMatch.isRoundLive(); i++) {
 				task.wait(0.5);
 			}
-			MatchDirector.hideTimer(player);
+			UiState.setPlayerAttr(player, "CB_InterludeHold", undefined);
 			if (player.Parent === undefined) {
 				return;
 			}
@@ -1513,14 +1504,8 @@ function spawnInPlayerInner(player: Player): boolean {
 	PlayerGuiManager.mountAll(player);
 	FunctionsAndEvents.ToggleMenuCamera.FireClient(player, false);
 
-	// local timerGui = player.PlayerGui:WaitForChild("TimerGui")
-	// timerGui.Enabled = true
-	// for i = 2, 1, -1 do
-	// 	timerGui.TextLabel.Text = "Spawning in " .. i
-	// 	task.wait(1)
-	// end
-	//task.wait(2)
-	//timerGui.Enabled = false
+	// (The original's "Spawning in N" TimerGui countdown was already retired;
+	// the TimerGui is client-owned now — see src/client/ui/timer.client.ts.)
 
 	const garageUi = player.WaitForChild("PlayerGui").WaitForChild("Garage") as GarageGuiShape;
 	garageUi.Enabled = false;
@@ -1735,7 +1720,6 @@ function initialisePlayerUi(player: Player) {
 	//local spawnPoint = workspace.SpawnPoints:GetChildren()[rand]
 	//spawnVehicle.SpawnVehicle(player, true, DataUtilities.getPlayerEquippedVehicle(player), spawnPoint.CFrame)
 
-	//_G.CrateTutorial(player)
 }
 
 //removes players garage and sets door playerValue to nil

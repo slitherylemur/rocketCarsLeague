@@ -26,21 +26,20 @@
 
 import React from "@rbxts/react";
 import ReactRoblox from "@rbxts/react-roblox";
-import { GameGui } from "./components/GameGui";
-import { MobileInterfaceGui } from "./components/MobileInterfaceGui";
-import { GarageGui } from "./components/GarageGui";
-import { CrateMenuGui } from "./components/CrateMenuGui";
-import { TimerGui } from "./components/TimerGui";
-import { MatchHudGui } from "./components/MatchHudGui";
-import { FaceOffGui } from "./components/FaceOffGui";
-import { VictoryGui } from "./components/VictoryGui";
-import { LandingGui } from "./components/LandingGui";
-import { CreateTeamGui, InvitePopupGui, RenamePopupGui } from "./components/CarBallMenusGui";
-import { RoundSummaryGui } from "./components/RoundSummaryGui";
-import { LadderMapGui } from "./components/LadderMapGui";
-import { PlayerMoneyGainedPopupsGui } from "./components/PlayerMoneyGainedPopupsGui";
-import { DataLossGui } from "./components/DataLossGui";
-import { NEXT_SELECTION_WIRINGS } from "./components/guiMetadata";
+import { GameGui } from "shared/ui/components/GameGui";
+import { MobileInterfaceGui } from "shared/ui/components/MobileInterfaceGui";
+import { GarageGui } from "shared/ui/components/GarageGui";
+import { CrateMenuGui } from "shared/ui/components/CrateMenuGui";
+import { MatchHudGui } from "shared/ui/components/MatchHudGui";
+import { FaceOffGui } from "shared/ui/components/FaceOffGui";
+import { VictoryGui } from "shared/ui/components/VictoryGui";
+import { LandingGui } from "shared/ui/components/LandingGui";
+import { CreateTeamGui, InvitePopupGui, RenamePopupGui } from "shared/ui/components/CarBallMenusGui";
+import { RoundSummaryGui } from "shared/ui/components/RoundSummaryGui";
+import { LadderMapGui } from "shared/ui/components/LadderMapGui";
+import { PlayerMoneyGainedPopupsGui } from "shared/ui/components/PlayerMoneyGainedPopupsGui";
+import { DataLossGui } from "shared/ui/components/DataLossGui";
+import { NEXT_SELECTION_WIRINGS } from "shared/ui/components/guiMetadata";
 import { StarterGuiState } from "./StarterGuiState";
 
 interface PlayerRootInfo {
@@ -61,8 +60,10 @@ function resolvePath(base: Instance, path: string): Instance | undefined {
 
 function buildTree(): React.Element {
 	// Order matches the original StarterGui child order (Game, MobileInterface,
-	// Garage, CrateMenu, TimerGui, Steer, PlayerMoneyGainedPopups, DataLoss).
-	// (Multipliers retired with the timed cash-multiplier products.)
+	// Garage, CrateMenu, Steer, PlayerMoneyGainedPopups, DataLoss).
+	// (Multipliers retired with the timed cash-multiplier products. TimerGui is
+	// CLIENT-mounted now — src/client/ui/bootstrap.client.ts owns it, rendered
+	// from replicated attributes by src/client/ui/timer.client.ts.)
 	return React.createElement(
 		React.Fragment,
 		undefined,
@@ -70,7 +71,6 @@ function buildTree(): React.Element {
 		React.createElement(MobileInterfaceGui, { key: "MobileInterface" }),
 		React.createElement(GarageGui, { key: "Garage" }),
 		React.createElement(CrateMenuGui, { key: "CrateMenu" }),
-		React.createElement(TimerGui, { key: "TimerGui" }),
 		// Football match HUD (new, not from the original place file).
 		React.createElement(MatchHudGui, { key: "MatchHud" }),
 		// Round-start face-off overlay (blue vs red name plates).

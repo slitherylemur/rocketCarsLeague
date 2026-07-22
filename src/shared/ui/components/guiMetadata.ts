@@ -21,7 +21,8 @@ export const SCREEN_GUI_RESET_ON_SPAWN = new Map<string, boolean>([
 	["MobileInterface", true],
 	["Garage", true],
 	["CrateMenu", true],
-	["TimerGui", true],
+	// TimerGui: client-mounted with ResetOnSpawn=false (see
+	// src/client/ui/bootstrap.client.ts) — no longer in the server tree.
 	["PlayerMoneyGainedPopups", true],
 	["DataLoss", true],
 ]);

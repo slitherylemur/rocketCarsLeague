@@ -29,7 +29,6 @@ export interface DataStoreDefaultsType {
 	multipliers: MultiplierEntry[];
 	keyBinds: Record<string, SerializedEnum | undefined>;
 	codes: string[];
-	crateTutorial: boolean;
 }
 
 // LootManager slot shape (Weight- or Chance-based).

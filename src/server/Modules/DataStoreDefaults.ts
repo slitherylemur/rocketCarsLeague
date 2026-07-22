@@ -64,8 +64,6 @@ const DefaultValues: DataStoreDefaultsType = {
 	},
 
 	codes: [],
-
-	crateTutorial: false,
 };
 
 export = DefaultValues;

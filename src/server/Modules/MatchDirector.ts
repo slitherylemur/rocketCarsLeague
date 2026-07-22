@@ -5,9 +5,11 @@
 
 import TeamRegistry from "./TeamRegistry";
 import { Globals } from "../Globals";
+import UiState from "../ui/UiState";
 import type { RoundResult } from "./footballMatch";
 
 const Players = game.GetService("Players");
+const Workspace = game.GetService("Workspace");
 
 const SHOP_TIME = 60;
 /** Rounds per session (Phase 5): after this many, champions + shuffle. */
@@ -32,20 +34,6 @@ export interface MovementReport {
 	entries: MovementEntry[];
 	/** pitchIndex → teamId that won that drawn pitch's coin flip. */
 	flipWinners: Map<number, string>;
-}
-
-function showTimer(player: Player, text: string) {
-	pcall(() => {
-		const playerGui = player.FindFirstChild("PlayerGui");
-		const timerGui = playerGui && playerGui.FindFirstChild("TimerGui");
-		if (timerGui && timerGui.IsA("ScreenGui")) {
-			const label = timerGui.FindFirstChild("TextLabel");
-			if (label && label.IsA("TextLabel")) {
-				label.Text = text;
-			}
-			timerGui.Enabled = true;
-		}
-	});
 }
 
 /** True only for a car spawned INTO THE MATCH (parented under
@@ -86,16 +74,6 @@ function isInMenuFlow(player: Player): boolean {
 		}
 	}
 	return false;
-}
-
-function hideTimer(player: Player) {
-	pcall(() => {
-		const playerGui = player.FindFirstChild("PlayerGui");
-		const timerGui = playerGui && playerGui.FindFirstChild("TimerGui");
-		if (timerGui && timerGui.IsA("ScreenGui")) {
-			timerGui.Enabled = false;
-		}
-	});
 }
 
 const MatchDirector = {
@@ -246,27 +224,20 @@ const MatchDirector = {
 		const duration = seconds ?? SHOP_TIME;
 		const gen = ++shopGen;
 		Globals.shopPhaseActive = true;
+		// The "NEXT ROUND Ns" countdown label is rendered CLIENT-side
+		// (src/client/ui/timer.client.ts) from these two attributes — including
+		// the who-sees-it rules (menu-flow and in-match players are exempt, see
+		// isInMenuFlow/hasMatchVehicle; the client mirrors both from replicated
+		// state). The server no longer touches TimerGui instances.
+		UiState.setReplicatedAttr("CB_ShopPhase", true);
+		UiState.setReplicatedAttr("CB_ShopEndsAt", Workspace.GetServerTimeNow() + duration);
 		warn(`[Director] shop phase started (${duration}s)`);
 		task.spawn(() => {
+			// Per-second ticks (rather than one long wait) so cancelShopPhase
+			// still takes effect promptly — same cadence as the old UI loop.
 			for (let i = duration; i >= 1; i--) {
 				if (shopGen !== gen) {
 					return;
-				}
-				for (const player of Players.GetPlayers()) {
-					// Players who spawned in early (landing buttons still work
-					// during the shop) already drive — leave their HUD alone.
-					// NOT a plain vehiclesTable check: the menu display car
-					// registers there too (see hasMatchVehicle). Landing/lobby
-					// players are outside the play loop: no countdown for them.
-					if (!hasMatchVehicle(player) && !isInMenuFlow(player)) {
-						showTimer(player, `NEXT ROUND ${i}S`);
-					} else if (isInMenuFlow(player)) {
-						// Entered the landing/lobby mid-countdown (EXIT TEAM from
-						// the shop): without this the last text freezes on screen.
-						// Match players are exempt — footballMatch owns their
-						// TimerGui for kickoff countdowns.
-						hideTimer(player);
-					}
 				}
 				task.wait(1);
 			}
@@ -274,9 +245,9 @@ const MatchDirector = {
 				return;
 			}
 			Globals.shopPhaseActive = false;
+			UiState.setReplicatedAttr("CB_ShopPhase", false);
 			const toSpawn: Player[] = [];
 			for (const player of Players.GetPlayers()) {
-				hideTimer(player);
 				if (TeamRegistry.getTeamOf(player) && !hasMatchVehicle(player) && !isInMenuFlow(player)) {
 					toSpawn.push(player);
 				}
@@ -307,14 +278,9 @@ const MatchDirector = {
 
 	cancelShopPhase() {
 		shopGen += 1;
-	},
-
-	/** Immediately clear the shop-phase countdown label for one player. The
-	 * countdown loop stops UPDATING menu-flow players but only re-checks once
-	 * a second — callers that move a player onto a menu screen (showLanding)
-	 * use this so the frozen text never flashes there. */
-	hideTimer(player: Player) {
-		hideTimer(player);
+		// Stop the client-side countdown too (Globals.shopPhaseActive is left
+		// as-is, matching the original cancel semantics).
+		UiState.setReplicatedAttr("CB_ShopPhase", false);
 	},
 };
 

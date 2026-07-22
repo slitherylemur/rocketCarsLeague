@@ -6,7 +6,7 @@ import DataUtilities from "../DataUtilities";
 import GeneralUtils from "../../GeneralUtils";
 import { getCarTrophyCost } from "../carTrophyCosts";
 import { Globals } from "../../Globals";
-import { CASH_PURCHACE_MENU_OPEN_SIZE } from "../../ui/uiConstants";
+import { CASH_PURCHACE_MENU_OPEN_SIZE } from "shared/ui/uiConstants";
 import type { VehicleModel } from "../../Classes/VehicleClass";
 
 const ServerStorage = game.GetService("ServerStorage");
@@ -135,7 +135,7 @@ const selectedFunctions = {
 		const TweenService = game.GetService("TweenService");
 		// Original: game.StarterGui.Garage.cashPurchace.Size — the StarterGui
 		// template is replaced by the server-rendered React UI, so the open size
-		// is the extracted template constant (see src/server/ui/uiConstants.ts).
+		// is the extracted template constant (see src/shared/ui/uiConstants.ts).
 		const cashPurchaceMenuOpenSize = CASH_PURCHACE_MENU_OPEN_SIZE;
 		const MarketplaceService = game.GetService("MarketplaceService");
 

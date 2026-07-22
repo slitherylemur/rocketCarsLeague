@@ -24,6 +24,7 @@ import spawnVehicle from "./spawnVehicle";
 import TeamRegistry from "./TeamRegistry";
 import type { LadderTeam } from "./TeamRegistry";
 import { Globals } from "../Globals";
+import UiState from "../ui/UiState";
 import { BallAttr } from "shared/ballSim/BallSim";
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
 import { VehicleInput } from "shared/vehicleSim/VehicleSim";
@@ -92,10 +93,6 @@ interface RosterEntry {
 	slot: number;
 }
 
-interface TimerGuiShape extends ScreenGui {
-	TextLabel: TextLabel;
-}
-
 // ---- module-wide (round-scoped) state ------------------------------------
 
 let matchGen = 0;
@@ -147,32 +144,14 @@ function setContextEnabled(player: Player, enabled: boolean) {
 	}
 }
 
-function timerGuiOf(player: Player): TimerGuiShape | undefined {
-	const playerGui = player.FindFirstChild("PlayerGui");
-	const timerGui = playerGui && playerGui.FindFirstChild("TimerGui");
-	if (timerGui && timerGui.IsA("ScreenGui") && timerGui.FindFirstChild("TextLabel")) {
-		return timerGui as TimerGuiShape;
-	}
-	return undefined;
-}
+// Kickoff/respawn "You can drive in N" countdown: the server publishes the
+// lock DEADLINE as the CB_LockUntil player attribute (GetServerTimeNow-based)
+// and the client TimerGui renders the ticking text from it
+// (src/client/ui/timer.client.ts). Clearing the attribute hides the text.
+const LOCK_UNTIL_ATTR = "CB_LockUntil";
 
-function showTimerText(player: Player, text: string) {
-	pcall(() => {
-		const timerGui = timerGuiOf(player);
-		if (timerGui) {
-			timerGui.TextLabel.Text = text;
-			timerGui.Enabled = true;
-		}
-	});
-}
-
-function hideTimerText(player: Player) {
-	pcall(() => {
-		const timerGui = timerGuiOf(player);
-		if (timerGui) {
-			timerGui.Enabled = false;
-		}
-	});
+function clearLockCountdown(player: Player) {
+	UiState.setPlayerAttr(player, LOCK_UNTIL_ATTR, undefined);
 }
 
 function zeroVehicleInputs(player: Player) {
@@ -199,16 +178,19 @@ function lockPlayer(player: Player, seconds?: number) {
 	zeroVehicleInputs(player);
 
 	if (seconds === undefined) {
-		hideTimerText(player);
+		// The untimed lock never showed countdown text — make sure no stale
+		// timed countdown lingers on the client.
+		clearLockCountdown(player);
 		return;
 	}
+	// The client renders "You can drive in N" from this deadline.
+	UiState.setPlayerAttr(player, LOCK_UNTIL_ATTR, game.Workspace.GetServerTimeNow() + seconds);
 	const localMatchGen = matchGen;
 	task.spawn(() => {
 		for (let i = seconds; i >= 1; i--) {
 			if (lockGen.get(player) !== gen || matchGen !== localMatchGen || player.Parent === undefined) {
 				return;
 			}
-			showTimerText(player, `You can drive in ${i}`);
 			task.wait(1);
 		}
 		if (lockGen.get(player) === gen && matchGen === localMatchGen && player.Parent !== undefined) {
@@ -219,7 +201,7 @@ function lockPlayer(player: Player, seconds?: number) {
 
 function unlockPlayer(player: Player) {
 	lockGen.set(player, (lockGen.get(player) ?? 0) + 1);
-	hideTimerText(player);
+	clearLockCountdown(player);
 	player.SetAttribute(CONTROL_LOCK_ATTR, undefined);
 	setContextEnabled(player, true);
 }
@@ -1803,6 +1785,8 @@ const footballMatch = {
 
 	stop() {
 		matchGen += 1;
+		// Mirrors isRoundLive() for clients: no live round until beginRound.
+		UiState.setReplicatedAttr("CB_RoundLive", false);
 		if (goalWatcher) {
 			goalWatcher.Disconnect();
 			goalWatcher = undefined;
@@ -1812,7 +1796,7 @@ const footballMatch = {
 			match.clearFaceOffScene();
 			for (const [player] of match.roster) {
 				lockGen.set(player, (lockGen.get(player) ?? 0) + 1);
-				hideTimerText(player);
+				clearLockCountdown(player);
 				// Stale marker would silence the sit-edge enable on the NEXT
 				// round's first (unlocked) spawn.
 				player.SetAttribute(CONTROL_LOCK_ATTR, undefined);
@@ -1857,6 +1841,8 @@ const footballMatch = {
 		setGlobalAttr("CB_SessionRounds", SESSION_ROUNDS);
 
 		matches = pitches.map((pitch) => new PitchMatch(pitch));
+		// Mirrors isRoundLive() for clients: pitches exist, whistle not blown.
+		UiState.setReplicatedAttr("CB_RoundLive", true);
 
 		const teams = TeamRegistry.getTeams();
 		const realMatches = matches.filter((m) => !m.muckabout);
@@ -2079,7 +2065,7 @@ const footballMatch = {
 		}
 		match.roster.delete(player);
 		lockGen.set(player, (lockGen.get(player) ?? 0) + 1);
-		hideTimerText(player);
+		clearLockCountdown(player);
 		player.SetAttribute(CONTROL_LOCK_ATTR, undefined);
 		player.SetAttribute("CB_Side", undefined);
 		player.SetAttribute("CB_PitchId", undefined);

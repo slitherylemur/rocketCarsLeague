@@ -13,7 +13,6 @@
 //   initializePlayer.lua    -> CrateNames, PlayerJoinedTimes, findEmptyGarage,
 //                              findPlayerGarage, addPlayerToGarage, clearPlayerGarage,
 //                              openCrateMenu, SpawnInPlayer
-//   tutorial.lua            -> CrateTutorial
 
 import type { VehicleClass } from "./Classes/VehicleClass";
 
@@ -55,9 +54,6 @@ interface GlobalsTable {
 	clearPlayerGarage: (player: Player) => void;
 	openCrateMenu: (player: Player, crateName: number) => void;
 	SpawnInPlayer: (player: Player) => boolean;
-
-	// tutorial.lua
-	CrateTutorial: (player: Player) => void;
 
 	// MatchDirector (Top Table): true during the between-rounds shop window —
 	// menu re-inits open the Cars page instead of the landing page.
