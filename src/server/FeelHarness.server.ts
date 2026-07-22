@@ -11,6 +11,11 @@
 import { Globals } from "./Globals";
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
 import * as VehicleApi from "shared/vehicleV2/VehicleApi";
+
+// Harness measurements read the simulated body: V2 VehicleRoot or legacy Base.
+function harnessRoot(vehicle: { model: Model }): BasePart {
+	return (VehicleApi.rootOf(vehicle.model) ?? error("[FeelHarness] no sim root")) as BasePart;
+}
 import { VehicleAttr } from "shared/vehicleSim/VehicleSim";
 import type { VehicleClass } from "./Classes/VehicleClass";
 
@@ -25,17 +30,17 @@ function round2(n: number): number {
 }
 
 function speedOf(vehicle: VehicleClass): number {
-	const base = vehicle.model.Base;
+	const base = harnessRoot(vehicle);
 	return -base.CFrame.VectorToObjectSpace(base.AssemblyLinearVelocity).Z;
 }
 
 function sideSpeedOf(vehicle: VehicleClass): number {
-	const base = vehicle.model.Base;
+	const base = harnessRoot(vehicle);
 	return base.CFrame.VectorToObjectSpace(base.AssemblyLinearVelocity).X;
 }
 
 function yawRateOf(vehicle: VehicleClass): number {
-	return vehicle.model.Base.AssemblyAngularVelocity.Y;
+	return harnessRoot(vehicle).AssemblyAngularVelocity.Y;
 }
 
 // Inputs go through the same sim entry points the remotes use. The client can
@@ -48,7 +53,7 @@ function resetCar(vehicle: VehicleClass, pose: CFrame) {
 	setInputs(vehicle, 0, 0);
 	VehicleApi.setDriftHeld(vehicle.model, false);
 	vehicle.model.PivotTo(pose);
-	const base = vehicle.model.Base;
+	const base = harnessRoot(vehicle);
 	base.AssemblyLinearVelocity = new Vector3(0, 0, 0);
 	base.AssemblyAngularVelocity = new Vector3(0, 0, 0);
 	for (let i = 0; i < 45; i++) {
@@ -172,10 +177,10 @@ function runSuite(player: Player) {
 	// refills through boost pads now — Rocket League rules)
 	resetCar(vehicle, pose);
 	const readBoost = () => {
-		const value = vehicle.model.Base.GetAttribute(VehicleAttr.BoostAmount);
+		const value = harnessRoot(vehicle).GetAttribute(VehicleAttr.BoostAmount);
 		return typeIs(value, "number") ? value : 0;
 	};
-	vehicle.model.Base.SetAttribute(VehicleAttr.BoostAmount, 100);
+	harnessRoot(vehicle).SetAttribute(VehicleAttr.BoostAmount, 100);
 	setInputs(vehicle, 1, 0);
 	vehicle.Boost(Enum.UserInputState.Begin);
 	let boostTop = 0;
@@ -196,7 +201,7 @@ function runSuite(player: Player) {
 
 	// 6. jump: apex height and airtime
 	resetCar(vehicle, pose);
-	const startY = vehicle.model.Base.Position.Y;
+	const startY = harnessRoot(vehicle).Position.Y;
 	vehicle.Jump(Enum.UserInputState.Begin); // non-blocking now: the sim runs the force window
 	let apex = 0;
 	let airtime = -1;
@@ -204,7 +209,7 @@ function runSuite(player: Player) {
 	const jumpT0 = os.clock();
 	while (os.clock() - jumpT0 < 4) {
 		RunService.Heartbeat.Wait();
-		apex = math.max(apex, vehicle.model.Base.Position.Y - startY);
+		apex = math.max(apex, harnessRoot(vehicle).Position.Y - startY);
 		const grounded = VehicleApi.isOnGround(vehicle.model);
 		if (!leftGround && !grounded) {
 			leftGround = true;

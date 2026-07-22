@@ -100,7 +100,7 @@ function playLocalHorn() {
 	if (!vehicle) {
 		return;
 	}
-	const base = vehicle.FindFirstChild("Base");
+	const base = vehicle.FindFirstChild("VehicleRoot") ?? vehicle.FindFirstChild("Base");
 	const hornSound = base && base.FindFirstChild("hornSound");
 	if (!base || !hornSound || !hornSound.IsA("Sound") || hornSound.SoundId === "") {
 		return; // no preloaded id (old save / race) — the server path still honks
