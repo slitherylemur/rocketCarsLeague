@@ -19,6 +19,7 @@ import type { LadderTeam } from "./Modules/TeamRegistry";
 import { FunctionsAndEvents } from "shared/FunctionsAndEvents";
 import VehicleInputActions from "./Modules/vehicleInputActions";
 import { CarAttr, CarModelAttr } from "shared/vehicleV2/CarState";
+import { VEHICLE_V2_ENABLED } from "shared/vehicleV2/FeatureFlags";
 
 const HttpService = game.GetService("HttpService");
 const MarketplaceService = game.GetService("MarketplaceService");
@@ -233,9 +234,10 @@ const menuCameraReady = (() => {
 function resendMenuCameraState(player: Player) {
 	const playerGarage = Globals.findPlayerGarage(player);
 	// No garage yet: initialisePlayerUi hasn't assigned one, and its own fires
-	// will land on the now-connected client handlers. A character means the
-	// player already spawned into play — never re-force the menu camera then.
-	if (!playerGarage || player.Character !== undefined) {
+	// will land on the now-connected client handlers. V2 match players are
+	// deliberately characterless, so flow state—not Character existence—is the
+	// authority for whether this handshake may re-force the menu camera.
+	if (!playerGarage || !isMenuFamily(getFlowState(player))) {
 		return;
 	}
 	FunctionsAndEvents.ToggleMenuCamera.FireClient(player, true, playerGarage);
@@ -905,14 +907,24 @@ function spawnInPlayerInner(player: Player, flowGen: number): boolean {
 	// ScreenGui is client-owned and never destroyed — the client menus hide
 	// themselves when CB_FlowState reads "spawning".)
 
-	// Mark this engine spawn as requested: initializePlayer's CharacterAdded
-	// guard destroys any character that appears WITHOUT this mark (boot-race
-	// auto-loads at 0,0,0). Cleared by ResetAndInitialisePlayerMenuUI.
-	player.SetAttribute("CB_ExpectCharacter", true);
-	player.LoadCharacter();
-	warn(`[SpawnInPlayer] after LoadCharacter Character=${player.Character?.GetFullName() ?? "nil"}`);
-	if (standDownIfSuperseded("during LoadCharacter")) {
-		return true;
+	if (VEHICLE_V2_ENABLED) {
+		// V2 has no VehicleSeat and drives from the car's explicit Driving
+		// association. A Humanoid adds no gameplay value, so never create one.
+		// Clean up a character left by a previous/legacy spawn during a live
+		// rollout; CharacterRemoving also tears down its old owned vehicle.
+		player.SetAttribute("CB_ExpectCharacter", undefined);
+		// Tear down the old ownership record before destroying a legacy avatar;
+		// otherwise its CharacterRemoving callback could race the new spawn.
+		spawnVehicle.KillVehicle(player);
+		player.Character?.Destroy();
+	} else {
+		// Legacy cars still require a Humanoid for VehicleSeat occupancy.
+		player.SetAttribute("CB_ExpectCharacter", true);
+		player.LoadCharacter();
+		warn(`[SpawnInPlayer] after LoadCharacter Character=${player.Character?.GetFullName() ?? "nil"}`);
+		if (standDownIfSuperseded("during LoadCharacter")) {
+			return true;
+		}
 	}
 	// (The original relied on the engine re-cloning StarterGui into PlayerGui on
 	// LoadCharacter; the client-owned guis are mounted once at boot instead and
@@ -926,11 +938,8 @@ function spawnInPlayerInner(player: Player, flowGen: number): boolean {
 	// top of this spawn.)
 	//workspace:WaitForChild(player.Name)
 	(player.FindFirstChild("spawned") as NumberValue).Value += 1;
-	// (Phase 6: Game.Enabled is CLIENT-derived — gameHud.client.ts enables the
-	// HUD while CB_FlowState is "match", or "spawning" once the character
-	// exists, which is exactly this point: the flow wrote "spawning" above and
-	// LoadCharacter just ran. The old playerGuiOf(player).Game.Enabled = true
-	// write is that same edge.)
+	// (Phase 6: Game.Enabled is CLIENT-derived from CB_FlowState. V2 no longer
+	// uses Character existence as a spawn-readiness signal.)
 
 	const playerMoney = DataStore2("money", player);
 	setPlayerCash(player, playerMoney.Get(DataStoreDefaults.money) as number);
@@ -962,8 +971,7 @@ function spawnInPlayerInner(player: Player, flowGen: number): boolean {
 		// FindFirstChild, not a direct index: PitchManager CLEARS this legacy
 		// folder on every round build, and a missing/empty folder must mean
 		// "no spawn" (clean false → caller returns the player to the menu),
-		// never a throw that strands the character LoadCharacter just put at
-		// the world origin.
+		// never a throw that strands a legacy character at the world origin.
 		const legacySpawnPoints = game.Workspace.FindFirstChild("SpawnPoints");
 		if (legacySpawnPoints) {
 			for (const descendant of legacySpawnPoints.GetDescendants()) {
@@ -996,12 +1004,9 @@ function spawnInPlayerInner(player: Player, flowGen: number): boolean {
 	}
 
 	// SpawnVehicle can abort WITHOUT throwing (missing template, car destroyed
-	// mid-choreography by a sweeper, SeatPlayer bailing before Sit). Every one
-	// of those left the player as a raw walking character at the LoadCharacter
-	// spawn — the world origin, since no SpawnLocation exists — with the match
-	// HUD on and the round running without them. Verify car + occupied seat
-	// before declaring success; callers route `false` back to the menu, which
-	// clears the character.
+	// mid-choreography by a sweeper, legacy SeatPlayer bailing before Sit).
+	// Verify the V2 Driving association or legacy occupied seat before declaring
+	// success; callers route `false` back to the menu.
 	const spawnedVehicle = Globals.vehiclesTable[player.UserId];
 	const spawnedSeat = spawnedVehicle?.model.FindFirstChildWhichIsA("VehicleSeat", true);
 	const spawnedRoot = spawnedVehicle?.model.FindFirstChild("VehicleRoot");

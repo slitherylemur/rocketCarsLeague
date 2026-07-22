@@ -80,6 +80,21 @@ export interface PhysicsPreset {
 	/** Yaw budget while boosting (slightly looser, legacy 100 vs 112). */
 	readonly boostYawAccel: number;
 
+	// ---- steering feel ----
+	/** Steer filter slew toward lock (full-steer units/s): turn-in ramp. */
+	readonly steerRiseRate: number;
+	/** Steer filter slew back toward center (faster than rise). */
+	readonly steerReturnRate: number;
+	/** Grip yaw-rate ceiling (rad/s) — above speed turnRadius×maxYawRate the
+	 * turn radius widens with speed instead of staying constant. */
+	readonly maxYawRate: number;
+	/** Fraction of the rear-axle distance the grip pivot sits behind the COM
+	 * (0 = pivot at center, 1 = pivot at the rear axle — nose leads the turn). */
+	readonly rearPivotFrac: number;
+	/** Speed scrubbed while grip turning, as a fraction of the commanded
+	 * centripetal accel |v|·|yawRate|. Keep small. */
+	readonly turnScrubFrac: number;
+
 	// ---- drift / handbrake ----
 	/** Commanded yaw rate at full steer + full speed while sliding (rad/s). */
 	readonly driftYawRate: number;
@@ -178,6 +193,11 @@ const BASE = {
 	turnRadius: 48,
 	gripYawAccel: 112,
 	boostYawAccel: 100,
+	steerRiseRate: 8, // 0 → full lock in ~0.125 s
+	steerReturnRate: 18, // full lock → center in ~0.055 s
+	maxYawRate: 1.9, // radius starts widening above ~turnRadius×1.9 studs/s
+	rearPivotFrac: 1,
+	turnScrubFrac: 0.05,
 	driftYawRate: 8,
 	driftYawAccel: 270,
 	driftEngineMult: 0.25,

@@ -19,7 +19,6 @@ import { getUiIntentEvent } from "shared/UiIntents";
 import * as VehicleSim from "shared/vehicleSim/VehicleSim";
 import { VehicleModel, VehicleModelAttr } from "shared/vehicleSim/VehicleSim";
 import * as VehicleApi from "shared/vehicleV2/VehicleApi";
-import * as CarSim from "shared/vehicleV2/CarSim";
 import { VEHICLE_V2_ENABLED } from "shared/vehicleV2/FeatureFlags";
 import * as vehicleV2Spawn from "../Modules/vehicleV2Spawn";
 
@@ -100,16 +99,17 @@ export class VehicleClass {
 
 	initialiseVehicleModel() {
 		// V2: restructure the cloned template into the single-assembly proxy
-		// (no physical wheels/springs/seat) and register with CarSim. The rest
-		// of this method (health bar, damage loop, ancestry hook) is shared —
-		// it addresses the simulated body through `rootPart`.
+		// (no physical wheels/springs/seat). Server CarSim registration happens
+		// in spawnVehicle immediately before the completed match clone is parented
+		// into Workspace. This constructor performs yielding customization reads;
+		// registering here let CarSim discard the unparented entry as stale.
+		// The rest of this method is shared and addresses `rootPart`.
 		let rootPart: BasePart;
 		if (VEHICLE_V2_ENABLED) {
 			const root = vehicleV2Spawn.buildProxy(this.model as unknown as Model, this.model.Name, this.owner);
 			if (!root) {
 				error(`[VehicleClass] V2 proxy build failed for ${this.model.Name}`);
 			}
-			CarSim.registerServer(this.model as unknown as Model, root, this.owner);
 			rootPart = root;
 		} else {
 			const base = this.model.Base;
@@ -238,8 +238,8 @@ export class VehicleClass {
 
 		// Legacy path only: register with the constraint-driven shared sim
 		// (creates movers, writes tuning/state attributes, sets wheel
-		// friction). V2 registered with CarSim above — the two registrations
-		// are mutually exclusive by construction (gate G-14).
+		// friction). V2 registration is deferred to spawnVehicle — the two
+		// registrations remain mutually exclusive by construction (gate G-14).
 		if (!VEHICLE_V2_ENABLED) {
 			VehicleSim.register(
 				this.model,

@@ -197,6 +197,7 @@ export function registerServer(model: Model, root: BasePart, owner?: Player) {
 	root.SetAttribute(CarAttr.Driving, false);
 	root.SetAttribute(CarAttr.Throttle, 0);
 	root.SetAttribute(CarAttr.Steer, 0);
+	root.SetAttribute(CarAttr.SteerFilt, 0);
 	root.SetAttribute(CarAttr.DriftHeld, false);
 	root.SetAttribute(CarAttr.BoostHeld, false);
 	root.SetAttribute(CarAttr.PrevJump, false);
@@ -587,6 +588,7 @@ function stepCar(entry: CarEntry, dt: number) {
 				// Fresh drive: never inherit stale input/ability state.
 				root.SetAttribute(CarAttr.Throttle, 0);
 				root.SetAttribute(CarAttr.Steer, 0);
+				root.SetAttribute(CarAttr.SteerFilt, 0);
 				root.SetAttribute(CarAttr.DriftHeld, false);
 				root.SetAttribute(CarAttr.BoostHeld, false);
 				root.SetAttribute(CarAttr.PrevJump, false);
@@ -686,6 +688,16 @@ function stepCar(entry: CarEntry, dt: number) {
 	root.SetAttribute(CarAttr.Throttle, input.throttle);
 	root.SetAttribute(CarAttr.Steer, input.steer);
 	root.SetAttribute(CarAttr.DriftHeld, input.drift);
+
+	// ---- steer filter (front-wheel-angle feel) ----
+	// Grip steering acts through a slew-limited steer angle, not the raw input:
+	// turn-in ramps at steerRiseRate, return-to-center (or reversal) at the
+	// quicker steerReturnRate. Cross-tick state → attribute (rollback contract).
+	const steerPrev = attrNumber(root, CarAttr.SteerFilt, 0);
+	const rising = input.steer * steerPrev >= 0 && math.abs(input.steer) > math.abs(steerPrev);
+	const steerRate = rising ? preset.steerRiseRate : preset.steerReturnRate;
+	const steer = steerPrev + math.clamp(input.steer - steerPrev, -steerRate * dt, steerRate * dt);
+	root.SetAttribute(CarAttr.SteerFilt, steer);
 
 	const prevBoost = attrBool(root, CarAttr.PrevBoost);
 	if (input.boost !== prevBoost) {
@@ -866,6 +878,23 @@ function stepCar(entry: CarEntry, dt: number) {
 		}
 	}
 
+	// ---- grip steering command ----
+	// Kinematic yaw target from the filtered steer angle, capped at maxYawRate
+	// so the turn radius widens with speed instead of staying constant. Pivoting
+	// rearPivotFrac of the way toward the rear axle means the COM carries a
+	// lateral velocity of yawRate·rearAxleDist — the tires below target that
+	// slip instead of zero, so the nose leads the turn rather than the car
+	// rotating about its center.
+	const travelSign = entry.velocity >= 0 ? 1 : -1;
+	let gripYawRate = 0; // signed servo target about WORLD_UP
+	let slipTarget = 0; // lateral COM velocity along `lat` the tires allow
+	if (wheelsGrounded && !drifting) {
+		const kinematicYaw = (math.abs(entry.velocity) / preset.turnRadius) * steer * travelSign;
+		gripYawRate = -math.clamp(kinematicYaw, -preset.maxYawRate, preset.maxYawRate);
+		const rearAxleDist = preset.contacts[2].local.Z; // rear contact, +Z = back
+		slipTarget = gripYawRate * rearAxleDist * preset.rearPivotFrac * travelSign;
+	}
+
 	// ---- tires (grounded contact response) ----
 	if (wheelsGrounded || (grounded && closeGround !== undefined)) {
 		// Ground-plane basis.
@@ -888,7 +917,7 @@ function stepCar(entry: CarEntry, dt: number) {
 			const lat = normal.Cross(fwd).Unit;
 			const res = tireAccel({
 				forwardVel: planarVel.Dot(fwd),
-				lateralVel: planarVel.Dot(lat),
+				lateralVel: planarVel.Dot(lat) - slipTarget,
 				driveAccel: driveAccelWanted,
 				lateralGripAccel: lateralGrip,
 				frictionBudgetAccel: preset.frictionBudgetAccel,
@@ -930,9 +959,18 @@ function stepCar(entry: CarEntry, dt: number) {
 			const rate = -input.steer * preset.driftYawRate * dir * math.min(entry.propVelocity * 2, 1);
 			addAxisServo(entry, w, WORLD_UP, rate, preset.driftYawAccel, dt);
 		} else if (wheelsGrounded) {
-			const kinematicYaw = (math.abs(entry.velocity) / preset.turnRadius) * input.steer * dir;
 			const yawAccel = boosting ? preset.boostYawAccel : preset.gripYawAccel;
-			addAxisServo(entry, w, WORLD_UP, -kinematicYaw, yawAccel, dt);
+			addAxisServo(entry, w, WORLD_UP, gripYawRate, yawAccel, dt);
+			// Slight turn scrub: bleed speed in proportion to the commanded
+			// centripetal accel |v|·|ω| so hard turns carry a cost.
+			const scrubAccel = preset.turnScrubFrac * math.abs(gripYawRate) * math.abs(entry.velocity);
+			if (scrubAccel > 0) {
+				const travelVel = v.sub(groundNormal.mul(v.Dot(groundNormal)));
+				const travelSpeed = travelVel.Magnitude;
+				if (travelSpeed > 1e-3) {
+					entry.dv = entry.dv.sub(travelVel.Unit.mul(math.min(scrubAccel * dt, travelSpeed)));
+				}
+			}
 		}
 	}
 

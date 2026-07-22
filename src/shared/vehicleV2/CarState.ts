@@ -25,6 +25,8 @@ export const CarAttr = {
 	// prediction/eventual input display; rollback-tracked)
 	Throttle: "Throttle",
 	Steer: "Steer",
+	// slew-filtered steer (the "front wheel angle" the grip yaw actually uses)
+	SteerFilt: "SteerFilt",
 	DriftHeld: "DriftHeld",
 	BoostHeld: "BoostHeld",
 	// input edges (previous tick's held state — resim replays edges identically)
@@ -105,6 +107,7 @@ const NUMBER_ATTRS: readonly string[] = [
 	CarAttr.BlastHoldUntil,
 	CarAttr.Throttle,
 	CarAttr.Steer,
+	CarAttr.SteerFilt,
 	CarAttr.BoostAmount,
 	CarAttr.JumpForceUntil,
 	CarAttr.JumpReadyAt,

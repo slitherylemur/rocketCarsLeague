@@ -314,6 +314,22 @@ interface CarContact {
 	carCenter: Vector3;
 }
 
+// Car velocity at a world point, read from the car's ROOT part (VehicleRoot
+// for V2, the model PrimaryPart for legacy) — the value the vehicle sim
+// itself writes every tick, identical on server and predicting client. Do
+// NOT query the welded hitbox part: GetVelocityAtPosition on the massless
+// CanCollide=false query box can report zero, which turns every hit into a
+// closing-speed-0 contact — no bounce, no punch, only the depenetration
+// shove — i.e. the ball dribbles along in front of the car instead of
+// flying off it.
+function carVelocityAt(hitboxPart: BasePart, carModel: Model, point: Vector3): Vector3 {
+	const root = carModel.PrimaryPart;
+	if (root !== undefined) {
+		return root.AssemblyLinearVelocity.add(root.AssemblyAngularVelocity.Cross(point.sub(root.Position)));
+	}
+	return hitboxPart.GetVelocityAtPosition(point);
+}
+
 // Closest point on an (oriented box) hitbox part to the ball center; returns
 // a contact when the ball overlaps it. Boxes only — exact and cheap.
 function boxContact(ball: BasePart, part: BasePart, center: Vector3, radius: number): CarContact | undefined {
@@ -351,7 +367,7 @@ function boxContact(ball: BasePart, part: BasePart, center: Vector3, radius: num
 		normal,
 		hitPoint,
 		penetration: radius - distance,
-		carVelocity: part.GetVelocityAtPosition(hitPoint),
+		carVelocity: carVelocityAt(part, carModel, hitPoint),
 		carModel,
 		carCenter: part.Position,
 	};
@@ -378,17 +394,17 @@ function sweptBoxContact(
 	if (immediate) {
 		return { contact: immediate, time: 0 };
 	}
-	const carVelocity = part.GetVelocityAtPosition(part.Position);
+	const carModel = part.Parent !== undefined ? part.Parent.Parent : undefined;
+	if (carModel === undefined || !carModel.IsA("Model")) {
+		return undefined;
+	}
+	const carVelocity = carVelocityAt(part, carModel, part.Position);
 	const relativeTravel = ballTravel.sub(carVelocity.mul(dt));
 	const localStart = part.CFrame.PointToObjectSpace(position);
 	const localDelta = part.CFrame.VectorToObjectSpace(relativeTravel);
 	const expandedHalf = part.Size.div(2).add(new Vector3(radius, radius, radius));
 	const hit = sweepPointAabb(localStart, localDelta, expandedHalf);
 	if (!hit) {
-		return undefined;
-	}
-	const carModel = part.Parent !== undefined ? part.Parent.Parent : undefined;
-	if (carModel === undefined || !carModel.IsA("Model")) {
 		return undefined;
 	}
 	const normal = part.CFrame.VectorToWorldSpace(hit.normal).Unit;
@@ -401,7 +417,7 @@ function sweptBoxContact(
 			normal,
 			hitPoint,
 			penetration: 0,
-			carVelocity: part.GetVelocityAtPosition(hitPoint),
+			carVelocity: carVelocityAt(part, carModel, hitPoint),
 			carModel,
 			carCenter: carCenterAtHit,
 		},

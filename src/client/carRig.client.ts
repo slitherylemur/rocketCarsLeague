@@ -48,6 +48,13 @@ const LocalPlayer = Players.LocalPlayer;
 
 const RENDER_BIND_NAME = "CarRigBeforeCamera";
 const RS_OFFSET_ATTR = "RS_Offset";
+const HITBOX_TRANSPARENCY = 0.5;
+const PREDICTED_HITBOX_COLOR = Color3.fromRGB(0, 200, 255);
+const SMOOTHED_HITBOX_COLOR = Color3.fromRGB(255, 70, 210);
+/** Deliberate presentation-only lowering after visual inspection in Studio. */
+const CHASSIS_VISUAL_LOWERING = 1.5;
+/** Cosmetic-only wheel drop, scaled by each template's authored wheel size. */
+const WHEEL_VISUAL_DROP_RADIUS_FRACTION = 0.15;
 
 // Remote interpolation tuning.
 const SNAP_BUFFER = 32;
@@ -86,7 +93,12 @@ interface Rig {
 	isLocal: boolean;
 	parts: RigPart[];
 	wheels: RigWheel[];
+	/** Root-local presentation translation that puts the visible body bottom on
+	 * the authored HitboxMain bottom. It never enters simulation state. */
+	chassisVisualOffset: CFrame;
 	cameraTarget: BasePart;
+	predictedHitbox?: BasePart;
+	smoothedHitbox?: BasePart;
 	connections: RBXScriptConnection[];
 	// generation tracking
 	lastTeleportGen: number;
@@ -141,6 +153,49 @@ function attrNumber(instance: Instance, name: string, fallback: number): number 
 	return typeIs(value, "number") ? value : fallback;
 }
 
+function makeDebugHitbox(name: string, root: BasePart, color: Color3): BasePart {
+	const hitbox = new Instance("Part");
+	hitbox.Name = name;
+	hitbox.Size = root.Size;
+	hitbox.CFrame = root.CFrame;
+	hitbox.Color = color;
+	hitbox.Material = Enum.Material.Neon;
+	hitbox.Transparency = HITBOX_TRANSPARENCY;
+	hitbox.Anchored = true;
+	hitbox.CanCollide = false;
+	hitbox.CanQuery = false;
+	hitbox.CanTouch = false;
+	hitbox.CastShadow = false;
+	hitbox.Parent = game.Workspace;
+	return hitbox;
+}
+
+/** Return the bottom of the actual chassis geometry in VehicleRoot-local Y.
+ * Wheels and effect-only parts are intentionally excluded from the bound. */
+function chassisBottomY(model: Model): number | undefined {
+	const body = model.FindFirstChild("Model");
+	if (!body) {
+		return undefined;
+	}
+	let bottom = math.huge;
+	for (const descendant of body.GetDescendants()) {
+		if (!descendant.IsA("BasePart")) {
+			continue;
+		}
+		const offset = descendant.GetAttribute(RS_OFFSET_ATTR);
+		if (!typeIs(offset, "CFrame")) {
+			continue;
+		}
+		const half = descendant.Size.mul(0.5);
+		const extentY =
+			math.abs(offset.XVector.Y) * half.X +
+			math.abs(offset.YVector.Y) * half.Y +
+			math.abs(offset.ZVector.Y) * half.Z;
+		bottom = math.min(bottom, offset.Position.Y - extentY);
+	}
+	return bottom < math.huge ? bottom : undefined;
+}
+
 // ---- rig construction -----------------------------------------------------
 
 function buildRig(model: Model) {
@@ -172,6 +227,7 @@ function buildRig(model: Model) {
 			isLocal: model.GetAttribute(CarModelAttr.OwnerUserId) === LocalPlayer.UserId,
 			parts: [],
 			wheels: [],
+			chassisVisualOffset: new CFrame(),
 			cameraTarget,
 			connections: [],
 			lastTeleportGen: attrNumber(root, CarAttr.TeleportGen, 0),
@@ -190,6 +246,10 @@ function buildRig(model: Model) {
 			steerVisual: 0,
 			initialized: false,
 		};
+		if (RENDER_DEBUG_OVERLAY) {
+			rig.predictedHitbox = makeDebugHitbox("PredictedVehicleHitbox", root, PREDICTED_HITBOX_COLOR);
+			rig.smoothedHitbox = makeDebugHitbox("SmoothedVehicleHitbox", root, SMOOTHED_HITBOX_COLOR);
+		}
 
 		const adopt = (child: Instance) => {
 			if (!child.IsA("BasePart") || rigs.get(model) !== rig) {
@@ -225,6 +285,11 @@ function buildRig(model: Model) {
 		for (const child of model.GetDescendants()) {
 			adopt(child);
 		}
+		const bodyBottom = chassisBottomY(model);
+		if (bodyBottom !== undefined) {
+			const hitboxBottom = -root.Size.Y * 0.5;
+			rig.chassisVisualOffset = new CFrame(0, hitboxBottom - bodyBottom - CHASSIS_VISUAL_LOWERING, 0);
+		}
 		rig.connections.push(model.DescendantAdded.Connect(adopt));
 		rig.connections.push(
 			model.GetAttributeChangedSignal(CarModelAttr.OwnerUserId).Connect(() => {
@@ -250,6 +315,8 @@ function destroyRig(model: Model) {
 		releaseCameraSubject();
 	}
 	rig.cameraTarget.Destroy();
+	rig.predictedHitbox?.Destroy();
+	rig.smoothedHitbox?.Destroy();
 }
 
 // ---- camera ----------------------------------------------------------------
@@ -381,7 +448,10 @@ function localVisiblePose(rig: Rig, dt: number): CFrame {
 				telemetry.lastSeverity = decision.severity;
 				telemetry.maxOffset = math.max(telemetry.maxOffset, mags.pos);
 				rig.correctionStartedAt = now;
-				if (decision.severity === Severity.Catastrophic || mags.pos > rig.preset.boxSize.Z * MAX_DIVERGENCE_LENGTHS) {
+				if (
+					decision.severity === Severity.Catastrophic ||
+					mags.pos > rig.preset.boxSize.Z * MAX_DIVERGENCE_LENGTHS
+				) {
 					telemetry.snapCount += 1;
 					rig.offset = new CFrame();
 					rig.correctionStartedAt = undefined;
@@ -544,7 +614,8 @@ const MAX_STEER_ANGLE = math.rad(28);
 
 function poseWheels(rig: Rig, visible: CFrame, dt: number) {
 	const root = rig.root;
-	const steerAttr = attrNumber(root, CarAttr.Steer, 0);
+	// Filtered steer (the angle the sim actually turns with); raw as fallback.
+	const steerAttr = attrNumber(root, CarAttr.SteerFilt, attrNumber(root, CarAttr.Steer, 0));
 	rig.steerVisual += (steerAttr - rig.steerVisual) * math.clamp(dt * 12, 0, 1);
 	const drifting = root.GetAttribute(CarAttr.DriftEngaged) === true;
 
@@ -572,8 +643,9 @@ function poseWheels(rig: Rig, visible: CFrame, dt: number) {
 		const drop = rig.preset.suspensionRest * (1 - compression) - rig.preset.suspensionRest * 0.65;
 		wheel.spinAngle = (wheel.spinAngle + (speed / math.max(wheel.radius, 0.1)) * dt) % (math.pi * 2);
 		const steerAngle = wheel.steers ? -rig.steerVisual * MAX_STEER_ANGLE : 0;
+		const wheelVisualDrop = wheel.radius * WHEEL_VISUAL_DROP_RADIUS_FRACTION;
 		const wheelCF = visible
-			.mul(new CFrame(wheel.localPos.add(new Vector3(0, -drop, 0))))
+			.mul(new CFrame(wheel.localPos.add(new Vector3(0, -drop - wheelVisualDrop, 0))))
 			.mul(CFrame.Angles(0, steerAngle, 0))
 			.mul(CFrame.Angles(-wheel.spinAngle, 0, 0));
 		wheel.part.CFrame = wheelCF;
@@ -604,15 +676,24 @@ function stepRig(rig: Rig, dt: number) {
 		return;
 	}
 	const visible = rig.isLocal ? localVisiblePose(rig, dt) : remoteVisiblePose(rig);
+	const presentation = visible.mul(rig.chassisVisualOffset);
 	rig.initialized = true;
 
 	for (const rigPart of rig.parts) {
 		if (rigPart.part.Parent !== undefined) {
-			rigPart.part.CFrame = visible.mul(rigPart.offset);
+			rigPart.part.CFrame = presentation.mul(rigPart.offset);
 		}
 	}
-	poseWheels(rig, visible, dt);
+	poseWheels(rig, presentation, dt);
 	rig.cameraTarget.CFrame = visible;
+	if (rig.predictedHitbox) {
+		rig.predictedHitbox.Size = rig.root.Size;
+		rig.predictedHitbox.CFrame = rig.root.CFrame;
+	}
+	if (rig.smoothedHitbox) {
+		rig.smoothedHitbox.Size = rig.root.Size;
+		rig.smoothedHitbox.CFrame = visible;
+	}
 
 	if (rig.isLocal) {
 		updateCameraSubject(rig, rig.root.GetAttribute(CarAttr.Driving) === true);

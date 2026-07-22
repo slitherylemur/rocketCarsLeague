@@ -1640,7 +1640,12 @@ function promoteLiveFreePlayTeams() {
 			}
 		}
 	}
-	for (let i = 0; i + 1 < live.size(); i += 2) {
+	// Keep this as an explicit while. roblox-ts lowers a numeric `for` whose
+	// condition is `i + 1 < live.size()` to a Luau range that executes once for
+	// a one-element array, then `live[i + 1]` is nil. Only complete pairs may
+	// create a real pitch.
+	let i = 0;
+	while (i + 1 < live.size()) {
 		const target = findEmptyRealPitch() ?? createMidRoundPitch();
 		if (!target) {
 			return; // no map variants to clone — everyone keeps free-playing
@@ -1651,6 +1656,7 @@ function promoteLiveFreePlayTeams() {
 		}
 		warn(`[Football] free-play pairing → ${target.pitch.folder.Name} for a real match`);
 		moveTeamBehindCover(target, moving);
+		i += 2;
 	}
 }
 
