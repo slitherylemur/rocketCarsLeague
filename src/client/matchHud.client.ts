@@ -31,6 +31,9 @@ const ATTR_BLUE = "FB_BlueScore";
 const ATTR_RED = "FB_RedScore";
 const ATTR_TIME = "FB_TimeLeft";
 const ATTR_ANNOUNCE = "FB_Announce";
+// Announce color moved out of the text: a <font> tag inside FB_Announce
+// pushed scorer announces past the 50-char attribute limit server-side.
+const ATTR_ANNOUNCE_COLOR = "FB_AnnounceColor";
 const ATTR_VCAM_CFRAME = "FB_VictoryCamCFrame";
 const ATTR_GAME_END_CUE = "FB_GameEndCue";
 const ATTR_FOCAM_CFRAME = "FB_FaceOffCamCFrame";
@@ -202,8 +205,12 @@ function refreshAnnounce() {
 	if (!hud) {
 		return;
 	}
-	const text = attrStringOn(currentPitch(), ATTR_ANNOUNCE);
-	hud.Announce.Text = text;
+	const pitch = currentPitch();
+	const text = attrStringOn(pitch, ATTR_ANNOUNCE);
+	const colorHex = attrStringOn(pitch, ATTR_ANNOUNCE_COLOR);
+	// Server sends plain text (names already rich-text-escaped); the color
+	// wrap happens here so the attribute stays under the 50-char limit.
+	hud.Announce.Text = colorHex !== "" && text !== "" ? `<font color="${colorHex}">${text}</font>` : text;
 	hud.Announce.Visible = text !== "";
 }
 
@@ -897,6 +904,9 @@ function bindPitch() {
 				}
 			}),
 		);
+		// Color lands just before the text; refresh on it too so a color-only
+		// change (same text, different scorer side) still re-renders.
+		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_ANNOUNCE_COLOR).Connect(refreshAnnounce));
 		pitchConnections.push(pitch.GetAttributeChangedSignal(ATTR_PHASE).Connect(refreshAll));
 		// Winner side lands ~0.2s after Phase="Ended" (camera first) and is
 		// cleared when the scene ends — both edges drive the overlay.

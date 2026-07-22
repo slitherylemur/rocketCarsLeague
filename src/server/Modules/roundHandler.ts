@@ -65,8 +65,8 @@ const handler = {} as {
 
 Globals.gamemode = "FFA";
 Globals.roundTime = 0;
-Globals.FFA_GAME_TIME = 4 * 60 + 30;
-Globals.TDM_GAME_TIME = 4 * 60 + 30;
+Globals.FFA_GAME_TIME = 3 * 60 + 30;
+Globals.TDM_GAME_TIME = 3 * 60 + 30;
 Globals.FFA_MAX_KILLS = 20;
 Globals.TDM_MAX_KILLS = 40;
 //_G.LMS_SPAWN_TIME = 60
@@ -347,7 +347,10 @@ function loadMap(): import("./PitchManager").Pitch[] {
 	// pitch folder now — PitchMatch reads its own.
 	const teamCount = TeamRegistry.getTeams().size();
 	const realPitches = math.max(1, math.floor(teamCount / 2));
-	const withMuckabout = teamCount > 1 && teamCount % 2 === 1;
+	// Muckabout FreePlayPitch is ALWAYS parked at the end of the line (not just
+	// for odd counts): players who spawn before their booked opponent is live
+	// wait there — nobody ever drives a gold/green pitch alone.
+	const withMuckabout = teamCount > 1;
 	// 0–1 teams: the single pitch can only host free play — use FreePlayPitch,
 	// not gold. (If a second team pairs onto it mid-round the match still runs
 	// there; the next round rebuild brings gold back.)

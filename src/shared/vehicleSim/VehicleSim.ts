@@ -21,6 +21,8 @@
 // timers, flip target, ...) lives on the registry entry for now and moves to
 // attributes in Phase 4, when rollback needs to snapshot it.
 
+import { registerSimHook, SIM_ORDER_VEHICLE } from "shared/simScheduler";
+
 const RunService = game.GetService("RunService");
 const Players = game.GetService("Players");
 
@@ -54,7 +56,7 @@ const DRIFT_MIN_PROP_VEL = 0.15; // below this fraction of top speed drift disen
 const DRIFT_SIDE_FORCE_FWD = 30; // centripetal assist per unit mass while drifting forward
 const DRIFT_SIDE_FORCE_REV = 15; // centripetal assist per unit mass while drifting in reverse
 const DRIFT_YAW_RATE = 8; // rad/s of commanded yaw at full steer and full speed — a handbrake whip. Must stay clearly above grip turning's kinematic rate (v/minTurnRadius, ~4 rad/s at top speed) or the handbrake feels like nothing.
-const DRIFT_YAW_TORQUE = 300; // yaw authority per unit total mass — how hard the slide rotation is enforced; high so the handbrake whip decisively out-muscles the grip servo
+const DRIFT_YAW_TORQUE = 270; // yaw authority per unit total mass — how hard the slide rotation is enforced; high so the handbrake whip decisively out-muscles the grip servo
 const DRIFT_ENGINE_FORCE_MULT = 0.25; // engine force while sliding — a handbrake brakes; boost punches through
 const DRIFT_SPEED_SCRUB = 0.35; // handbrake drag per unit mass per stud/s of travel speed while sliding
 // Grip-mode yaw servo: while grounded and not sliding, the drift yaw mover is
@@ -72,11 +74,11 @@ const DRIFT_SPEED_SCRUB = 0.35; // handbrake drag per unit mass per stud/s of tr
 // arc that feels right; spin-out control is then ONE knob — the servo's
 // GRIP_YAW_TORQUE budget. (maxTurnRadius / minAngularSpeed tuning fields are
 // currently unused by the sim.)
-const GRIP_YAW_TORQUE = 116; // yaw authority per unit total mass for the grip servo — enforces the arc and damps roll/spin (110 let spin-outs through; 300 felt too strong; 125 turned too sharply; playtest-walked down from 180). Per-vehicle tunable.
+const GRIP_YAW_TORQUE = 112; // yaw authority per unit total mass for the grip servo — enforces the arc and damps roll/spin (110 let spin-outs through; 300 felt too strong; 125 and 116 turned too sharply; playtest-walked down from 180). Per-vehicle tunable.
 // While boosting (BoostHeld with meter > 0) the servo torque DROPS to this —
 // slightly below the normal budget, so boost-speed steering is a little
 // looser instead of forced. Friction is not changed by boost.
-const BOOST_GRIP_YAW_TORQUE = 110;
+const BOOST_GRIP_YAW_TORQUE = 100;
 // NOTE (2026-07-21): a lateral centripetal servo (LinearVelocity holding
 // sideways velocity at 0, capped ~500 studs/s²) was playtested at THREE mount
 // heights — COM, Base underside, and one chassis-height above the Base — and
@@ -96,7 +98,7 @@ const OVERSPEED_BRAKE_MULT = 2;
 // Wheel grip defaults (per-vehicle tunable). Trying 1: the 2.0 (Roblox cap)
 // grip made cornering tip the car onto two wheels — less contact grip trades
 // some slide for staying flat.
-const DRIVE_WHEEL_FRICTION = 1;
+const DRIVE_WHEEL_FRICTION = 1.2;
 const DRIFT_WHEEL_FRICTION = 0.05; // wheel friction while sliding — near-ice so the handbrake slide really carries; normal grip is restored on release
 const JUMP_FORCE_TIME = 0.16; // seconds the jump force stays on (default; per-vehicle tunable; 0.18 felt a touch long)
 // Jump force as a multiple of gravity; net accel along the launch dir during
@@ -116,6 +118,7 @@ const FLIP_DEBOUNCE_TIME = 3; // seconds from flip start until the next flip is 
 const BOOST_TICK_INTERVAL = 0.2; // boost meter cadence
 const MAX_BOOST = 100; // meter capacity; refills come from boost pads only (Rocket League rules — no passive regen)
 const AERIAL_TORQUE_PER_MASS = 378; // aerial control authority per unit total mass
+const ERROR_WARN_INTERVAL = 5; // seconds between repeated sim-step error warns (never fully swallowed)
 
 // ---- modern-constraint servo tuning (replaces BodyGyro/BodyPosition P/D gains) ----
 const UPRIGHT_RESPONSIVENESS = 20; // slope hug + post-jump upright hold
@@ -207,6 +210,12 @@ export const VehicleAttr = {
 	JumpReadyAt: "JumpReadyAt",
 	TargetVelocity: "TargetVelocity",
 	ScriptedInput: "ScriptedInput", // FeelHarness: both peers skip IAS reads while set
+	// Control lock (kickoff/goal/respawn freezes). Replaces InputContext.Enabled
+	// flips: a disabled context froze GetState at whatever was held (stuck-key
+	// latch) and re-enables replicated a ping late. Both sims zero the movement
+	// inputs every tick this is true. Written as true/REMOVED (never false) —
+	// the predicted Base sits near the 1024-byte attribute payload cap.
+	InputLocked: "InputLocked",
 	// Rollback-safe sim state (Phase 4). EVERY value the sim carries across
 	// ticks lives in an attribute on the predicted Base: a rollback restores
 	// attributes to the server snapshot before resimulating, and any
@@ -229,6 +238,16 @@ export const VehicleAttr = {
 	FlipLiftPos: "FlipLiftPos", // Vector3
 	ShowcaseLockActive: "ShowcaseLockActive",
 	ShowcaseLockPos: "ShowcaseLockPos", // Vector3
+	// Intentional-teleport marker: incremented (inside the sim step) whenever
+	// match code deliberately relocates the car (kickoff placement, podium
+	// pose, respawn). Renderers SNAP to the new pose when this changes instead
+	// of smoothing a map-scale correction across the pitch. Written only when
+	// a teleport actually happens (payload cap: no default write).
+	TeleportGen: "TeleGen",
+	// Authoritative physical mass of the car assembly (see the SimMass notes
+	// at the per-tick read): refreshed inside the sim step when a structural
+	// change is flagged (paint/skin/occupant), never measured per tick.
+	SimMass: "SimMass",
 	PrevBoostHeld: "PrevBoostHeld",
 	PrevJumpHeld: "PrevJumpHeld",
 	PrevRollLeft: "PrevRollLeft",
@@ -325,8 +344,10 @@ interface SimEntry {
 	// carried across ticks, so plain fields are rollback-safe here.
 	velocity: number;
 	propVelocity: number;
-	errorLogged: boolean;
-	diagTickCounter: number; // diagnostics only — not sim state
+	// Sim-step errors warn at most once per ERROR_WARN_INTERVAL — visible when
+	// recurring (a permanently-swallowed error is silent divergence), without
+	// flooding at 30 Hz.
+	lastErrorWarnAt?: number;
 	// Server-only pending ops from OUTSIDE the simulation (FeelHarness, the
 	// FlipVehicle remote): queued here and consumed INSIDE the next sim step,
 	// because attributes on predicted instances may only be written from
@@ -339,6 +360,12 @@ interface SimEntry {
 	pendingRolls?: Array<{ direction: -1 | 1; begin: boolean }>;
 	pendingTuning?: Partial<VehicleTuning>; // tuning HUD edits, applied inside the next sim step
 	pendingShowcaseLock?: { position?: Vector3 }; // showcase X/Z pin engage/disengage, applied inside the next sim step
+	pendingInputLock?: boolean; // match control lock (footballMatch), applied inside the next sim step
+	pendingThrottleSteer?: { throttle: number; steer: number }; // FeelHarness / zeroVehicleInputs
+	pendingDriftHeld?: boolean;
+	pendingScriptedInput?: boolean;
+	pendingTeleportMark?: boolean; // increments TeleportGen inside the next sim step
+	massDirty?: boolean; // SimMass refresh queued (paint/skin/occupant change)
 	// Server-only: a deferred InputContext.Enabled reconcile write is already
 	// queued (see reconcileOwnerContextEnabled) — don't stack another.
 	contextSyncPending?: boolean;
@@ -368,10 +395,14 @@ const groundRaycastParams = new RaycastParams();
 groundRaycastParams.FilterType = Enum.RaycastFilterType.Blacklist;
 groundRaycastParams.IgnoreWater = true;
 
+// Physical mass of a model as the assembly feels it: Massless parts are
+// skipped because they contribute nothing to assembly mass — this is what
+// makes the neutralized (massless) seated avatar drop out of the force math
+// automatically.
 function getMassOfModel(model: Instance): number {
 	let totalMass = 0;
 	for (const part of model.GetDescendants()) {
-		if (part.IsA("BasePart")) {
+		if (part.IsA("BasePart") && !part.Massless) {
 			totalMass += part.GetMass();
 		}
 	}
@@ -379,6 +410,7 @@ function getMassOfModel(model: Instance): number {
 }
 
 // Occupant mass via the seats — the second half of the old GetTotalMass().
+// Zero when the avatar-neutralize stage has made the character massless.
 function occupantsMass(model: Model): number {
 	let mass = 0;
 	const seats = model.FindFirstChild("Seats");
@@ -635,8 +667,6 @@ function buildEntry(model: VehicleModel, tuning: VehicleTuning, movers: MoverSet
 		totalMass: 0,
 		velocity: 0,
 		propVelocity: 0,
-		errorLogged: false,
-		diagTickCounter: 0,
 	};
 	entry.totalMass = entry.baseMass;
 	return entry;
@@ -698,9 +728,28 @@ export function register(model: VehicleModel, tuning: VehicleTuning, owner?: Pla
 	if (tuning.jumpGravityMult !== undefined)
 		base.SetAttribute(VehicleTuningAttr.JumpGravityMult, tuning.jumpGravityMult);
 	if (tuning.gripYawTorque !== undefined) base.SetAttribute(VehicleTuningAttr.GripYawTorque, tuning.gripYawTorque);
+	// Measured physical mass, written ONCE here and refreshed only when a
+	// structural change is flagged (refreshMass / occupant change) — both
+	// peers read this attribute per tick instead of walking GetDescendants,
+	// so the client sim runs on EXACTLY the server's number (a per-peer
+	// measurement could differ while parts stream in, rescaling every force
+	// and guaranteeing mispredictions).
+	base.SetAttribute(VehicleAttr.SimMass, entry.baseMass);
 	model.SetAttribute(VehicleModelAttr.OwnerUserId, owner ? owner.UserId : 0);
 
 	setWheelFriction(entry, false);
+
+	// Occupant changes move mass in/out of the assembly (zero moved when the
+	// avatar-neutralize stage keeps the character massless, but the refresh
+	// is what keeps that honest either way).
+	if (entry.seat) {
+		entry.seat.GetPropertyChangedSignal("Occupant").Connect(() => {
+			const live = registry.get(model);
+			if (live) {
+				live.massDirty = true;
+			}
+		});
+	}
 
 	registry.set(model, entry);
 }
@@ -766,10 +815,27 @@ export function registerReplica(model: VehicleModel, owner: Player): boolean {
 	return true;
 }
 
+// ---- client prediction diagnostics (netHealth.client.ts) -----------------
+// Module-level ON PURPOSE: a rollback restores attributes but never Lua
+// state, so a tick whose sim clock sits BEHIND the highest clock this module
+// has already seen can only be a rollback resimulation replay. Counting those
+// separates "constant rollbacks" from "not predicted at all" — the two very
+// different causes of steppy motion.
+const diagMaxSimTime = new Map<BasePart, number>();
+let diagResimTicks = 0;
+
+/** Rollback-resimulated ticks since the last call (client diagnostics). */
+export function readResimTicks(): number {
+	const count = diagResimTicks;
+	diagResimTicks = 0;
+	return count;
+}
+
 export function unregister(model: Model) {
 	const entry = registry.get(model);
 	if (entry) {
 		registry.delete(model);
+		diagMaxSimTime.delete(entry.base);
 		pcall(() => {
 			entry.base.SetAttribute(VehicleAttr.Driving, false);
 			setOwnerContextEnabled(entry, false);
@@ -789,14 +855,19 @@ export function setThrottleSteer(model: Model, throttle: number, steer: number) 
 	if (throttle !== throttle || steer !== steer) {
 		return;
 	}
-	entry.base.SetAttribute(VehicleAttr.Throttle, math.clamp(throttle, -1, 1));
-	entry.base.SetAttribute(VehicleAttr.Steer, math.clamp(steer, -1, 1));
+	// Queued and consumed inside the next sim step — attributes on predicted
+	// instances may only be written from within BindToSimulation (writing
+	// them here, from FeelHarness/match code, violated the rollback contract).
+	entry.pendingThrottleSteer = {
+		throttle: math.clamp(throttle, -1, 1),
+		steer: math.clamp(steer, -1, 1),
+	};
 }
 
 export function setDriftHeld(model: Model, held: boolean) {
 	const entry = registry.get(model);
 	if (entry) {
-		entry.base.SetAttribute(VehicleAttr.DriftHeld, held);
+		entry.pendingDriftHeld = held; // consumed inside the next sim step
 	}
 }
 
@@ -884,7 +955,42 @@ export function requestJump(model: Model) {
 export function setScriptedInput(model: Model, scripted: boolean) {
 	const entry = registry.get(model);
 	if (entry) {
-		entry.base.SetAttribute(VehicleAttr.ScriptedInput, scripted);
+		entry.pendingScriptedInput = scripted; // consumed inside the next sim step
+	}
+}
+
+/** Match control lock (server): while set, both sims zero the movement
+ * inputs every tick — see the InputLocked notes on VehicleAttr. Replaces the
+ * old InputContext.Enabled flip (stuck-key latch + ping-late re-enable).
+ * Queued and consumed at the start of the next vehicle sim step: the direct
+ * write from match code violated the rollback contract (attributes on
+ * predicted instances may only be written from within BindToSimulation) and
+ * could smear corrections around kickoff/goal transitions. */
+export function setInputLocked(model: Model, locked: boolean) {
+	const entry = registry.get(model);
+	if (entry) {
+		entry.pendingInputLock = locked;
+	}
+}
+
+/** Intentional-teleport marker (server): queue BEFORE (or right after)
+ * relocating the car with SetPrimaryPartCFrame so the next sim step bumps
+ * TeleportGen — renderers snap to the new pose instead of smoothing a
+ * map-scale "correction" across the pitch. */
+export function markTeleport(model: Model) {
+	const entry = registry.get(model);
+	if (entry) {
+		entry.pendingTeleportMark = true;
+	}
+}
+
+/** Flag the car's physical mass as changed (paint/skin/structural edits).
+ * The next sim step re-measures and rewrites the SimMass attribute both
+ * sims run on — mass is deliberately NOT measured per tick any more. */
+export function refreshMass(model: Model) {
+	const entry = registry.get(model);
+	if (entry) {
+		entry.massDirty = true;
 	}
 }
 
@@ -1043,38 +1149,34 @@ function getInputActions(entry: SimEntry) {
 }
 
 function setOwnerContextEnabled(entry: SimEntry, enabled: boolean) {
-	// Server only (the property replicates), and deferred out of the
-	// simulation step — InputContext.Enabled is not simulation-access.
+	// 2026-07 rework: the InputContext stays ENABLED for the whole session
+	// (see vehicleInputActions.ts) — this now drives the InputLocked
+	// attribute instead. Server only; the attribute replicates and rolls
+	// back like every other sim input.
 	if (!IS_SERVER || !entry.owner) {
 		return;
 	}
-	const owner = entry.owner;
-	task.defer(() => {
-		// An active match control lock (football kickoff/respawn freeze —
-		// CB_ControlLock, set BEFORE the car is seated) outranks the fresh-sit
-		// enable; the match layer re-enables the context when it unlocks.
-		if (enabled && owner.GetAttribute("CB_ControlLock") === true) {
-			return;
-		}
-		const context = owner.FindFirstChild(VehicleInput.ContextName);
-		if (context && context.IsA("InputContext")) {
-			context.Enabled = enabled;
-		}
-	});
+	// An active match control lock (football kickoff/respawn freeze —
+	// CB_ControlLock, set BEFORE the car is seated) outranks the fresh-sit
+	// enable; the match layer clears the lock when it unlocks.
+	const stayLocked = enabled && entry.owner.GetAttribute("CB_ControlLock") === true;
+	entry.base.SetAttribute(VehicleAttr.InputLocked, enabled && !stayLocked ? undefined : true);
 }
 
-// Self-heal for the one-shot sit-edge enable above: the player's InputContext
-// is built ASYNCHRONOUSLY on join (vehicleInputActions.ensureContext yields on
-// DataStore keybind reads, which throttle under real load), so a car can start
-// driving before the context exists — setOwnerContextEnabled's deferred write
-// then finds nothing and no-ops, and since the enable only ever fired on the
-// drive-start EDGE the player stayed controlless for the whole drive. Runs
-// every server tick while driving: Enabled must equal "no control lock", which
-// holds because every intentional mid-drive disable (footballMatch lockPlayer
-// / preSpawnLock) sets the CB_ControlLock attribute before disabling, and
-// unlockPlayer clears it before enabling. Also recovers a lock/unlock that
-// landed while the context was missing, and a stale lock left behind by an
-// aborted countdown once footballMatch.stop() clears the attribute.
+// Self-heal for the always-enabled InputContext: the context is built
+// ASYNCHRONOUSLY on join (vehicleInputActions.ensureContext yields on
+// DataStore keybind reads, which throttle under real load) and must stay
+// Enabled for the WHOLE session. This runs every server tick while driving
+// and only ever turns Enabled back ON if something left it off.
+//
+// It must NEVER disable the context: a disabled InputContext freezes
+// InputAction.GetState() and loses release transitions (the stuck-key /
+// stuck-boost latch — "let go of boost and it won't end"), and the re-enable
+// property replicates a full ping late. An earlier version of this reconcile
+// disabled the context while CB_ControlLock was set, quietly reintroducing
+// the exact latch the 2026-07 control rework removed. Control locks are the
+// InputLocked ATTRIBUTE alone (the sims zero movement inputs every locked
+// tick); the engine's input plumbing is never touched.
 function reconcileOwnerContextEnabled(entry: SimEntry) {
 	if (!IS_SERVER || entry.contextSyncPending) {
 		return;
@@ -1087,22 +1189,21 @@ function reconcileOwnerContextEnabled(entry: SimEntry) {
 	if (!context || !context.IsA("InputContext")) {
 		return; // not built yet — checked again next tick
 	}
-	const desired = owner.GetAttribute("CB_ControlLock") !== true;
-	if (context.Enabled === desired) {
+	if (context.Enabled) {
 		return;
 	}
-	// Deferred out of the simulation step like setOwnerContextEnabled —
-	// InputContext.Enabled is not simulation-access. Re-derive inside the defer
-	// so a drive-end/lock that lands in between wins.
+	// Deferred out of the simulation step — InputContext.Enabled is not
+	// simulation-access.
 	entry.contextSyncPending = true;
 	task.defer(() => {
 		entry.contextSyncPending = false;
-		if (owner.Parent === undefined || !attrBool(entry.base, VehicleAttr.Driving)) {
+		if (owner.Parent === undefined) {
 			return;
 		}
 		const liveContext = owner.FindFirstChild(VehicleInput.ContextName);
-		if (liveContext && liveContext.IsA("InputContext")) {
-			liveContext.Enabled = owner.GetAttribute("CB_ControlLock") !== true;
+		if (liveContext && liveContext.IsA("InputContext") && !liveContext.Enabled) {
+			warn(`[VehicleSim] ${owner.Name}'s VehicleControls context was disabled — re-enabling (locks are InputLocked-attribute only)`);
+			liveContext.Enabled = true;
 		}
 	});
 }
@@ -1117,14 +1218,24 @@ function readPlayerInputs(entry: SimEntry, now: number) {
 	if (!actions) {
 		return; // no context (yet) — attributes keep their last values
 	}
-	if (!actions.context.Enabled) {
-		// Disabled context (control lock / between drives): the engine stops
-		// delivering key transitions, so GetState() is frozen at whatever was
-		// held at disable time. Reading it would re-poison the zeroed input
-		// attributes with stale keys — keep the last written values instead.
+	const base = entry.base;
+
+	// Control lock (match freezes / between drives). The context itself stays
+	// enabled so key transitions NEVER stop flowing — the old Enabled flip
+	// froze GetState at whatever was held (stuck keys) and its re-enable
+	// replicated a ping late (dead inputs after GO). Zero the movement inputs
+	// every locked tick instead: idempotent same-value writes cause no
+	// rollback churn, and on unlock the very next tick reads live key state.
+	if (attrBool(base, VehicleAttr.InputLocked)) {
+		base.SetAttribute(VehicleAttr.Throttle, 0);
+		base.SetAttribute(VehicleAttr.Steer, 0);
+		base.SetAttribute(VehicleAttr.DriftHeld, false);
+		if (attrBool(base, VehicleAttr.BoostHeld)) {
+			base.SetAttribute(VehicleAttr.PrevBoostHeld, false);
+			base.SetAttribute(VehicleAttr.BoostHeld, false);
+		}
 		return;
 	}
-	const base = entry.base;
 
 	// Movement floats: per-key held-state combined like the old client code —
 	// (positive?1:0)-(negative?1:0), so both-held cancels and releasing one
@@ -1455,6 +1566,30 @@ function stepVehicle(entry: SimEntry, dt: number) {
 			base.SetAttribute(VehicleAttr.ShowcaseLockPos, lock.position);
 		}
 	}
+
+	// Server-only pending ops that must land even while the car is parked:
+	// the match lock is queued BEFORE the player is seated, and teleports /
+	// mass changes happen on empty cars too. Consumed here — at the top of
+	// the step, inside BindToSimulation — so rollback tracks every write.
+	if (IS_SERVER && entry.pendingInputLock !== undefined) {
+		const locked = entry.pendingInputLock;
+		entry.pendingInputLock = undefined;
+		// Written as true/REMOVED (never false) — payload cap, see VehicleAttr.
+		base.SetAttribute(VehicleAttr.InputLocked, locked ? true : undefined);
+	}
+	if (IS_SERVER && entry.pendingTeleportMark) {
+		entry.pendingTeleportMark = undefined;
+		base.SetAttribute(VehicleAttr.TeleportGen, attrNumber(base, VehicleAttr.TeleportGen, 0) + 1);
+	}
+	if (IS_SERVER && entry.massDirty) {
+		entry.massDirty = undefined;
+		base.SetAttribute(VehicleAttr.SimMass, getMassOfModel(model) + occupantsMass(model));
+	}
+	if (IS_SERVER && entry.pendingScriptedInput !== undefined) {
+		const scripted = entry.pendingScriptedInput;
+		entry.pendingScriptedInput = undefined;
+		base.SetAttribute(VehicleAttr.ScriptedInput, scripted);
+	}
 	// Re-asserted from the attribute every tick — a rollback restores the
 	// attribute but not the constraint properties (the setWheelFriction rule).
 	// PerAxis with Y at zero: gravity, jumpThrust and aerial boost stay free
@@ -1536,22 +1671,26 @@ function stepVehicle(entry: SimEntry, dt: number) {
 		base.SetAttribute(VehicleAttr.PrevJumpHeld, false);
 		base.SetAttribute(VehicleAttr.PrevRollLeft, false);
 		base.SetAttribute(VehicleAttr.PrevRollRight, false);
-		entry.errorLogged = false;
+		entry.lastErrorWarnAt = undefined;
 		setOwnerContextEnabled(entry, true);
-		// Diagnostic: live mass vs the register-time snapshot. A large gap
-		// means post-spawn changes (paint→Metal, skins) moved the mass — the
-		// reason the sim must measure per tick, never cache.
+		// Fresh sit moved mass into the assembly (zero if the avatar is
+		// neutralized/massless) — refresh SimMass on the next step. The seat
+		// Occupant hook also fires; the flag is idempotent.
+		entry.massDirty = true;
+		// Diagnostic: live measurement vs the SimMass attribute both sims run
+		// on. A persistent gap means a structural change happened without a
+		// refreshMass call — find and flag that path.
 		if (IS_SERVER) {
-			warn(
-				`[VehicleSim] ${model.Name}: drive start; totalMass=${string.format(
+			print(
+				`[VehicleSim] ${model.Name}: drive start; measured=${string.format(
 					"%.0f",
 					getMassOfModel(model) + occupantsMass(model),
-				)} (register-time=${string.format("%.0f", entry.baseMass)})`,
+				)} SimMass=${string.format("%.0f", attrNumber(base, VehicleAttr.SimMass, entry.baseMass))}`,
 			);
 		}
 	} else if (!drivingNow && drivingWas) {
 		// Drive ended: parking brake, exactly like the old loop exit.
-		warn(
+		print(
 			`[VehicleSim] ${model.Name}: drive end (occupant=${occupant !== undefined} ownerHumanoid=${
 				ownerHumanoid !== undefined
 			} parent=${model.Parent !== undefined})`,
@@ -1582,9 +1721,30 @@ function stepVehicle(entry: SimEntry, dt: number) {
 	const now = attrNumber(base, VehicleAttr.SimTime, 0) + dt;
 	base.SetAttribute(VehicleAttr.SimTime, now);
 
+	if (!IS_SERVER) {
+		const prevMax = diagMaxSimTime.get(base);
+		if (prevMax !== undefined && now < prevMax - 1e-4) {
+			diagResimTicks += 1;
+		}
+		if (prevMax === undefined || now > prevMax) {
+			diagMaxSimTime.set(base, now);
+		}
+	}
+
 	readPlayerInputs(entry, now);
 
 	// Server-side pending ops queued outside the sim (FeelHarness, remotes).
+	if (entry.pendingThrottleSteer !== undefined) {
+		const ts = entry.pendingThrottleSteer;
+		entry.pendingThrottleSteer = undefined;
+		base.SetAttribute(VehicleAttr.Throttle, ts.throttle);
+		base.SetAttribute(VehicleAttr.Steer, ts.steer);
+	}
+	if (entry.pendingDriftHeld !== undefined) {
+		const held = entry.pendingDriftHeld;
+		entry.pendingDriftHeld = undefined;
+		base.SetAttribute(VehicleAttr.DriftHeld, held);
+	}
 	if (entry.pendingBoostHeld !== undefined) {
 		const held = entry.pendingBoostHeld;
 		entry.pendingBoostHeld = undefined;
@@ -1613,12 +1773,15 @@ function stepVehicle(entry: SimEntry, dt: number) {
 		tryFlip(entry, now);
 	}
 
-	// Mass is measured EVERY tick — exactly the old GetTotalMass(). It must
-	// track post-spawn changes (PaintVehicle swaps body pieces to Metal at
-	// ~11× plastic density, skins, occupant changes): every force in the
-	// tuned math scales with this number, so a stale register-time snapshot
-	// rescales the whole car's physics.
-	entry.totalMass = getMassOfModel(model) + occupantsMass(model);
+	// Mass comes from the SimMass ATTRIBUTE — measured at registration and
+	// re-measured (server-side, inside the sim step) only when a structural
+	// change is flagged: PaintVehicle/ApplySkin call refreshMass, occupant
+	// changes flag massDirty via the seat hook. Walking GetDescendants every
+	// tick on both peers was the single hottest per-step cost, and a client
+	// measuring its own (possibly still-streaming) replica could disagree
+	// with the server, rescaling every force — the attribute makes both sims
+	// run on exactly one number, and it rolls back like all other sim state.
+	entry.totalMass = attrNumber(base, VehicleAttr.SimMass, entry.baseMass);
 
 	// ---- timers (sim-time state machines replacing task.wait/task.delay) ----
 
@@ -1805,40 +1968,9 @@ function stepVehicle(entry: SimEntry, dt: number) {
 	base.LinearVelocity.MaxForce = force;
 	base.LinearVelocity.LineVelocity = targetVelocity;
 	base.slopeCounterVelocity.MaxForce = slopeCounterForce;
-
-	// Phase 4 diagnostics: throttled drive-state line on both peers (first
-	// driven tick prints immediately, then every ~150 sim steps).
-	entry.diagTickCounter += 1;
-	if (entry.diagTickCounter % 150 === 1) {
-		const rootPart = base.AssemblyRootPart;
-		const assemblyVel = base.AssemblyLinearVelocity;
-		print(
-			string.format(
-				"[VehicleSim][%s] %s t=%.2f thr=%d gnd=%s F=%.0f v=%.1f mass=%.0f y=%.1f velY=%.1f root=%s anch=%s",
-				IS_SERVER ? "S" : "C",
-				model.Name,
-				now,
-				throttle,
-				tostring(grounded),
-				force,
-				entry.velocity,
-				totalMass,
-				base.Position.Y,
-				assemblyVel.Y,
-				rootPart ? rootPart.Name : "nil",
-				tostring(rootPart ? rootPart.Anchored : false),
-			),
-		);
-	}
 }
 
-let diagFirstTick = true;
-
 function tick(dt: number) {
-	if (diagFirstTick) {
-		diagFirstTick = false;
-		print(`[VehicleSim] ${IS_SERVER ? "server" : "client"} first sim tick dt=${dt}`);
-	}
 	for (const [model, entry] of registry) {
 		if (entry.model.Parent === undefined || entry.base.Parent === undefined) {
 			registry.delete(model);
@@ -1854,11 +1986,12 @@ function tick(dt: number) {
 			continue;
 		}
 		const [ok, err] = pcall(() => stepVehicle(entry, dt));
-		if (!ok && !entry.errorLogged) {
-			// One log per drive session — the old loop swallowed these silently,
-			// which hid real breakage.
-			entry.errorLogged = true;
-			warn(`[VehicleSim] ${model.Name}: ${err}`);
+		if (!ok) {
+			const clock = os.clock();
+			if (entry.lastErrorWarnAt === undefined || clock - entry.lastErrorWarnAt > ERROR_WARN_INTERVAL) {
+				entry.lastErrorWarnAt = clock;
+				warn(`[VehicleSim] ${model.Name}: ${err}`);
+			}
 		}
 	}
 }
@@ -1872,13 +2005,13 @@ export function initialize() {
 		return;
 	}
 	initialized = true;
-	// Phase 4: the tick is bound through BindToSimulation on BOTH peers — on
-	// the client this is what makes the engine re-run the vehicle logic
-	// during rollback-resimulation. Falls back to Heartbeat (Phase 2/3
-	// behavior) if the API is unavailable.
-	const [ok, err] = pcall(() => {
-		RunService.BindToSimulation((deltaTime: number) => tick(deltaTime));
-	});
+	// Phase 4: the tick runs inside BindToSimulation on BOTH peers — on the
+	// client this is what makes the engine re-run the vehicle logic during
+	// rollback-resimulation. The shared scheduler owns the single bind: it
+	// pins the frequency explicitly (SIM_RATE_HZ) and runs the vehicle hook
+	// strictly BEFORE the ball hook on every peer, so a resimulated tick
+	// replays in the same order it originally ran.
+	registerSimHook("VehicleSim", SIM_ORDER_VEHICLE, (deltaTime) => tick(deltaTime));
 	// Guard against silent netcode regressions: EVERYTHING in Phase 4 assumes
 	// AuthorityMode=Server. If this ever prints Client, the place property has
 	// reverted and the whole prediction architecture is inert (and spawnVehicle
@@ -1889,13 +2022,4 @@ export function initialize() {
 			modeOk ? mode : "unreadable from Lua (expected under current beta; code assumes Server)"
 		}`,
 	);
-	if (ok) {
-		print(`[VehicleSim] ${IS_SERVER ? "server" : "client"} bound via BindToSimulation`);
-	} else {
-		// Fallback ONLY for engines without the server-authority beta — under
-		// AuthorityMode=Server this branch must never run (Heartbeat code is
-		// invisible to rollback-resimulation).
-		warn(`[VehicleSim] BindToSimulation unavailable (${err}); falling back to Heartbeat`);
-		RunService.Heartbeat.Connect((deltaTime) => tick(deltaTime));
-	}
 }

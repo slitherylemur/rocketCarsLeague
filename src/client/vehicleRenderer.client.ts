@@ -219,7 +219,15 @@ function updateCar(car: TrackedCar) {
 		const maxHealth = attrNumber(model, VehicleModelAttr.MaxHealth, 100);
 		const healthBar = base.FindFirstChild("HealthBar") as VehicleBase["HealthBar"] | undefined;
 		if (healthBar) {
-			healthBar.Green.Size = new UDim2(health / maxHealth, 0, 1, 0);
+			// Only health controls the fill width. Preserve the template/layout
+			// height so the bar stays in its bottom band below the overhead icon.
+			const currentSize = healthBar.Green.Size;
+			healthBar.Green.Size = new UDim2(
+				health / maxHealth,
+				0,
+				currentSize.Y.Scale,
+				currentSize.Y.Offset,
+			);
 		}
 	}
 

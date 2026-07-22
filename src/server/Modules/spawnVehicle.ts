@@ -15,6 +15,16 @@ const RunService = game.GetService("RunService");
 
 Globals.vehiclesTable = {};
 
+// Verbose spawn/seat-flow tracing from the launch-bug triage era. Off for
+// release: only ABORTs and real failures warn. Flip on when hunting spawn or
+// seat ordering bugs again.
+const SPAWN_DEBUG = false;
+function spawnLog(message: string) {
+	if (SPAWN_DEBUG) {
+		print(message);
+	}
+}
+
 // Startup diagnostic: every car template AND the shop grid come from this one
 // folder (subclass modelTemplate lookups are non-recursive), so an empty or
 // missing folder silently breaks both car spawning and the cars menu.
@@ -73,7 +83,7 @@ function GetSpawnCFrame(humanoidRootPart: BasePart, vehicleModel: Model): CFrame
 }
 
 function SeatPlayer(player: Player, newModel: Model) {
-	warn(`[SeatPlayer] ENTER player=${player.Name} vehicle=${newModel.GetFullName()}`);
+	spawnLog(`[SeatPlayer] ENTER player=${player.Name} vehicle=${newModel.GetFullName()}`);
 	const seat = newModel.FindFirstChildWhichIsA("VehicleSeat", true);
 	if (!seat) {
 		warn(`[SeatPlayer] ABORT no VehicleSeat on ${newModel.GetFullName()}`);
@@ -104,7 +114,7 @@ function SeatPlayer(player: Player, newModel: Model) {
 	// the car apart mid-spawn (the 10s-wait failure mode we observed).
 	root.Anchored = true;
 	root.CFrame = seat.CFrame.add(seat.CFrame.UpVector.mul(3));
-	warn(`[SeatPlayer] anchored+moved char to ${root.Position}; vehicle at ${newModel.GetPrimaryPartCFrame().Position}`);
+	spawnLog(`[SeatPlayer] anchored+moved char to ${root.Position}; vehicle at ${newModel.GetPrimaryPartCFrame().Position}`);
 
 	RunService.Stepped.Wait();
 	task.wait(0.1);
@@ -120,12 +130,144 @@ function SeatPlayer(player: Player, newModel: Model) {
 	// character into the seat — the car cannot be moved by anything.
 	root.Anchored = false;
 	seat.Sit(humanoid);
-	warn(`[SeatPlayer] EXIT vehiclePos=${newModel.GetPrimaryPartCFrame().Position} seated=${humanoid.Sit}`);
+	// Immediately after the weld forms: the avatar becomes a physically inert
+	// passenger (massless, invisible, no collision/touch/query) — see the
+	// driverless stage-1 notes above.
+	neutralizeSeatedCharacter(character, seat);
+	spawnLog(`[SeatPlayer] EXIT vehiclePos=${newModel.GetPrimaryPartCFrame().Position} seated=${humanoid.Sit}`);
 }
 
 // (InitialiseControl and its Humanoid.Seated → drive() trigger were removed
 // in Phase 2: the shared sim's tick gates on VehicleSeat.Occupant directly,
 // so there is no per-vehicle drive loop to start anymore.)
+
+// ---- driverless migration, stage 1: neutralize the seated avatar ----------
+// Seat throttle/steer are unused (IAS is the input source) and the seat's
+// only remaining job is the Occupant → Driving lifecycle. The welded avatar
+// still drags the whole character rig into the PREDICTED car assembly:
+// extra parts and joints that must predict consistently, dynamic occupant
+// mass, touch/collision interactions, and possible assembly-root changes —
+// all misprediction surface with zero gameplay value.
+//
+// Stage 1 keeps the seat lifecycle but makes every character part massless,
+// non-collidable, non-touchable, non-queryable and invisible while seated:
+// physically the car behaves as if empty (SimMass drops the occupant
+// automatically because VehicleSim skips Massless parts), and identity stays
+// readable through the car's HealthBar billboard name tag. The final stage —
+// removing the VehicleSeat and weld entirely and making the vehicle the
+// player's character — replaces this. Flip the flag to A/B against the
+// classic seated avatar.
+const NEUTRALIZE_SEATED_AVATAR = true;
+
+interface NeutralizedState {
+	snapshots: Array<{
+		instance: BasePart | Decal;
+		massless?: boolean;
+		canCollide?: boolean;
+		canTouch?: boolean;
+		canQuery?: boolean;
+		transparency: number;
+	}>;
+	humanoid?: Humanoid;
+	displayDistanceType?: Enum.HumanoidDisplayDistanceType;
+	connections: RBXScriptConnection[];
+}
+
+const neutralizedCharacters = new Map<Model, NeutralizedState>();
+
+function neutralizeInstance(state: NeutralizedState, instance: Instance) {
+	if (instance.IsA("BasePart")) {
+		state.snapshots.push({
+			instance,
+			massless: instance.Massless,
+			canCollide: instance.CanCollide,
+			canTouch: instance.CanTouch,
+			canQuery: instance.CanQuery,
+			transparency: instance.Transparency,
+		});
+		instance.Massless = true;
+		instance.CanCollide = false;
+		instance.CanTouch = false;
+		instance.CanQuery = false;
+		instance.Transparency = 1;
+	} else if (instance.IsA("Decal")) {
+		// Face/clothing decals render even on fully transparent parts.
+		state.snapshots.push({ instance, transparency: instance.Transparency });
+		instance.Transparency = 1;
+	}
+}
+
+function restoreCharacter(character: Model) {
+	const state = neutralizedCharacters.get(character);
+	if (!state) {
+		return;
+	}
+	neutralizedCharacters.delete(character);
+	for (const connection of state.connections) {
+		connection.Disconnect();
+	}
+	pcall(() => {
+		for (const snapshot of state.snapshots) {
+			const instance = snapshot.instance;
+			if (instance.Parent === undefined) {
+				continue;
+			}
+			if (instance.IsA("BasePart")) {
+				instance.Massless = snapshot.massless === true;
+				instance.CanCollide = snapshot.canCollide === true;
+				instance.CanTouch = snapshot.canTouch === true;
+				instance.CanQuery = snapshot.canQuery === true;
+			}
+			instance.Transparency = snapshot.transparency;
+		}
+		if (state.humanoid && state.humanoid.Parent !== undefined && state.displayDistanceType !== undefined) {
+			state.humanoid.DisplayDistanceType = state.displayDistanceType;
+		}
+	});
+}
+
+function neutralizeSeatedCharacter(character: Model, seat: VehicleSeat) {
+	if (!NEUTRALIZE_SEATED_AVATAR || neutralizedCharacters.has(character)) {
+		return;
+	}
+	const state: NeutralizedState = { snapshots: [], connections: [] };
+	neutralizedCharacters.set(character, state);
+	pcall(() => {
+		for (const descendant of character.GetDescendants()) {
+			neutralizeInstance(state, descendant);
+		}
+		const humanoid = character.FindFirstChildOfClass("Humanoid");
+		if (humanoid) {
+			state.humanoid = humanoid;
+			state.displayDistanceType = humanoid.DisplayDistanceType;
+			humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None; // name overhead comes from the car's HealthBar
+		}
+	});
+	// Late-replicating accessories must not re-introduce mass/collision.
+	state.connections.push(
+		character.DescendantAdded.Connect((descendant) => {
+			if (neutralizedCharacters.get(character) === state) {
+				neutralizeInstance(state, descendant);
+			}
+		}),
+	);
+	// Leaving the seat (death respawn, round teardown) restores the avatar.
+	state.connections.push(
+		seat.GetPropertyChangedSignal("Occupant").Connect(() => {
+			const humanoid = character.FindFirstChildOfClass("Humanoid");
+			if (seat.Occupant === undefined || seat.Occupant !== humanoid) {
+				restoreCharacter(character);
+			}
+		}),
+	);
+	state.connections.push(
+		character.AncestryChanged.Connect((_, parent) => {
+			if (parent === undefined) {
+				restoreCharacter(character);
+			}
+		}),
+	);
+}
 
 function makeWheelsUncollidable(vehicleModel: VehicleModel) {
 	const hitboxes = vehicleModel.FindFirstChild("Hitboxes");
@@ -155,7 +297,7 @@ function makeWheelsUncollidable(vehicleModel: VehicleModel) {
 
 const spawnVehicleModule = {
 	SpawnVehicle(player: Player, drivable: boolean, vehicleName: string, spawnCFrame: CFrame, clientSided?: boolean) {
-		warn(
+		spawnLog(
 			`[SpawnVehicle] ENTER player=${player.Name} drivable=${drivable} clientSided=${clientSided === true} vehicleName=${vehicleName} spawnPos=${spawnCFrame.Position}`,
 		);
 		// Original: require(game.ServerStorage.Classes.VehicleSubClass:FindFirstChild(vehicleName, true))
@@ -200,7 +342,7 @@ const spawnVehicleModule = {
 			warn(`[SpawnVehicle] ABORT VehicleClass.new returned no model for ${vehicleName}`);
 			return;
 		}
-		warn(
+		spawnLog(
 			`[SpawnVehicle] created NEW clone (not menu car) model=${newModel.Name} parent=${newModel.Parent?.GetFullName() ?? "nil"}`,
 		);
 
@@ -248,7 +390,7 @@ const spawnVehicleModule = {
 			// SeatPlayer's Sit, and a sweep landing in that window used to
 			// destroy it mid-spawn (see killNotowned.server.ts).
 			newModel.SetAttribute("CB_SpawnedAt", os.clock());
-			warn(`[SpawnVehicle] parented match vehicle to ${newModel.GetFullName()}`);
+			spawnLog(`[SpawnVehicle] parented match vehicle to ${newModel.GetFullName()}`);
 		}
 
 		const modelSize = newModel.GetExtentsSize();
@@ -272,7 +414,7 @@ const spawnVehicleModule = {
 		}
 
 		newModel.SetPrimaryPartCFrame(spawnCFrame.add(new Vector3(0, modelSize.Y / 2, 0)));
-		warn(
+		spawnLog(
 			`[SpawnVehicle] placed at ${newModel.GetPrimaryPartCFrame().Position} (extentsY/2=${modelSize.Y / 2})`,
 		);
 
@@ -284,9 +426,9 @@ const spawnVehicleModule = {
 			// 	newModel:WaitForChild("Base")
 			// end)
 
-			warn(`[SpawnVehicle] WaitForChild Vehicles/${newModel.Name}`);
+			spawnLog(`[SpawnVehicle] WaitForChild Vehicles/${newModel.Name}`);
 			(game.Workspace as unknown as { Vehicles: Folder }).Vehicles.WaitForChild(newModel.Name);
-			warn(`[SpawnVehicle] InitialiseControl; Character=${player.Character?.GetFullName() ?? "nil"}`);
+			spawnLog(`[SpawnVehicle] InitialiseControl; Character=${player.Character?.GetFullName() ?? "nil"}`);
 
 			SeatPlayer(player, newModel);
 
@@ -334,14 +476,14 @@ const spawnVehicleModule = {
 			}
 		}
 
-		warn(
+		spawnLog(
 			`[SpawnVehicle] EXIT drivable=${drivable} clientSided=${clientSided === true} model=${newModel.GetFullName()}`,
 		);
 	},
 
 	KillVehicle(player: Player, doubleO?: boolean) {
 		const existing = Globals.vehiclesTable[player.UserId];
-		warn(
+		spawnLog(
 			`[KillVehicle] player=${player.Name} hasVehicle=${existing !== undefined} model=${existing?.model.GetFullName() ?? "nil"}`,
 		);
 		if (existing) {

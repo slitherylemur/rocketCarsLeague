@@ -94,7 +94,13 @@ const VehicleInputActions = {
 	buildContext(player: Player) {
 		const context = new Instance("InputContext");
 		context.Name = VehicleInput.ContextName;
-		context.Enabled = false; // the sim enables it while driving
+		// ALWAYS enabled (2026-07 control rework). Disabling the context froze
+		// InputAction.GetState() at whatever was held (the stuck-key latch —
+		// release transitions never delivered) and every re-enable reached the
+		// client a full ping late (dead inputs after GO at high ping). Control
+		// locks are now the InputLocked attribute on the car Base, consulted by
+		// the sim every tick — rollback-safe, no engine input plumbing involved.
+		context.Enabled = true;
 		context.Sink = false; // never eat inputs from menus/other systems
 
 		// One Bool action per movement key: multiple bindings on one 1D action

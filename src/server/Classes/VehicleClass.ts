@@ -146,19 +146,68 @@ export class VehicleClass {
 				const teamHighlight = (
 					game.GetService("ServerStorage") as unknown as { TeamHighlight: Highlight }
 				).TeamHighlight.Clone();
+				// Side-tinted player icon above the name in the car's
+				// billboard: the same ReplicatedStorage.Ui.PlayerIcon the
+				// match HUD rosters use (background = side color, Person =
+				// headshot), so the car overhead matches the HUD art.
+				// Square via RelativeYY. Keep it inside the BillboardGui canvas:
+				// GuiObjects above the canvas (the former negative-Y placement) are
+				// clipped by the billboard renderer and never become visible.
+				let sideIcon: (Frame & { Person: ImageLabel; Value: TextLabel }) | undefined;
+				const [iconCreated, iconError] = pcall(() => {
+					const template = (
+						game.GetService("ReplicatedStorage") as unknown as {
+							Ui: { PlayerIcon: Frame & { Person: ImageLabel; Value: TextLabel } };
+						}
+					).Ui.PlayerIcon;
+					const icon = template.Clone();
+					icon.Name = "SideIcon";
+					icon.Value.Visible = false; // kill-count slot from the deathmatch row
+					icon.Person.Image = `rbxthumb://type=AvatarHeadShot&id=${this.owner!.UserId}&w=48&h=48`;
+					icon.AnchorPoint = new Vector2(0.5, 0);
+					icon.Position = new UDim2(0.5, 0, 0.02, 0);
+					icon.Size = new UDim2(0.42, 0, 0.42, 0);
+					icon.SizeConstraint = Enum.SizeConstraint.RelativeYY;
+					icon.Parent = healthBar;
+
+					// Reserve the middle band for the name and the bottom band for
+					// health. These are explicit because the place-file template was
+					// authored before the overhead avatar icon existed.
+					healthBar.PlayerTag.Position = new UDim2(0, 0, 0.44, 0);
+					healthBar.PlayerTag.Size = new UDim2(1, 0, 0.36, 0);
+					const green = healthBar.FindFirstChild("Green");
+					const red = healthBar.FindFirstChild("Red");
+					for (const bar of [green, red]) {
+						if (bar && bar.IsA("GuiObject")) {
+							bar.Position = new UDim2(bar.Position.X.Scale, bar.Position.X.Offset, 0.82, 0);
+							bar.Size = new UDim2(bar.Size.X.Scale, bar.Size.X.Offset, 0.18, 0);
+						}
+					}
+					sideIcon = icon;
+				});
+				if (!iconCreated) {
+					warn(`[VehicleClass] Could not create overhead icon for ${this.owner.Name}: ${tostring(iconError)}`);
+				}
 				// Top Table D1: the outline shows the pitch SIDE (Red/Blue),
 				// not the ladder team's list color. CB_Side is set by the
 				// match layer before SpawnVehicle runs, and changes mid-round
 				// when a team is moved between pitches (muckabout rescue /
-				// free-play pairing) without a respawn.
+				// free-play pairing) without a respawn. The billboard icon
+				// follows the same color so overhead identity matches the
+				// outline and the HUD.
 				const applySideColor = () => {
 					const side = this.owner!.GetAttribute("CB_Side");
+					let color: Color3;
 					if (side === "Blue") {
-						teamHighlight.OutlineColor = Color3.fromRGB(79, 168, 255);
+						color = Color3.fromRGB(79, 168, 255);
 					} else if (side === "Red") {
-						teamHighlight.OutlineColor = Color3.fromRGB(255, 80, 80);
+						color = Color3.fromRGB(255, 80, 80);
 					} else {
-						teamHighlight.OutlineColor = this.owner!.TeamColor.Color;
+						color = this.owner!.TeamColor.Color;
+					}
+					teamHighlight.OutlineColor = color;
+					if (sideIcon !== undefined) {
+						sideIcon.BackgroundColor3 = color;
 					}
 				};
 				applySideColor();
@@ -212,11 +261,22 @@ export class VehicleClass {
 		// query would otherwise run under, silently excluding every hitbox.
 		// HitboxQuery is a query-only group that collides with Hitbox parts only.
 		overlapParams.CollisionGroup = COLLISION_GROUPS.HitboxQuery;
-		const damageConnection = RunService.Heartbeat.Connect(() => {
+		// Damage broadphase at 30 Hz, not every Heartbeat: with the damage
+		// boxes spanning whole cars, even a 300 stud/s closing pass overlaps
+		// for ≥ 2 ticks at this cadence, and halving N per-car overlap queries
+		// per second is real server headroom with a full lobby.
+		const DAMAGE_QUERY_INTERVAL = 1 / 30;
+		let damageQueryAccum = 0;
+		const damageConnection = RunService.Heartbeat.Connect((heartbeatDt) => {
 			if (this.model.Parent === undefined) {
 				damageConnection.Disconnect();
 				return;
 			}
+			damageQueryAccum += heartbeatDt;
+			if (damageQueryAccum < DAMAGE_QUERY_INTERVAL) {
+				return;
+			}
+			damageQueryAccum = 0;
 			const hitboxes = this.model.FindFirstChild("Hitboxes");
 			const damageBlock = hitboxes && hitboxes.FindFirstChild("damageBlock");
 			if (!damageBlock || !damageBlock.IsA("BasePart") || !this.model.FindFirstChild("Base")) {
@@ -331,6 +391,10 @@ export class VehicleClass {
 				}
 			}
 		}
+
+		// The Metal swap moves real mass (~11× plastic density) — flag the sim
+		// to re-measure SimMass; mass is no longer sampled per tick.
+		VehicleSim.refreshMass(model);
 	}
 
 	ChangeBoostTrail(EffectName: string) {
@@ -584,6 +648,9 @@ export class VehicleClass {
 			applySkinIfSkinned as unknown as (object: Instance, ...args: unknown[]) => void,
 			skinTexture,
 		);
+		// Textures are weightless today, but any future skin that swaps parts
+		// or materials must keep SimMass honest — the refresh is cheap and rare.
+		VehicleSim.refreshMass(this.model);
 	}
 
 	GetCost(): number {
