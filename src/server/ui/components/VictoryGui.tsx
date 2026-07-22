@@ -64,7 +64,9 @@ export function VictoryGui(): React.Element {
 					} as never),
 				],
 			),
-			// "BLUE TEAM WINS!" — small, side-colored, under the headline.
+			// "BLUE TEAM WINS!" — small, under the headline. Black (with a light
+			// stroke), NOT the side color: the victory camera looks at the
+			// winner's goal, which already fills the backdrop with that color.
 			React.createElement("TextLabel", {
 				Name: "SubTitle",
 				AnchorPoint: new Vector2(0.5, 0.5),
@@ -73,10 +75,10 @@ export function VictoryGui(): React.Element {
 				Position: new UDim2(0.5, 0, 0.36, 0),
 				Size: new UDim2(0.55, 0, 0.05, 0),
 				Text: "",
-				TextColor3: new Color3(1, 1, 1),
+				TextColor3: new Color3(0, 0, 0),
 				TextScaled: true,
-				TextStrokeColor3: new Color3(0, 0, 0),
-				TextStrokeTransparency: 0.4,
+				TextStrokeColor3: new Color3(1, 1, 1),
+				TextStrokeTransparency: 0.6,
 				ZIndex: 3,
 			} as never),
 			// The winning LADDER team's name.

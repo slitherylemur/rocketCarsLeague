@@ -149,15 +149,22 @@ export class VehicleClass {
 				).TeamHighlight.Clone();
 				// Top Table D1: the outline shows the pitch SIDE (Red/Blue),
 				// not the ladder team's list color. CB_Side is set by the
-				// match layer before SpawnVehicle runs.
-				const side = this.owner.GetAttribute("CB_Side");
-				if (side === "Blue") {
-					teamHighlight.OutlineColor = Color3.fromRGB(79, 168, 255);
-				} else if (side === "Red") {
-					teamHighlight.OutlineColor = Color3.fromRGB(255, 80, 80);
-				} else {
-					teamHighlight.OutlineColor = this.owner.TeamColor.Color;
-				}
+				// match layer before SpawnVehicle runs, and changes mid-round
+				// when a team is moved between pitches (muckabout rescue /
+				// free-play pairing) without a respawn.
+				const applySideColor = () => {
+					const side = this.owner!.GetAttribute("CB_Side");
+					if (side === "Blue") {
+						teamHighlight.OutlineColor = Color3.fromRGB(79, 168, 255);
+					} else if (side === "Red") {
+						teamHighlight.OutlineColor = Color3.fromRGB(255, 80, 80);
+					} else {
+						teamHighlight.OutlineColor = this.owner!.TeamColor.Color;
+					}
+				};
+				applySideColor();
+				const sideConnection = this.owner.GetAttributeChangedSignal("CB_Side").Connect(applySideColor);
+				this.model.Destroying.Connect(() => sideConnection.Disconnect());
 				teamHighlight.Parent = this.model;
 				teamHighlight.Adornee = this.model;
 			}

@@ -623,8 +623,10 @@ function showVictory(gui: VictoryShape, pitch: Instance, winnerSide: string) {
 		gui.Title.TextColor3 = VICTORY_GOLD;
 		setGiantTitle(gui.Title, "🏆 WINNERS 🏆", 13);
 	}
+	// Black, not the side color: the victory camera looks at the winner's
+	// goal, so side-colored text would vanish into the same-colored backdrop.
 	gui.SubTitle.Text = `${winnerSide.upper()} TEAM WINS!`;
-	gui.SubTitle.TextColor3 = sideColor;
+	gui.SubTitle.TextColor3 = new Color3(0, 0, 0);
 	gui.TeamName.Text = attrStringOn(pitch, ATTR_WINNER_NAME);
 	// Winning roster icons, ringed in the side color — same builder as the
 	// face-off plates (and the same thumbnail cache).
@@ -822,6 +824,19 @@ function bindPitch() {
 		}
 	}
 	if (pitch) {
+		// Round rebuilds DESTROY-then-CLONE pitch folders with the same names
+		// (PitchManager.buildPitches), and CB_PitchId round-trips undefined →
+		// the same string inside one replication step, so it can coalesce and
+		// never fire client-side. The connections below would then stay bound
+		// to the destroyed folder — no face-off camera, frozen scores/announces
+		// for the round. The old folder leaving the tree is the reliable edge.
+		pitchConnections.push(
+			pitch.AncestryChanged.Connect(() => {
+				if (!pitch.IsDescendantOf(game)) {
+					task.defer(bindPitch);
+				}
+			}),
+		);
 		// Goal sounds key off score INCREASES only (kickoff resets the scores
 		// back to 0 and must stay silent): cheer + air horn when our side
 		// scores (or we have no side — spectating), boo when we concede.
