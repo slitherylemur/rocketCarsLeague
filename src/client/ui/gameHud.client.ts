@@ -93,7 +93,10 @@ function flowState(): string | undefined {
 
 function refreshEnabled() {
 	const state = flowState();
-	gameGui.Enabled = state === "match" || (state === "spawning" && LocalPlayer.Character !== undefined);
+	// V2 is characterless; the replicated flow state is the readiness authority.
+	// Keep the HUD out of the potentially long round-boundary "spawning" hold
+	// and show it once the server commits the completed spawn to "match".
+	gameGui.Enabled = state === "match";
 }
 
 LocalPlayer.GetAttributeChangedSignal("CB_FlowState").Connect(refreshEnabled);

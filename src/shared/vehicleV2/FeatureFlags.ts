@@ -23,4 +23,4 @@ export const SIM_TIMELINE_ENABLED = false;
 
 /** Dev-only render-correction debug overlay (sim proxy vs visible chassis,
  * error offset magnitude, severity band). */
-export const RENDER_DEBUG_OVERLAY = false;
+export const RENDER_DEBUG_OVERLAY = true;

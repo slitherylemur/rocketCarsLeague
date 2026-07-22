@@ -1,6 +1,7 @@
 // Original: ServerScriptService/killNotowned (Script)
 
 import { legacyWait } from "shared/LegacyTiming";
+import { CarAttr, CarModelAttr } from "shared/vehicleV2/CarState";
 
 // Two production hardenings (launch bugs):
 //  * A freshly spawned car is occupant-less between being parented into
@@ -11,6 +12,10 @@ import { legacyWait } from "shared/LegacyTiming";
 //    round-start mass spawn could lose EVERY car at once ("the game
 //    completely failed to start"). CB_SpawnedAt (stamped by spawnVehicle at
 //    parent time) gives new cars a grace period.
+//  * V2 cars intentionally have no VehicleSeat. After the grace elapsed, the
+//    legacy occupant test therefore destroyed every healthy V2 car on the
+//    first sweep (~15-20 seconds after spawn), which looked like a periodic
+//    unexplained death. V2 ownership is the OwnerUserId + Driving association.
 //  * The old direct `model.Seats.VehicleSeat` index threw on any
 //    non-conforming child of Workspace.Vehicles, killing this whole loop for
 //    the rest of the server — after which abandoned cars were never cleaned
@@ -28,6 +33,23 @@ while (legacyWait(10) !== undefined) {
 				if (typeIs(spawnedAt, "number") && os.clock() - spawnedAt < SPAWN_GRACE_SECONDS) {
 					return;
 				}
+				if (model.GetAttribute(CarModelAttr.V2) !== undefined) {
+					const ownerUserId = model.GetAttribute(CarModelAttr.OwnerUserId);
+					const root = model.FindFirstChild("VehicleRoot");
+					const owner = typeIs(ownerUserId, "number")
+						? game.GetService("Players").GetPlayerByUserId(ownerUserId)
+						: undefined;
+					const activelyDriven =
+						root !== undefined &&
+						root.IsA("BasePart") &&
+						root.GetAttribute(CarAttr.Driving) === true &&
+						owner !== undefined;
+					if (!activelyDriven) {
+						model.Destroy();
+					}
+					return;
+				}
+
 				const seat = model.FindFirstChildWhichIsA("VehicleSeat", true);
 				if (seat === undefined || seat.Occupant === undefined) {
 					model.Destroy();

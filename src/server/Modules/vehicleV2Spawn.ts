@@ -272,7 +272,7 @@ function validateProxy(model: Model, root: BasePart): boolean {
 // ---- driver association (replaces the VehicleSeat/weld lifecycle) ---------
 
 interface DriverState {
-	character: Model;
+	character?: Model;
 	vehicleRoot: BasePart;
 	previousReplicationFocus?: BasePart;
 	snapshots: Array<{
@@ -317,21 +317,19 @@ function neutralizeInstance(state: DriverState, instance: Instance) {
 export function associateDriver(player: Player, model: Model, root: BasePart) {
 	releaseDriver(player);
 	const character = player.Character;
+	const state: DriverState = {
+		character,
+		vehicleRoot: root,
+		previousReplicationFocus: player.ReplicationFocus,
+		snapshots: [],
+		connections: [],
+	};
+	drivers.set(player, state);
+	// Driverless V2 still needs an explicit streaming focus. Keeping this outside
+	// the optional-character branch is what lets the car stream/predict without
+	// creating an avatar solely as a spatial anchor.
+	player.ReplicationFocus = root;
 	if (character) {
-		const state: DriverState = {
-			character,
-			vehicleRoot: root,
-			previousReplicationFocus: player.ReplicationFocus,
-			snapshots: [],
-			connections: [],
-		};
-		drivers.set(player, state);
-		// Server Authority prediction/resimulation only operates in streamed
-		// regions. With the avatar parked at spawn (no seat weld), the default
-		// character focus would otherwise remain behind while the car drives
-		// away. Make the simulated root the primary streaming focus for the
-		// duration of the drive.
-		player.ReplicationFocus = root;
 		pcall(() => {
 			for (const descendant of character.GetDescendants()) {
 				neutralizeInstance(state, descendant);
@@ -364,8 +362,13 @@ export function associateDriver(player: Player, model: Model, root: BasePart) {
 	CarSim.setDriving(model, true);
 }
 
-/** Restore the avatar next to the car (or wherever it was) on drive end. */
-export function releaseDriver(player: Player, restoreCFrame?: CFrame) {
+/** End the explicit driver association.
+ *
+ * A living avatar is normally restored for callers that swap vehicles without
+ * respawning the player. Death/round teardown callers can leave it neutralized:
+ * revealing a dead Humanoid here produces a visible corpse beside the car until
+ * Roblox removes the old character. */
+export function releaseDriver(player: Player, restoreCFrame?: CFrame, restoreAvatar = true) {
 	const state = drivers.get(player);
 	if (!state) {
 		return;
@@ -376,6 +379,9 @@ export function releaseDriver(player: Player, restoreCFrame?: CFrame) {
 	}
 	for (const connection of state.connections) {
 		connection.Disconnect();
+	}
+	if (!restoreAvatar) {
+		return;
 	}
 	pcall(() => {
 		for (const snapshot of state.snapshots) {
@@ -392,14 +398,14 @@ export function releaseDriver(player: Player, restoreCFrame?: CFrame) {
 			}
 			instance.Transparency = snapshot.transparency;
 		}
-		const humanoidRoot = state.character.FindFirstChild("HumanoidRootPart");
+		const humanoidRoot = state.character?.FindFirstChild("HumanoidRootPart");
 		if (humanoidRoot && humanoidRoot.IsA("BasePart")) {
 			humanoidRoot.Anchored = false;
 			if (restoreCFrame) {
 				humanoidRoot.CFrame = restoreCFrame;
 			}
 		}
-		const humanoid = state.character.FindFirstChildOfClass("Humanoid");
+		const humanoid = state.character?.FindFirstChildOfClass("Humanoid");
 		if (humanoid) {
 			humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer;
 		}

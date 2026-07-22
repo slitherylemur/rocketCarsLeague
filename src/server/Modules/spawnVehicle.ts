@@ -414,6 +414,18 @@ const spawnVehicleModule = {
 			// 	end
 			// end
 		} else {
+			// Construction performs yielding customization reads while this clone
+			// is unparented. If registered earlier, CarSim's next tick discards it
+			// as stale and setDriving(true) later becomes a no-op. Register now,
+			// immediately before parenting, with no yield between the two actions.
+			if (CarSim.isV2Model(newModel)) {
+				const root = VehicleApi.rootOf(newModel);
+				if (!root) {
+					warn(`[SpawnVehicle] ABORT V2 model ${newModel.Name} has no VehicleRoot before registration`);
+					return;
+				}
+				CarSim.registerServer(newModel, root, player);
+			}
 			newModel.Parent = (game.Workspace as unknown as { Vehicles: Folder }).Vehicles;
 			newModel.Name = `${newModel.Name}${player.UserId}`;
 			// killNotowned grace marker: the car is occupant-less until
@@ -522,7 +534,15 @@ const spawnVehicleModule = {
 			}
 
 			VehicleApi.unregister(existing.model);
-			vehicleV2Spawn.releaseDriver(player);
+			// VehicleClass.KillVehicle and the round teardown kill the Humanoid
+			// before reaching here. A V2 avatar is hidden/anchored control
+			// plumbing; restoring its saved visibility after death exposed a corpse
+			// beside the destroyed car until CharacterRemoving ran. Preserve the
+			// normal restore path only for a genuinely living vehicle swap.
+			const character = player.Character;
+			const humanoid = character?.FindFirstChildOfClass("Humanoid");
+			const restoreAvatar = character?.Parent !== undefined && humanoid !== undefined && humanoid.Health > 0;
+			vehicleV2Spawn.releaseDriver(player, undefined, restoreAvatar);
 
 			for (const instance of Globals.vehiclesTable[player.UserId]!.model.GetDescendants()) {
 				if (
