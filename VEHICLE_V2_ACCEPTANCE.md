@@ -7,7 +7,7 @@ Single source of truth for the numeric budgets. Code reads none of these at runt
 
 | Gate | Statement | How verified |
 |------|-----------|--------------|
-| G-1 | Local input affects the predicted proxy on the **next simulation tick**; never waits one RTT | simTimeline capture: input edge → force application ≤ 1 tick (33.4 ms @30 Hz) |
+| G-1 | Local input affects the predicted proxy on the **next simulation tick**; never waits one RTT | simTimeline capture: input edge → force application ≤ 1 tick (16.7 ms @60 Hz) |
 | G-2 | Rendered body/wheel separation impossible **by construction** | code inspection: rig wheels are CFramed children of the rendered chassis pose only (`carRig.client.ts`) |
 | G-3 | No constraint/wheel assembly can fling — none participates in match physics | spawn validator asserts the V2 model contains no SpringConstraint/HingeConstraint/CylindricalConstraint/VehicleSeat and exactly one unanchored part |
 | G-4 | Uncontested local driving @300 ms RTT: no visible rewind; render correction stays inside budgets (§3) | latency ladder profile P-6, telemetry `maxOffset`, `settleTime` |
@@ -18,7 +18,7 @@ Single source of truth for the numeric budgets. Code reads none of these at runt
 | G-9 | Ball contact stays authoritative and usable at all profiles; corrections near goals favor truth | ladder L-7/L-8 at each profile |
 | G-10 | Same preset ⇒ identical physics across cosmetics | presets contain all physics constants; no model-derived quantity feeds the sim (mass/dims from preset) |
 | G-11 | Client FPS does not change trajectory beyond tolerance (fixed-step sim; render decoupled) | 30/60/144 FPS runs of L-1..L-3, trajectory divergence < 0.5 vehicle lengths over 30 s |
-| G-12 | Server sustains the fixed rate under full load including resim (30 Hz shipped; 60 Hz only if server heartbeat ≥59) | Server Authority visualizer + netHealth server-rate alert |
+| G-12 | Server sustains the 60 Hz fixed rate under full load including resim (server heartbeat ≥59) | Server Authority visualizer + netHealth server-rate alert |
 | G-13 | Misprediction telemetry names real properties/attributes and context (never "unknown entry") | netHealth v2 parser matches documented event shape |
 | G-14 | Old and new movement systems cannot both drive one vehicle | `VEHICLE_V2_ENABLED` selects the registration path at spawn; legacy `VehicleSim.register` refuses V2 models; V2 refuses legacy models |
 
@@ -50,10 +50,10 @@ Hard caps: visual-to-sim divergence ≤ 3 L (then snap); camera anchor displacem
 
 ## 4. Cadence decision procedure
 
-Shipped: `SIM_RATE_HZ = 30`, `StepFrequency.Hz30`, priority 1000. To evaluate 60 Hz: flip
-`SIM_RATE_HZ` to 60 in `simScheduler.ts` (STEP_FREQUENCY follows automatically), run L-11 full
-lobby at P-4, accept only if server simulation heartbeat ≥ 59 FPS sustained (visualizer), resim
-p95 within `stats.ResimulationTime` budget 4 ms, and low-end client holds target FPS.
+Shipped target: `SIM_RATE_HZ = 60`, `StepFrequency.Hz60`, priority 1000. Run L-11 full lobby
+at P-4 and accept only if server simulation heartbeat ≥ 59 FPS sustained (visualizer), resim p95
+within `stats.ResimulationTime` budget 4 ms, and the representative low-end client holds target
+FPS. If this gate fails, optimize the simulation rather than silently falling back to 30 Hz.
 
 ## 5. Scenario ladder
 
@@ -69,9 +69,9 @@ L-10 goal, blast, reset, kickoff → L-11 full lobby + streaming boundaries.
    Misprediction → PreRender` and that the corrected-present pose the renderer reads at PreRender
    matches the last resim tick's pose. If the order differs, only `simTimeline` output is
    affected — the renderer's discontinuity detection does not depend on it (ADR §3).
-2. Confirm `BindToSimulation(fn, Enum.StepFrequency.Hz30, 1000)` is accepted (scheduler logs
-   `bound via BindToSimulation(Hz30,prio1000)`; falls back safely otherwise) and the measured
-   rate log reads ~30 Hz on both peers.
+2. Confirm `BindToSimulation(fn, Enum.StepFrequency.Hz60, 1000)` is accepted (scheduler logs
+   `bound via BindToSimulation(Hz60,prio1000)`) and the measured rate log reads ~60 Hz on both
+   peers. The bare API fallback defaults to 30 Hz and must therefore be treated as a failed gate.
 3. Run the baseline feel capture (`/feel` harness) on the legacy path, then V2, compare envelope
    (accel to top speed, stop distance, turn radius at 3 speeds, jump apex, boost gain, dodge
    distance, blast response) — targets in FeelHarness output; preserve within ±15% or retune

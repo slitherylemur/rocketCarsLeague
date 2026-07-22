@@ -224,6 +224,9 @@ export function buildProxy(model: Model, templateName: string, owner?: Player): 
 	model.SetAttribute(CarModelAttr.TemplateId, templateName);
 	model.SetAttribute(CarModelAttr.PresetId, presetId);
 	model.SetAttribute(CarModelAttr.OwnerUserId, owner ? owner.UserId : 0);
+	// Keep the visual shell and its single simulation root streaming as one
+	// coherent unit; a partially streamed rig looks exactly like detached wheels.
+	model.ModelStreamingMode = Enum.ModelStreamingMode.Atomic;
 
 	if (!validateProxy(model, root)) {
 		return undefined;
@@ -264,6 +267,8 @@ function validateProxy(model: Model, root: BasePart): boolean {
 
 interface DriverState {
 	character: Model;
+	vehicleRoot: BasePart;
+	previousReplicationFocus?: BasePart;
 	snapshots: Array<{
 		instance: BasePart | Decal;
 		massless?: boolean;
@@ -307,8 +312,20 @@ export function associateDriver(player: Player, model: Model, root: BasePart) {
 	releaseDriver(player);
 	const character = player.Character;
 	if (character) {
-		const state: DriverState = { character, snapshots: [], connections: [] };
+		const state: DriverState = {
+			character,
+			vehicleRoot: root,
+			previousReplicationFocus: player.ReplicationFocus,
+			snapshots: [],
+			connections: [],
+		};
 		drivers.set(player, state);
+		// Server Authority prediction/resimulation only operates in streamed
+		// regions. With the avatar parked at spawn (no seat weld), the default
+		// character focus would otherwise remain behind while the car drives
+		// away. Make the simulated root the primary streaming focus for the
+		// duration of the drive.
+		player.ReplicationFocus = root;
 		pcall(() => {
 			for (const descendant of character.GetDescendants()) {
 				neutralizeInstance(state, descendant);
@@ -348,6 +365,9 @@ export function releaseDriver(player: Player, restoreCFrame?: CFrame) {
 		return;
 	}
 	drivers.delete(player);
+	if (player.ReplicationFocus === state.vehicleRoot) {
+		player.ReplicationFocus = state.previousReplicationFocus;
+	}
 	for (const connection of state.connections) {
 		connection.Disconnect();
 	}

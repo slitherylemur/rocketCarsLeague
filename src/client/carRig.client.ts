@@ -29,6 +29,7 @@
 //     rollbacked sim proxy.
 
 import { CarAttr, CarModelAttr, RigWheelAttr } from "shared/vehicleV2/CarState";
+import { BALL_NAME } from "shared/ballSim/BallConfig";
 import { composeVisible, decayOffset, offsetMagnitudes, recomputeOffset } from "shared/vehicleV2/CarMath";
 import {
 	decideCorrection,
@@ -72,8 +73,10 @@ interface RigWheel {
 
 interface Snapshot {
 	t: number;
+	receivedAt: number;
 	cf: CFrame;
 	v: Vector3;
+	w: Vector3;
 }
 
 interface Rig {
@@ -97,6 +100,11 @@ interface Rig {
 	lastSimCF?: CFrame;
 	lastSimVel: Vector3;
 	lastSimAngVel: Vector3;
+	lastVisibleCF?: CFrame;
+	rollbackCapture?: CFrame;
+	lastGrounded: boolean;
+	landingFastUntil: number;
+	correctionStartedAt?: number;
 	// remote snapshot state
 	snaps: Snapshot[];
 	renderDelay: number;
@@ -116,8 +124,17 @@ export interface CorrectionTelemetry {
 	snapCount: number;
 	maxOffset: number;
 	lastSeverity: number;
+	lastSettleMs: number;
+	maxSettleMs: number;
 }
-const telemetry: CorrectionTelemetry = { count: 0, snapCount: 0, maxOffset: 0, lastSeverity: 0 };
+const telemetry: CorrectionTelemetry = {
+	count: 0,
+	snapCount: 0,
+	maxOffset: 0,
+	lastSeverity: 0,
+	lastSettleMs: 0,
+	maxSettleMs: 0,
+};
 
 function attrNumber(instance: Instance, name: string, fallback: number): number {
 	const value = instance.GetAttribute(name);
@@ -166,6 +183,8 @@ function buildRig(model: Model) {
 			severity: Severity.Noise,
 			lastSimVel: new Vector3(),
 			lastSimAngVel: new Vector3(),
+			lastGrounded: false,
+			landingFastUntil: 0,
 			snaps: [],
 			renderDelay: 0.1,
 			steerVisual: 0,
@@ -275,12 +294,28 @@ penetrationParams.FilterType = Enum.RaycastFilterType.Exclude;
 penetrationParams.RespectCanCollide = true;
 let penetrationFilterReady = false;
 
+function isNearGameplayBall(position: Vector3): boolean {
+	for (const child of game.Workspace.GetChildren()) {
+		if (child.Name === BALL_NAME && child.IsA("BasePart") && child.Position.sub(position).Magnitude < 25) {
+			return true;
+		}
+	}
+	return false;
+}
+
 function localVisiblePose(rig: Rig, dt: number): CFrame {
 	const root = rig.root;
 	const simCF = root.CFrame;
 	const simVel = root.AssemblyLinearVelocity;
+	const simAngVel = root.AssemblyAngularVelocity;
 	const speed = simVel.Magnitude;
 	const now = os.clock();
+	const renderState = CarSim.getRenderState(rig.model);
+	const grounded = renderState?.grounded ?? true;
+	if (grounded && !rig.lastGrounded) {
+		rig.landingFastUntil = now + 0.2;
+	}
+	rig.lastGrounded = grounded;
 
 	// Teleport: snap everything, intentionally (gate G-7).
 	const teleportGen = attrNumber(root, CarAttr.TeleportGen, 0);
@@ -289,7 +324,9 @@ function localVisiblePose(rig: Rig, dt: number): CFrame {
 		rig.offset = new CFrame();
 		rig.lastSimCF = simCF;
 		rig.lastSimVel = simVel;
-		rig.lastSimAngVel = root.AssemblyAngularVelocity;
+		rig.lastSimAngVel = simAngVel;
+		rig.lastVisibleCF = simCF;
+		rig.rollbackCapture = undefined;
 		return simCF;
 	}
 
@@ -305,9 +342,10 @@ function localVisiblePose(rig: Rig, dt: number): CFrame {
 	// what normally moves the root, so honest motion stays under thresholds;
 	// a rollback correction lands far outside them.
 	if (rig.lastSimCF !== undefined && dt > 0 && dt < 0.25) {
-		const expectedPos = rig.lastSimCF.Position.add(rig.lastSimVel.mul(dt));
+		const averageVel = rig.lastSimVel.add(simVel).mul(0.5);
+		const expectedPos = rig.lastSimCF.Position.add(averageVel.mul(dt));
 		const posJump = simCF.Position.sub(expectedPos).Magnitude;
-		const w = rig.lastSimAngVel;
+		const w = rig.lastSimAngVel.add(simAngVel).mul(0.5);
 		const wMag = w.Magnitude;
 		let expectedRot = rig.lastSimCF.Rotation;
 		if (wMag > 1e-4) {
@@ -315,31 +353,38 @@ function localVisiblePose(rig: Rig, dt: number): CFrame {
 		}
 		const rotJump = math.abs(expectedRot.ToObjectSpace(simCF.Rotation).ToAxisAngle()[1]);
 		const thresholds = discontinuityThresholds(speed, dt);
-		if (posJump > thresholds.pos || rotJump > thresholds.rot) {
+		if (rig.rollbackCapture !== undefined || posJump > thresholds.pos || rotJump > thresholds.rot) {
 			// Correction: recompute the offset so the visible pose is
 			// unchanged this frame (C0 continuity), then pick decay rates.
 			// The previous visible pose is advanced by its own velocity so the
 			// car keeps moving naturally through the correction instant.
-			const visibleCont = composeVisible(rig.lastSimCF, rig.offset).add(rig.lastSimVel.mul(dt));
+			const visibleBefore = rig.rollbackCapture ?? composeVisible(rig.lastSimCF, rig.offset);
+			let visibleRotation = visibleBefore.Rotation;
+			if (wMag > 1e-4) {
+				visibleRotation = CFrame.fromAxisAngle(w.div(wMag), wMag * dt).mul(visibleRotation);
+			}
+			const visibleCont = visibleRotation.add(visibleBefore.Position.add(averageVel.mul(dt)));
+			rig.rollbackCapture = undefined;
 			const newOffset = recomputeOffset(simCF, visibleCont);
 			const mags = offsetMagnitudes(newOffset);
 			const L = rig.preset.boxSize.Z;
 			if (!isNoise(mags.pos, mags.rot, L)) {
-				const grounded = CarSim.getRenderState(rig.model)?.grounded ?? true;
 				const decision = decideCorrection(mags.pos, mags.rot, {
 					vehicleLength: L,
 					speed,
 					airborne: !grounded,
-					landing: false,
-					nearBall: false, // ball proximity folded into blast/goal events for now
+					landing: now < rig.landingFastUntil,
+					nearBall: isNearGameplayBall(simCF.Position),
 					blastEvent: now < rig.blastFastUntil,
 				});
 				telemetry.count += 1;
 				telemetry.lastSeverity = decision.severity;
 				telemetry.maxOffset = math.max(telemetry.maxOffset, mags.pos);
+				rig.correctionStartedAt = now;
 				if (decision.severity === Severity.Catastrophic || mags.pos > rig.preset.boxSize.Z * MAX_DIVERGENCE_LENGTHS) {
 					telemetry.snapCount += 1;
 					rig.offset = new CFrame();
+					rig.correctionStartedAt = undefined;
 				} else {
 					rig.offset = newOffset;
 					rig.posHalfLife = decision.posHalfLife;
@@ -356,11 +401,17 @@ function localVisiblePose(rig: Rig, dt: number): CFrame {
 		rig.offset = decayOffset(rig.offset, dt, rig.posHalfLife, rig.rotHalfLife);
 	} else if (mags.pos > 0 || mags.rot > 0) {
 		rig.offset = new CFrame();
+		if (rig.correctionStartedAt !== undefined) {
+			const settleMs = (now - rig.correctionStartedAt) * 1000;
+			telemetry.lastSettleMs = settleMs;
+			telemetry.maxSettleMs = math.max(telemetry.maxSettleMs, settleMs);
+			rig.correctionStartedAt = undefined;
+		}
 	}
 
 	rig.lastSimCF = simCF;
 	rig.lastSimVel = simVel;
-	rig.lastSimAngVel = root.AssemblyAngularVelocity;
+	rig.lastSimAngVel = simAngVel;
 
 	let visible = composeVisible(simCF, rig.offset);
 
@@ -382,6 +433,7 @@ function localVisiblePose(rig: Rig, dt: number): CFrame {
 			rig.offset = recomputeOffset(simCF, visible);
 		}
 	}
+	rig.lastVisibleCF = visible;
 	return visible;
 }
 
@@ -389,12 +441,19 @@ function localVisiblePose(rig: Rig, dt: number): CFrame {
 
 function sampleRemote(rig: Rig) {
 	const cf = rig.root.CFrame;
-	const now = os.clock();
+	const receivedAt = os.clock();
+	const simTime = attrNumber(rig.root, CarAttr.SimTime, receivedAt);
 	const last = rig.snaps.size() > 0 ? rig.snaps[rig.snaps.size() - 1] : undefined;
-	if (last && cf.Position.sub(last.cf.Position).Magnitude < 1e-3 && now - last.t < 0.2) {
-		return; // no new replicated motion
+	if (last && simTime <= last.t + 1e-5) {
+		return; // no new replicated simulation snapshot
 	}
-	rig.snaps.push({ t: now, cf, v: rig.root.AssemblyLinearVelocity });
+	rig.snaps.push({
+		t: simTime,
+		receivedAt,
+		cf,
+		v: rig.root.AssemblyLinearVelocity,
+		w: rig.root.AssemblyAngularVelocity,
+	});
 	if (rig.snaps.size() > SNAP_BUFFER) {
 		rig.snaps.remove(0);
 	}
@@ -402,7 +461,7 @@ function sampleRemote(rig: Rig) {
 	if (rig.snaps.size() >= 4) {
 		const gaps: number[] = [];
 		for (let i = rig.snaps.size() - 4; i < rig.snaps.size() - 1; i++) {
-			gaps.push(rig.snaps[i + 1].t - rig.snaps[i].t);
+			gaps.push(rig.snaps[i + 1].receivedAt - rig.snaps[i].receivedAt);
 		}
 		table.sort(gaps);
 		const median = gaps[math.floor(gaps.size() / 2)];
@@ -440,14 +499,19 @@ function remoteVisiblePose(rig: Rig): CFrame {
 	if (count === 0) {
 		return root.CFrame;
 	}
-	const renderT = os.clock() - rig.renderDelay;
 	const newest = rig.snaps[count - 1];
+	const renderT = newest.t + (os.clock() - newest.receivedAt) - rig.renderDelay;
 
 	let pose: CFrame;
 	if (renderT >= newest.t) {
 		// Ahead of the buffer: bounded extrapolation, then hold.
 		const ahead = math.min(renderT - newest.t, MAX_EXTRAPOLATION);
-		pose = newest.cf.Rotation.add(newest.cf.Position.add(newest.v.mul(ahead)));
+		let rotation = newest.cf.Rotation;
+		const wMag = newest.w.Magnitude;
+		if (wMag > 1e-4) {
+			rotation = CFrame.fromAxisAngle(newest.w.div(wMag), wMag * ahead).mul(rotation);
+		}
+		pose = rotation.add(newest.cf.Position.add(newest.v.mul(ahead)));
 	} else {
 		// Find the bracketing pair (buffer is small; linear scan from the end).
 		let older = rig.snaps[0];
@@ -571,6 +635,24 @@ for (const child of vehiclesFolder.GetChildren()) {
 		buildRig(child);
 	}
 }
+
+// Capture the last actually displayed pose at the engine's rollback boundary.
+// Roblox fires this after restoring authoritative state and before replaying
+// simulation ticks. The next render therefore recomputes an offset against
+// the corrected present without ever using the historical snapshot delta.
+pcall(() => {
+	(
+		RunService as unknown as {
+			Rollback: RBXScriptSignal<(time: number) => void>;
+		}
+	).Rollback.Connect(() => {
+		for (const [, rig] of rigs) {
+			if (rig.isLocal && rig.initialized) {
+				rig.rollbackCapture = rig.lastVisibleCF ?? composeVisible(rig.root.CFrame, rig.offset);
+			}
+		}
+	});
+});
 // V2 models can also gain the attribute after parenting (spawn order).
 vehiclesFolder.ChildAdded.Connect((model) => {
 	if (model.IsA("Model")) {
@@ -608,5 +690,20 @@ if (RENDER_DEBUG_OVERLAY) {
 		}
 	});
 }
+
+// Repeatable client-local acceptance snapshot; never enters gameplay state.
+LocalPlayer.Chatted.Connect((message) => {
+	if (message.lower() === "/nettest") {
+		print(
+			`[CarRig/nettest] corrections=${telemetry.count} snaps=${telemetry.snapCount} maxOffset=${string.format(
+				"%.3f",
+				telemetry.maxOffset,
+			)} lastSettle=${string.format("%.1f", telemetry.lastSettleMs)}ms maxSettle=${string.format(
+				"%.1f",
+				telemetry.maxSettleMs,
+			)}ms severity=${telemetry.lastSeverity}`,
+		);
+	}
+});
 
 export {};

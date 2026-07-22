@@ -23,6 +23,8 @@ import { registerSimHook, SIM_ORDER_VEHICLE } from "shared/simScheduler";
 import { getPreset, PhysicsPreset } from "shared/vehicleV2/PhysicsPresets";
 import {
 	boxInertiaDiag,
+	contactMassShare,
+	directedThrustAccel,
 	gearMultiplier,
 	impulseAtPoint,
 	servoDeltaOmega,
@@ -528,7 +530,10 @@ function sampleContacts(entry: CarEntry, rootCF: CFrame): { contacts: Contact[];
 function closeGroundProbe(entry: CarEntry, rootCF: CFrame): RaycastResult | undefined {
 	const preset = entry.preset;
 	const range = preset.suspensionRest + preset.wheelRadius + preset.boxSize.Y;
-	return game.Workspace.Raycast(rootCF.Position, rootCF.UpVector.mul(-range), rayParams);
+	// This is a proximity/recovery probe, not a suspension ray. World-down
+	// keeps an upside-down car able to find the floor and prevents a sideways
+	// car from treating a nearby wall as "ground".
+	return game.Workspace.Raycast(rootCF.Position, WORLD_UP.mul(-range), rayParams);
 }
 
 // ---- angular helpers ------------------------------------------------------
@@ -708,7 +713,11 @@ function stepCar(entry: CarEntry, dt: number) {
 	const { contacts, hitCount } = sampleContacts(entry, rootCF);
 	const closeGround = closeGroundProbe(entry, rootCF);
 	const wheelsGrounded = hitCount >= 2;
-	const grounded = wheelsGrounded || closeGround !== undefined;
+	// The centre probe is only a grounded fallback when the chassis is broadly
+	// upright. An upside-down car still needs the probe for recovery, but must
+	// not acquire a synthetic tyre contact and drive on its roof.
+	const bellyGrounded = closeGround !== undefined && rootCF.UpVector.Dot(closeGround.Normal) > 0.25;
+	const grounded = wheelsGrounded || bellyGrounded;
 	if (wheelsGrounded) {
 		root.SetAttribute(CarAttr.LastGrounded, now);
 	}
@@ -849,8 +858,10 @@ function stepCar(entry: CarEntry, dt: number) {
 		driveAccelWanted = math.clamp(speedErr / dt, -accelBudget, accelBudget);
 		// Airborne boost pushes along the car's look axis directly.
 		if (!grounded && boosting) {
-			const dir = throttle < 0 ? look.mul(-1) : look;
-			entry.dv = entry.dv.add(dir.mul(math.min(math.abs(driveAccelWanted), accelBudget) * dt));
+			const directionSign: -1 | 1 = throttle < 0 ? -1 : 1;
+			const dir = look.mul(directionSign);
+			const thrustAccel = directedThrustAccel(driveAccelWanted, directionSign, accelBudget);
+			entry.dv = entry.dv.add(dir.mul(thrustAccel * dt));
 			driveAccelWanted = 0;
 		}
 	}
@@ -862,6 +873,7 @@ function stepCar(entry: CarEntry, dt: number) {
 		const fwd = fwdOnPlane.Magnitude > 1e-4 ? fwdOnPlane.Unit : look;
 		const lateralGrip = (drifting ? preset.driftGripMult : 1) * preset.lateralGripAccel;
 		const activeContacts = wheelsGrounded ? hitCount : 1;
+		const tireMassShare = contactMassShare(mass, activeContacts);
 		for (const c of contacts) {
 			if (wheelsGrounded && !c.hit) {
 				continue;
@@ -877,12 +889,12 @@ function stepCar(entry: CarEntry, dt: number) {
 			const res = tireAccel({
 				forwardVel: planarVel.Dot(fwd),
 				lateralVel: planarVel.Dot(lat),
-				driveAccel: driveAccelWanted / activeContacts,
-				lateralGripAccel: lateralGrip / activeContacts,
-				frictionBudgetAccel: preset.frictionBudgetAccel / activeContacts,
+				driveAccel: driveAccelWanted,
+				lateralGripAccel: lateralGrip,
+				frictionBudgetAccel: preset.frictionBudgetAccel,
 				dt,
 			});
-			const impulse = fwd.mul(res.forwardAccel).add(lat.mul(res.lateralAccel)).mul(massShare * dt);
+			const impulse = fwd.mul(res.forwardAccel).add(lat.mul(res.lateralAccel)).mul(tireMassShare * dt);
 			// Tire impulses act at COM height (vertical arm removed): yaw
 			// response is preserved through the yaw servo below while the
 			// roll-over moment that made the legacy lateral servo unshippable

@@ -37,6 +37,7 @@ import { BALL_NAME, BALL_FIELDS, ballTunables, ballTuneAttr } from "shared/ballS
 import { COLLISION_GROUPS } from "shared/collisionGroups";
 import { registerSimHook, SIM_ORDER_BALL } from "shared/simScheduler";
 import { getPreset } from "shared/vehicleV2/PhysicsPresets";
+import { sweepPointAabb } from "shared/ballSim/BallMath";
 
 // V2 reciprocal-recoil lookup (leaf import only — no sim<->sim cycle).
 function ballRecoilFor(carModel: Model): number {
@@ -356,6 +357,57 @@ function boxContact(ball: BasePart, part: BasePart, center: Vector3, radius: num
 	};
 }
 
+interface TimedCarContact {
+	contact: CarContact;
+	time: number;
+}
+
+/** Continuous relative translation sweep against an oriented car box. The
+ * sphere radius expands the box in local space, then a slab test gives the
+ * first time of impact. Current overlaps retain the exact closest-point
+ * contact so depenetration remains precise. */
+function sweptBoxContact(
+	ball: BasePart,
+	part: BasePart,
+	position: Vector3,
+	ballTravel: Vector3,
+	radius: number,
+	dt: number,
+): TimedCarContact | undefined {
+	const immediate = boxContact(ball, part, position, radius);
+	if (immediate) {
+		return { contact: immediate, time: 0 };
+	}
+	const carVelocity = part.GetVelocityAtPosition(part.Position);
+	const relativeTravel = ballTravel.sub(carVelocity.mul(dt));
+	const localStart = part.CFrame.PointToObjectSpace(position);
+	const localDelta = part.CFrame.VectorToObjectSpace(relativeTravel);
+	const expandedHalf = part.Size.div(2).add(new Vector3(radius, radius, radius));
+	const hit = sweepPointAabb(localStart, localDelta, expandedHalf);
+	if (!hit) {
+		return undefined;
+	}
+	const carModel = part.Parent !== undefined ? part.Parent.Parent : undefined;
+	if (carModel === undefined || !carModel.IsA("Model")) {
+		return undefined;
+	}
+	const normal = part.CFrame.VectorToWorldSpace(hit.normal).Unit;
+	const ballCenterAtHit = position.add(ballTravel.mul(hit.time));
+	const carCenterAtHit = part.Position.add(carVelocity.mul(dt * hit.time));
+	const hitPoint = ballCenterAtHit.sub(normal.mul(radius));
+	return {
+		time: hit.time,
+		contact: {
+			normal,
+			hitPoint,
+			penetration: 0,
+			carVelocity: part.GetVelocityAtPosition(hitPoint),
+			carModel,
+			carCenter: carCenterAtHit,
+		},
+	};
+}
+
 // A ball with no usable world filter is not simulated — but the ENGINE still
 // integrates it: with a stale/zero AntiGravity force an unanchored frozen
 // ball freefalls through the CanCollide=false floor until the spawner's
@@ -489,59 +541,51 @@ function stepBall(ball: BasePart, dt: number) {
 	// 5. car hits via the HitboxMain boxes (the overlap's include list holds
 	// exactly those parts; the name guard is belt-and-braces).
 	//
-	// CONTINUOUS relative detection: a fast ball vs a moving hitbox can cross
-	// the thin dimension of the box within one 30 Hz tick, so besides the
-	// current-position overlap the RELATIVE motion over this tick is sampled
-	// at t = 0.5 and t = 1 (ball travel minus car travel). The broadphase
-	// radius is expanded by the travel so sweep candidates are found.
+	// CONTINUOUS relative detection: a fast ball or incoming car can cross the
+	// thin dimension within one 60 Hz tick. An analytic relative segment sweep
+	// against the radius-expanded oriented box finds the first time of impact.
 	//
-	// One contact per tick, chosen DETERMINISTICALLY: GetPartBoundsInRadius
+	// Contacts are chosen DETERMINISTICALLY: GetPartBoundsInRadius
 	// returns results in no guaranteed order, so "first box wins" could pick
 	// a different car on client and server from identical physics state — a
 	// guaranteed misprediction whenever two cars pinch the ball. Ordering:
-	// earliest sample time wins, then deepest penetration, then model name —
-	// all computed identically from the same state on both peers.
+	// earliest time wins, then deepest penetration, then model name. Up to two
+	// distinct cars resolve so opposing simultaneous contacts can form pinches.
 	const travelSweep = v.mul(dt);
+	const MAX_CAR_BROADPHASE_SPEED = 300;
 	const nearby = game.Workspace.GetPartBoundsInRadius(
 		position,
-		radius + travelSweep.Magnitude,
+		radius + travelSweep.Magnitude + MAX_CAR_BROADPHASE_SPEED * dt,
 		carOverlapParams,
 	);
-	let best: CarContact | undefined;
-	let bestSampleT = math.huge;
+	const candidates: TimedCarContact[] = [];
 	for (const part of nearby) {
 		if (part.Name !== HITBOX_MAIN_NAME || part.Parent === undefined) {
 			continue;
 		}
-		const carVel = part.GetVelocityAtPosition(part.Position);
-		const relTravel = travelSweep.sub(carVel.mul(dt));
-		for (const sampleT of [0, 0.5, 1]) {
-			const center = sampleT === 0 ? position : position.add(relTravel.mul(sampleT));
-			const contact = boxContact(ball, part, center, radius);
-			if (contact === undefined) {
-				continue;
-			}
-			if (sampleT > 0) {
-				// Future-sample contact: respond to the velocity, but never
-				// de-penetrate from a position the ball is not yet at.
-				contact.penetration = 0;
-			}
-			const better =
-				best === undefined ||
-				sampleT < bestSampleT - 1e-9 ||
-				(math.abs(sampleT - bestSampleT) <= 1e-9 &&
-					(contact.penetration > best.penetration + 1e-6 ||
-						(math.abs(contact.penetration - best.penetration) <= 1e-6 &&
-							contact.carModel.Name < best.carModel.Name)));
-			if (better) {
-				best = contact;
-				bestSampleT = sampleT;
-			}
-			break; // earliest sample for THIS part found; later samples can't beat it
+		const timed = sweptBoxContact(ball, part, position, travelSweep, radius, dt);
+		if (timed) {
+			candidates.push(timed);
 		}
 	}
-	if (best !== undefined) {
-		const contact = best;
+	table.sort(candidates, (a, b) => {
+		if (math.abs(a.time - b.time) > 1e-9) {
+			return a.time < b.time;
+		}
+		if (math.abs(a.contact.penetration - b.contact.penetration) > 1e-6) {
+			return a.contact.penetration > b.contact.penetration;
+		}
+		return a.contact.carModel.Name < b.contact.carModel.Name;
+	});
+	const resolvedCars = new Set<Model>();
+	let resolvedContacts = 0;
+	for (const timed of candidates) {
+		const contact = timed.contact;
+		if (resolvedCars.has(contact.carModel)) {
+			continue;
+		}
+		resolvedCars.add(contact.carModel);
+		resolvedContacts += 1;
 		const vBeforeCarContact = v;
 
 		const n = contact.normal;
@@ -612,6 +656,9 @@ function stepBall(ball: BasePart, dt: number) {
 				position = position.add(push);
 			}
 			positionChanged = true;
+		}
+		if (resolvedContacts >= 2) {
+			break;
 		}
 	}
 

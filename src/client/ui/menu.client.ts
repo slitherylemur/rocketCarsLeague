@@ -265,12 +265,16 @@ function renderTeamPage() {
 
 function applyFlowState() {
 	const state = flowState();
-	landing.Enabled = state === "menu";
-	const lobby = state === "lobby";
+	const inMatch = typeIs(LocalPlayer.GetAttribute("CB_PitchId"), "string");
+	landing.Enabled = state === "menu" && !inMatch;
+	const lobby = state === "lobby" && !inMatch;
 	if (lobby) {
 		renderTeamPage();
 	}
 	teamPage.Enabled = lobby;
+	if (inMatch || (state !== "menu" && state !== "lobby" && state !== "garage")) {
+		renamePopup.Enabled = false;
+	}
 }
 
 // Team-scoped connections (attribute/name watchers on the current team and
@@ -326,6 +330,7 @@ Players.PlayerRemoving.Connect((player) => {
 });
 
 LocalPlayer.GetAttributeChangedSignal("CB_FlowState").Connect(applyFlowState);
+LocalPlayer.GetAttributeChangedSignal("CB_PitchId").Connect(applyFlowState);
 LocalPlayer.GetPropertyChangedSignal("Team").Connect(() => {
 	watchTeam();
 });

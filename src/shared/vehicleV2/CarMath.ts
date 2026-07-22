@@ -107,6 +107,21 @@ export interface TireResult {
 	lateralAccel: number;
 }
 
+/** Mass carried by one of the currently active tire contacts. The returned
+ * shares always sum back to the full chassis mass, so losing contacts does
+ * not silently quarter the requested drive/grip acceleration. */
+export function contactMassShare(totalMass: number, activeContacts: number): number {
+	return activeContacts > 0 ? totalMass / activeContacts : 0;
+}
+
+/** Convert the signed forward-axis drive servo result into a positive thrust
+ * magnitude along the selected boost direction. Past the target speed the
+ * result is zero rather than turning a negative speed error into acceleration
+ * via abs(). directionSign is +1 for forward and -1 for reverse. */
+export function directedThrustAccel(driveAccelWanted: number, directionSign: -1 | 1, budget: number): number {
+	return math.clamp(driveAccelWanted * directionSign, 0, math.max(budget, 0));
+}
+
 /** Bounded tire response with a friction circle: lateral grip tries to kill
  * lateral slip within dt (capped at the grip accel), then longitudinal drive
  * is fitted into the remaining budget — combined accel can never exceed the

@@ -63,6 +63,9 @@ check(!isNoise(0, math.rad(2), 12), "2 deg is not noise");
 	const fast = discontinuityThresholds(120, 1 / 60);
 	check(fast.pos > slow.pos, "position threshold grows with speed");
 	check(slow.pos > 0 && slow.rot > 0, "thresholds positive");
+	check(fast.pos < 0.25, "race-speed 60 FPS threshold cannot hide a visible correction");
+	const thirtyFps = discontinuityThresholds(120, 1 / 30);
+	check(thirtyFps.pos < 0.25, "race-speed 30 FPS threshold cannot hide a visible correction");
 	const bigDt = discontinuityThresholds(120, 1 / 15);
 	check(bigDt.pos > fast.pos, "position threshold grows with dt");
 }

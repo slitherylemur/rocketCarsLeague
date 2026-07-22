@@ -7,9 +7,11 @@ declare const checkNear: (actual: number, expected: number, tolerance: number, l
 
 import {
 	boxInertiaDiag,
+	contactMassShare,
 	composeVisible,
 	decayOffset,
 	decayRemaining,
+	directedThrustAccel,
 	gearMultiplier,
 	impulseAtPoint,
 	offsetMagnitudes,
@@ -89,6 +91,20 @@ import {
 	checkNear(math.abs(saturated.lateralAccel), 390, 1e-6, "saturated lateral clamps to budget");
 	checkNear(saturated.forwardAccel, 0, 1e-6, "no longitudinal budget left when lateral saturates");
 }
+
+// Contact force distribution: active shares always conserve the chassis mass.
+checkNear(contactMassShare(400, 4) * 4, 400, 1e-9, "four tire shares conserve mass");
+checkNear(contactMassShare(400, 2) * 2, 400, 1e-9, "two tire shares conserve mass");
+checkNear(contactMassShare(400, 1), 400, 1e-9, "belly fallback carries full mass");
+checkNear(contactMassShare(400, 0), 0, 1e-9, "zero contacts has zero share");
+
+// Air boost only thrusts toward its signed target; overspeed never becomes
+// more acceleration through an absolute-value sign loss.
+checkNear(directedThrustAccel(80, 1, 100), 80, 1e-9, "forward boost thrusts below target");
+checkNear(directedThrustAccel(-20, 1, 100), 0, 1e-9, "forward boost stops above target");
+checkNear(directedThrustAccel(-80, -1, 100), 80, 1e-9, "reverse boost thrusts below target");
+checkNear(directedThrustAccel(20, -1, 100), 0, 1e-9, "reverse boost stops above target");
+checkNear(directedThrustAccel(200, 1, 100), 100, 1e-9, "boost respects acceleration budget");
 
 // ---- gear curve ------------------------------------------------------------
 {

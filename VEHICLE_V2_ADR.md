@@ -109,12 +109,11 @@ Key properties:
   (Hermite) position interpolation + slerp orientation, bounded extrapolation, hold+recover.
   Remote-input prediction remains an experiment behind `REMOTE_INPUT_PREDICTION` (off): inputs
   already replicate as attributes; the measured decision requires live latency testing (§2).
-- **Camera** follows a dedicated anchor on the rendered pose (never the sim proxy), with
-  separate position/rotation filtering and correction-aware smoothing.
-- **Cadence**: explicit `Enum.StepFrequency.Hz30`, priority 1000, single shared bind + ordered
-  hooks (vehicle 100 → ball 200). 30 Hz is the shipped baseline because the 60 Hz gate
-  (server sim ≥59 FPS under full lobby + resim load) can only be measured live;
-  `SIM_RATE_HZ`+`STEP_FREQUENCY` flip together for the A/B (see acceptance doc §4).
+- **Camera** follows a dedicated anchor on the correction-filtered rendered pose (never the
+  simulation proxy). It intentionally adds no second smoothing layer or control latency.
+- **Cadence**: explicit `Enum.StepFrequency.Hz60`, priority 1000, single shared bind + ordered
+  hooks (vehicle 100 → ball 200). The merge gate requires server simulation ≥59 FPS under
+  full-lobby resimulation load (see acceptance doc §4).
 
 ## 4. Rejected alternatives
 
@@ -130,9 +129,10 @@ Key properties:
    constraint properties are exactly the state class that does not roll back; impulse math from
    restored state removes the entire re-assert-every-tick workaround family.
 5. **120 Hz (Rocket League parity)** — rejected: Roblox `StepFrequency` tops out at Hz60, and
-   resimulation cost scales with rate; 30 Hz shipped, 60 Hz gated on live measurement.
-6. **Custom rollback history via `RunService.Rollback`** — not needed: V2 keeps every cross-tick
-   value in attributes; the hook remains available for future non-attribute state.
+   resimulation cost scales with rate; Vehicle V2 targets the supported 60 Hz ceiling.
+6. **Custom gameplay rollback history** — not needed: V2 keeps every cross-tick simulation value
+   in attributes. `RunService.Rollback` is used only to capture the last visible pose so the
+   renderer preserves continuity against Roblox's corrected present.
 7. **Offline template geometry pipeline** — rejected: `RocketCars.rbxlx` is a git-LFS pointer
    here and would drift from live place edits; geometry is derived + validated at server startup
    from the actual `ServerStorage.VehicleModels` templates (report logged, overrides in

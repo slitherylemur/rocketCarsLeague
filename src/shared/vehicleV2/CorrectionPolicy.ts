@@ -114,7 +114,11 @@ export function isNoise(posError: number, rotError: number, vehicleLength: numbe
  * engine integrates nonlinearly; fast motion accrues honest divergence). */
 export function discontinuityThresholds(speed: number, dt: number): { pos: number; rot: number } {
 	return {
-		pos: 0.25 + speed * dt * 0.75,
-		rot: math.rad(4) + dt * math.rad(90),
+		// Velocity integration is predicted with a trapezoidal estimate in the
+		// renderer. Only retain a small allowance for solver/contact error;
+		// scaling by most of a frame's travel hid 1-3 stud corrections at race
+		// speed and allowed them to snap straight into the presentation.
+		pos: 0.08 + math.min(speed * dt * 0.04, 0.12),
+		rot: math.rad(0.75) + dt * math.rad(15),
 	};
 }
